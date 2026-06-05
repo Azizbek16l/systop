@@ -1,0 +1,238 @@
+/* systop dashboard uslublari — sovuq "terminal" palitrasi (systop temasi) */
+
+/* Fon SHAFFOF — ilova terminalning o'z fonini oladi (atrofi bilan qo'shiladi). */
+Screen {
+    layout: vertical;
+    background: transparent;
+}
+
+Header, Footer {
+    background: transparent;
+}
+
+/* --- Holat-paneli (Header ostidagi chiplar qatori) --- */
+
+#status-bar {
+    height: 1;
+    padding: 0 1;
+    background: transparent;
+    color: $foreground;
+}
+
+#status-bar > Static {
+    width: 1fr;
+    height: 1;
+    content-align: left middle;
+    padding: 0 1;
+}
+
+#chip-gateway {
+    color: $secondary;
+}
+#chip-public {
+    color: $accent;
+}
+#chip-iface {
+    color: $success;
+}
+
+/* --- Asosiy layout: chap ustun (tezlik+ping) | o'ng ustun (topologiya) ---
+   Ikki ustun ham 1fr en, butun bo'sh balandlikni to'ldiradi (full-screen). */
+
+#main {
+    layout: horizontal;
+    height: 1fr;
+    padding: 1;
+}
+
+/* Chap ustun: tezlik (tepa) + ping (past), ikkalasi teng balandlikda. */
+#left-col {
+    width: 1fr;
+    height: 1fr;
+    margin-right: 1;
+}
+
+#speed {
+    height: 1fr;
+    margin-bottom: 1;
+}
+#ping {
+    height: 1fr;
+}
+
+/* O'ng ustun: topologiya — to'liq balandlik. */
+#topology {
+    width: 1fr;
+    height: 1fr;
+}
+
+SpeedPanel, PingPanel, TopologyPanel {
+    border: round $primary 60%;
+    border-title-color: $primary;
+    border-title-style: bold;
+    background: transparent;
+    padding: 0 1;
+    min-height: 8;
+}
+
+/* Fokus holatida ramka aksent rangiga o'tadi. */
+SpeedPanel:focus-within, PingPanel:focus-within, TopologyPanel:focus-within {
+    border: round $accent;
+    border-title-color: $accent;
+}
+
+/* --- Tezlik paneli --- */
+
+#speed-readout {
+    height: auto;
+    padding: 1 0 0 0;
+}
+
+#speed-loading {
+    height: 1;
+    color: $secondary;
+}
+
+/* --- Sparkline grafiklar va ularning izohi --- */
+
+Sparkline {
+    height: 3;
+    margin: 1 0 0 0;
+}
+
+.spark-caption {
+    height: 1;
+    color: $foreground 70%;
+    padding: 0;
+    margin: 0 0 1 0;
+}
+
+#speed-spark > .sparkline--max-color {
+    color: $success;
+}
+#speed-spark > .sparkline--min-color {
+    color: $success 35%;
+}
+#ping-spark > .sparkline--max-color {
+    color: $secondary;
+}
+#ping-spark > .sparkline--min-color {
+    color: $secondary 35%;
+}
+
+/* --- Jadvallar --- */
+
+DataTable {
+    height: 1fr;
+    min-height: 4;
+    background: transparent;
+}
+
+DataTable > .datatable--header {
+    background: $panel;
+    color: $secondary;
+    text-style: bold;
+}
+
+DataTable > .datatable--cursor {
+    background: $accent 25%;
+}
+
+/* --- Tugmalar --- */
+
+Button {
+    margin: 0;
+    min-width: 16;
+}
+
+#run-speed {
+    margin: 1 0 0 0;
+    width: 1fr;
+}
+
+/* --- Topologiya tablari va boshqaruvlari --- */
+
+TabbedContent {
+    height: 1fr;
+}
+
+#lan-controls, #trace-controls, #bw-controls, #conn-controls {
+    height: auto;
+    padding: 1 0 0 0;
+    align: left middle;
+}
+
+#scan-lan {
+    margin: 0 1 0 0;
+}
+
+#trace-target {
+    width: 2fr;
+}
+
+#trace-live {
+    width: auto;
+    margin: 0 1;
+    background: transparent;
+}
+
+#run-trace {
+    width: auto;
+    margin: 0 1;
+}
+
+#run-bw, #run-conn {
+    margin: 0 1 0 0;
+}
+
+#lan-loading, #trace-loading, #bw-loading, #conn-loading {
+    width: auto;
+    height: 1;
+    color: $secondary;
+    content-align: left middle;
+}
+
+/* --- Bo'sh / xato holatlari (placeholder) --- */
+
+.empty-state {
+    height: auto;
+    padding: 2 1;
+    color: $foreground 70%;
+    content-align: center middle;
+}
+
+/* --- Yordam modali --- */
+
+HelpScreen {
+    align: center middle;
+    background: $background 60%;
+}
+
+#help-wrap {
+    width: auto;
+    height: auto;
+}
+
+#help-box {
+    width: 64;
+    max-width: 90%;
+    height: auto;
+    max-height: 90%;
+    border: round $accent;
+    background: $surface;
+    padding: 1 2;
+}
+
+#help-title {
+    width: 100%;
+    content-align: center middle;
+    color: $accent;
+    text-style: bold;
+    padding: 0 0 1 0;
+    border-bottom: solid $primary 40%;
+}
+
+#help-body {
+    width: 100%;
+    padding: 1 0 0 0;
+}

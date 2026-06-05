@@ -1,0 +1,196 @@
+"""ping testlari — OFFLINE.
+
+``build_targets`` barcha shoxlari, ``PingResult.loss_pct``, ``_to_result``
+(soxta host obyekti bilan), ``ping_once``/``ping_many`` (icmplib mock bilan).
+Hech qanday ICMP soketi ochilmaydi.
+"""
+
+from __future__ import annotations
+
+import pytest
+from conftest import FakeHost
+
+from systop.core import ping
+from systop.core.ping import (
+    DEFAULT_GLOBAL_TARGETS,
+    DEFAULT_GLOBAL_TARGETS_V6,
+    PingResult,
+    _to_result,
+    build_targets,
+    ping_many,
+    ping_once,
+)
+
+# --- build_targets ----------------------------------------------------------
+
+
+def test_build_targets_gateway_plus_global():
+    targets = build_targets("192.168.1.1")
+    assert targets["Gateway (lokal)"] == "192.168.1.1"
+    assert "Cloudflare" in targets
+    assert len(targets) == len(DEFAULT_GLOBAL_TARGETS) + 1
+
+
+def test_build_targets_gateway_only():
+    targets = build_targets("192.168.1.1", include_global=False)
+    assert targets == {"Gateway (lokal)": "192.168.1.1"}
+
+
+def test_build_targets_global_only():
+    targets = build_targets(None, include_global=True)
+    assert "Gateway (lokal)" not in targets
+    assert targets == DEFAULT_GLOBAL_TARGETS
+    # Asl konstanta o'zgarmasligi kerak (nusxa qaytarish).
+    assert targets is not DEFAULT_GLOBAL_TARGETS
+
+
+def test_build_targets_empty():
+    assert build_targets(None, include_global=False) == {}
+
+
+def test_build_targets_does_not_mutate_default_constant():
+    """build_targets DEFAULT_GLOBAL_TARGETS'ni o'zgartirmasligini tasdiqlash."""
+    before = dict(DEFAULT_GLOBAL_TARGETS)
+    t = build_targets("10.0.0.1")
+    t["yangi"] = "1.2.3.4"
+    assert DEFAULT_GLOBAL_TARGETS == before
+
+
+# --- PingResult.loss_pct ----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "loss, pct",
+    [(0.0, 0.0), (0.25, 25.0), (0.5, 50.0), (1.0, 100.0)],
+)
+def test_loss_pct(loss, pct):
+    r = PingResult(label="x", address="1.1.1.1", packet_loss=loss)
+    assert r.loss_pct == pytest.approx(pct)
+
+
+def test_ping_result_defaults():
+    r = PingResult(label="x", address="1.1.1.1")
+    assert r.alive is False
+    assert r.packet_loss == 1.0
+    assert r.loss_pct == 100.0
+    assert r.rtts == []
+
+
+# --- _to_result -------------------------------------------------------------
+
+
+def test_to_result_maps_host_fields():
+    host = FakeHost(
+        address="8.8.8.8",
+        is_alive=True,
+        min_rtt=1.0,
+        avg_rtt=2.0,
+        max_rtt=3.0,
+        jitter=0.5,
+        packet_loss=0.0,
+        rtts=[1.0, 2.0, 3.0],
+    )
+    r = _to_result(host, "Google DNS")
+    assert r.label == "Google DNS"
+    assert r.address == "8.8.8.8"
+    assert r.alive is True
+    assert (r.min_rtt, r.avg_rtt, r.max_rtt) == (1.0, 2.0, 3.0)
+    assert r.jitter == 0.5
+    assert r.packet_loss == 0.0
+    assert r.rtts == [1.0, 2.0, 3.0]
+
+
+def test_to_result_copies_rtts_list():
+    """_to_result host.rtts'ni nusxalashi kerak (alias bo'lmasligi uchun)."""
+    original = [1.0, 2.0]
+    host = FakeHost(address="1.1.1.1", is_alive=True, rtts=original)
+    r = _to_result(host, "x")
+    r.rtts.append(99.0)
+    assert original == [1.0, 2.0]  # asl ro'yxat o'zgarmadi
+
+
+def test_to_result_dead_host():
+    host = FakeHost(address="10.0.0.99", is_alive=False, packet_loss=1.0)
+    r = _to_result(host, "o'lik")
+    assert r.alive is False
+    assert r.loss_pct == 100.0
+
+
+# --- ping_once / ping_many (icmplib mock) -----------------------------------
+
+
+async def test_ping_once_uses_label(monkeypatch):
+    async def fake_async_ping(address, **kwargs):
+        return FakeHost(address=address, is_alive=True, avg_rtt=5.0, packet_loss=0.0)
+
+    monkeypatch.setattr(ping, "async_ping", fake_async_ping)
+    r = await ping_once("8.8.8.8", label="Google")
+    assert r.label == "Google"
+    assert r.address == "8.8.8.8"
+    assert r.alive is True
+    assert r.avg_rtt == 5.0
+
+
+async def test_ping_once_label_defaults_to_address(monkeypatch):
+    async def fake_async_ping(address, **kwargs):
+        return FakeHost(address=address, is_alive=True)
+
+    monkeypatch.setattr(ping, "async_ping", fake_async_ping)
+    r = await ping_once("1.1.1.1")
+    assert r.label == "1.1.1.1"
+
+
+async def test_ping_once_passes_privileged_false(monkeypatch):
+    """privileged=False uzatilishini tasdiqlash (root talab qilmaslik uchun)."""
+    captured = {}
+
+    async def fake_async_ping(address, **kwargs):
+        captured.update(kwargs)
+        return FakeHost(address=address, is_alive=True)
+
+    monkeypatch.setattr(ping, "async_ping", fake_async_ping)
+    await ping_once("1.1.1.1")
+    assert captured["privileged"] is False
+
+
+async def test_ping_many_preserves_label_order(monkeypatch):
+    targets = {"Gateway": "192.168.1.1", "Google": "8.8.8.8", "CF": "1.1.1.1"}
+
+    async def fake_multiping(addresses, **kwargs):
+        # icmplib kirish tartibida qaytaradi -> zip(strict) bilan moslanadi.
+        return [FakeHost(address=a, is_alive=True, avg_rtt=1.0) for a in addresses]
+
+    monkeypatch.setattr(ping, "async_multiping", fake_multiping)
+    results = await ping_many(targets)
+    assert [r.label for r in results] == ["Gateway", "Google", "CF"]
+    assert [r.address for r in results] == ["192.168.1.1", "8.8.8.8", "1.1.1.1"]
+
+
+async def test_ping_many_empty_targets(monkeypatch):
+    captured = {}
+
+    async def fake_multiping(addresses, **kwargs):
+        captured["addresses"] = addresses
+        return []
+
+    monkeypatch.setattr(ping, "async_multiping", fake_multiping)
+    results = await ping_many({})
+    assert results == []
+    assert captured["addresses"] == []
+
+
+# --- konstantalar -----------------------------------------------------------
+
+
+def test_default_targets_are_valid_ipv4():
+    import ipaddress
+
+    for addr in DEFAULT_GLOBAL_TARGETS.values():
+        ipaddress.IPv4Address(addr)  # noto'g'ri bo'lsa ValueError
+
+
+def test_default_targets_v6_are_valid_ipv6():
+    import ipaddress
+
+    for addr in DEFAULT_GLOBAL_TARGETS_V6.values():
+        ipaddress.IPv6Address(addr)
