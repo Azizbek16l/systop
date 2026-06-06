@@ -1,18 +1,25 @@
-"""ICMP ping — lokal gateway va global serverlar.
+"""ICMP ping — lokal gateway va global serverlar (cross-platform).
 
-`icmplib`'ning `privileged=False` rejimida ishlaymiz: macOS va Linux'da
+macOS va Linux'da `icmplib`'ning `privileged=False` rejimida ishlaymiz:
 SOCK_DGRAM ICMP soketi root'siz ishlaydi. Agar tizim ruxsat bermasa,
 `privileged=True` (sudo) kerak bo'ladi.
+
+Windows'da `icmplib` unprivileged ICMP'ni qo'llamaydi (raw socket => admin
+kerak). Shuning uchun Windows'da tizimning `ping.exe` buyrug'iga tushamiz —
+u admin talab qilmaydi — va chiqishni parse qilamiz (`_platform`).
 """
 
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 from icmplib import async_multiping, async_ping
+
+from systop.core import _platform
 
 
 @runtime_checkable
@@ -91,7 +98,14 @@ async def ping_once(
     interval: float = 0.4,
     privileged: bool = False,
 ) -> PingResult:
-    """Bitta manzilni ping qiladi va natijani qaytaradi."""
+    """Bitta manzilni ping qiladi va natijani qaytaradi.
+
+    macOS/Linux'da `icmplib` (privileged=False); Windows'da tizim `ping`
+    buyrug'i orqali (admin shart emas).
+    """
+    if _platform.IS_WINDOWS:
+        alive, rtts, loss = await _win_ping(address, count=count, timeout=timeout)
+        return _win_result(label or address, address, alive, rtts, loss)
     host = await async_ping(
         address,
         count=count,
@@ -112,9 +126,16 @@ async def ping_many(
     """Bir nechta nishonni parallel ping qiladi.
 
     targets: {label: address} ko'rinishidagi lug'at.
+
+    Windows'da har nishon alohida `ping` jarayoni bilan parallel ishlanadi
+    (asyncio.gather + semaphore concurrency'ni cheklaydi).
     """
     labels = list(targets.keys())
     addresses = [targets[label] for label in labels]
+
+    if _platform.IS_WINDOWS:
+        return await _win_ping_many(labels, addresses, count=count, timeout=timeout)
+
     hosts = await async_multiping(
         addresses,
         count=count,
@@ -205,14 +226,19 @@ async def ping_stream(
     while True:
         start = asyncio.get_running_loop().time()
         try:
-            host = await async_ping(
-                address,
-                count=1,
-                timeout=timeout,
-                privileged=privileged,
-            )
-            rtt = host.avg_rtt if host.is_alive else 0.0
-            stats.update(host.is_alive, rtt)
+            if _platform.IS_WINDOWS:
+                alive, rtts, _loss = await _win_ping(address, count=1, timeout=timeout)
+                rtt = (sum(rtts) / len(rtts)) if rtts else 0.0
+                stats.update(alive, rtt)
+            else:
+                host = await async_ping(
+                    address,
+                    count=1,
+                    timeout=timeout,
+                    privileged=privileged,
+                )
+                rtt = host.avg_rtt if host.is_alive else 0.0
+                stats.update(host.is_alive, rtt)
         except OSError:
             stats.update(False, 0.0)
         yield stats
@@ -235,3 +261,100 @@ def _to_result(host: _HostLike, label: str) -> PingResult:
         packet_loss=host.packet_loss,
         rtts=list(host.rtts),
     )
+
+
+# --- Windows shoxi (tizim `ping` buyrug'i, admin shart emas) -----------------
+
+# Windows'da parallel `ping` jarayonlari sonini cheklaymiz (resurs tejash).
+_WIN_PING_CONCURRENCY = 64
+
+
+def _is_ipv6(address: str) -> bool:
+    """Manzil IPv6 bo'lsa True (Windows `ping` uchun `-6` bayrog'i kerak)."""
+    try:
+        return isinstance(ipaddress.ip_address(address), ipaddress.IPv6Address)
+    except ValueError:
+        # Nom (hostname) — IPv4 deb hisoblaymiz; `ping` o'zi resolve qiladi.
+        return ":" in address
+
+
+async def _win_ping(
+    address: str,
+    count: int = 4,
+    timeout: float = 2.0,
+) -> tuple[bool, list[float], float]:
+    """Windows tizim `ping` buyrug'i orqali ping (alive, rtts_ms, loss).
+
+    `ping -n <count> -w <ms> [-6] <address>` ishga tushiriladi (admin shart
+    emas). Chiqish `_platform.parse_windows_ping` bilan parse qilinadi.
+    Buyruq topilmasa / timeout bo'lsa -> (False, [], 1.0).
+    """
+    count = max(1, count)
+    wait_ms = max(1, int(timeout * 1000))
+    cmd = ["ping", "-n", str(count), "-w", str(wait_ms)]
+    if _is_ipv6(address):
+        cmd.append("-6")
+    cmd.append(address)
+
+    # Butun jarayonga umumiy timeout: har paket `-w` kutadi, ortig'iga zaxira.
+    overall = timeout * count + 2.0
+    out = await _platform.run_command(cmd, timeout=overall)
+    if not out:
+        return False, [], 1.0
+    return _platform.parse_windows_ping(out, expected_count=count)
+
+
+def _win_result(
+    label: str,
+    address: str,
+    alive: bool,
+    rtts: list[float],
+    loss: float,
+) -> PingResult:
+    """Windows `ping` parse natijasidan `PingResult` yig'adi (icmplib bilan bir xil shakl)."""
+    if rtts:
+        return PingResult(
+            label=label,
+            address=address,
+            alive=alive,
+            min_rtt=min(rtts),
+            avg_rtt=sum(rtts) / len(rtts),
+            max_rtt=max(rtts),
+            jitter=_mean_abs_consecutive_diff(rtts),
+            packet_loss=loss,
+            rtts=list(rtts),
+        )
+    return PingResult(
+        label=label,
+        address=address,
+        alive=alive,
+        packet_loss=loss,
+    )
+
+
+def _mean_abs_consecutive_diff(values: list[float]) -> float:
+    """Ketma-ket qiymatlar farqining o'rtacha moduli (icmplib jitter ta'rifiga mos)."""
+    if len(values) < 2:
+        return 0.0
+    diffs = [abs(values[i] - values[i - 1]) for i in range(1, len(values))]
+    return sum(diffs) / len(diffs)
+
+
+async def _win_ping_many(
+    labels: list[str],
+    addresses: list[str],
+    count: int,
+    timeout: float,
+) -> list[PingResult]:
+    """Windows'da bir nechta nishonni parallel ping qiladi (semaphore bilan cheklab)."""
+    sem = asyncio.Semaphore(_WIN_PING_CONCURRENCY)
+
+    async def one(label: str, address: str) -> PingResult:
+        async with sem:
+            alive, rtts, loss = await _win_ping(address, count=count, timeout=timeout)
+        return _win_result(label, address, alive, rtts, loss)
+
+    if not addresses:
+        return []
+    tasks = [one(lbl, addr) for lbl, addr in zip(labels, addresses, strict=True)]
+    return await asyncio.gather(*tasks)

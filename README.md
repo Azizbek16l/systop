@@ -25,8 +25,10 @@ flags, its own output format, and several need root.
 
 `systop` folds 12 common network tasks into **one tool** that:
 
-- **Needs no root.** ICMP runs over unprivileged datagram sockets (`SOCK_DGRAM`)
-  on macOS and Linux — `ping`, `traceroute` and `mtr` work without `sudo`.
+- **Cross-platform, no root.** Runs on **Linux, macOS and Windows**. ICMP uses
+  unprivileged datagram sockets (`SOCK_DGRAM`) on Linux/macOS and the system
+  `ping`/`tracert` on Windows — so `ping`, `traceroute` and `mtr` work without
+  `sudo` or Administrator on every platform.
 - **Works two ways.** A full-screen **Textual TUI dashboard** for interactive
   monitoring, and **one-shot CLI commands** for everything else.
 - **Is scriptable.** Every command speaks `--json` / `--format csv` with clean
@@ -73,7 +75,28 @@ deeper in their own niche.</sub>
 
 ## Install
 
-systop targets **Python 3.11+**.
+systop targets **Python 3.11+** and runs on **Linux, macOS and Windows**.
+
+### Standalone binary (no Python required)
+
+Every tagged release ships a self-contained executable for each platform on the
+[Releases](https://github.com/azizbek/systop/releases) page — download, mark
+executable, run:
+
+| Platform | Asset |
+|----------|-------|
+| Windows  | `systop-windows-x86_64.exe` |
+| Linux    | `systop-linux-x86_64` |
+| macOS    | `systop-macos-arm64` |
+
+```powershell
+# Windows (PowerShell)
+.\systop-windows-x86_64.exe
+```
+```bash
+# Linux / macOS
+chmod +x systop-linux-x86_64 && ./systop-linux-x86_64
+```
 
 ### Run without installing (recommended for a quick try)
 

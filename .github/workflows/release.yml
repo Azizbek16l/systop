@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build:
-    name: Build distributions
+    name: Build distributions (wheel + sdist)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -30,6 +30,73 @@ jobs:
         with:
           name: dist
           path: dist/
+
+  binaries:
+    # Har bir OS uchun standalone ijro etiluvchi ("Windows/Linux/macOS edition").
+    # Python o'rnatilmagan foydalanuvchilar uchun — PyInstaller bilan onefile.
+    name: Build ${{ matrix.os }} executable
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: systop-linux-x86_64
+            ext: ""
+          - os: windows-latest
+            asset: systop-windows-x86_64.exe
+            ext: ".exe"
+          - os: macos-latest
+            asset: systop-macos-arm64
+            ext: ""
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Sync deps
+        run: uv sync
+
+      - name: Build standalone binary (PyInstaller)
+        run: >
+          uv run --with pyinstaller pyinstaller --onefile --name systop
+          --collect-all systop --collect-all textual --collect-all rich
+          --collect-submodules systop
+          src/systop/__main__.py
+
+      - name: Rename artifact
+        shell: bash
+        run: mv "dist/systop${{ matrix.ext }}" "dist/${{ matrix.asset }}"
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+
+  github-release:
+    name: Attach binaries to GitHub Release
+    needs: binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # release yaratish/yangilash uchun
+    steps:
+      - name: Download all binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create / update GitHub Release with binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/systop-*
+          generate_release_notes: true
 
   publish:
     name: Publish to PyPI

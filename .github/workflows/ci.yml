@@ -14,11 +14,14 @@ concurrency:
 
 jobs:
   test:
-    name: Test (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    # Har bir o'zgarishda UCHALA OS'da sinaladi — Windows/Linux/macOS moslashuvi
+    # avtomatik tekshiriladi. Testlar offline (tarmoqqa chiqmaydi).
+    name: Test (${{ matrix.os }} · py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ["3.11", "3.12", "3.13"]
     steps:
       - name: Checkout

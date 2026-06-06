@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 import httpx
 import psutil
 
+from systop.core import _platform
+
 
 @dataclass(slots=True)
 class Interface:
@@ -73,6 +75,9 @@ def default_gateway() -> str | None:
     """Default gateway IP manzilini OS marshrut jadvalidan oladi."""
     system = platform.system()
     try:
+        if system == "Windows":
+            return _default_gateway_windows()
+
         if system == "Linux":
             out = subprocess.run(
                 ["ip", "route", "show", "default"],
@@ -103,6 +108,54 @@ def default_gateway() -> str | None:
                     return parts[1]
     except (subprocess.SubprocessError, OSError, IndexError):
         return None
+    return None
+
+
+def _default_gateway_windows() -> str | None:
+    """Windows default gateway: bir nechta zaxira bilan (route print -> netsh).
+
+    1) `route print -4` IPv4 marshrut jadvalidagi `0.0.0.0 0.0.0.0 <gw>` qatori
+       — eng ishonchli va lokalizatsiyaga eng kam bog'liq.
+    2) Zaxira: `Get-NetRoute -DestinationPrefix 0.0.0.0/0` (PowerShell) NextHop.
+
+    Har qadam xatosi (buyruq yo'q / timeout) keyingisiga o'tkazadi; hech narsa
+    topilmasa None.
+    """
+    # 1) route print -4
+    try:
+        out = subprocess.run(
+            ["route", "print", "-4"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        ).stdout
+        gw = _platform.parse_windows_route_print(out)
+        if gw:
+            return gw
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    # 2) Zaxira: PowerShell Get-NetRoute (faqat NextHop ustunini chiqaramiz).
+    try:
+        out = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "(Get-NetRoute -DestinationPrefix '0.0.0.0/0' "
+                "| Sort-Object RouteMetric "
+                "| Select-Object -First 1 -ExpandProperty NextHop)",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout
+        m = _platform._WIN_NETROUTE_NEXTHOP_RE.search(out)
+        if m and m.group(1) != "0.0.0.0":
+            return m.group(1)
+    except (subprocess.SubprocessError, OSError):
+        pass
+
     return None
 
 

@@ -21,10 +21,35 @@ from icmplib import async_multiping
 from icmplib import traceroute as _sync_traceroute
 from icmplib.exceptions import ICMPLibError, NameLookupError
 
-from systop.core import netinfo, oui
+from systop.core import _platform, netinfo, oui
 
 _ARP_RE = re.compile(r"\((\d+\.\d+\.\d+\.\d+)\)\s+at\s+([0-9a-fA-F:]+)")
 _NEIGH_RE = re.compile(r"(\d+\.\d+\.\d+\.\d+)\s+dev\s+\S+\s+lladdr\s+([0-9a-fA-F:]+)")
+# Windows `arp -a`: "  192.168.1.1    00-11-22-33-44-55     dynamic"
+# MAC tire (-) bilan, 6 oktet; "static"/"dynamic" turi qatorda bo'ladi.
+# Sarlavha ("Internet Address ... Physical Address") va invalid yozuvlar
+# (MAC "ff-ff-ff-ff-ff-ff" broadcast yoki manzilsiz) mos kelmaydi.
+_ARP_WIN_RE = re.compile(
+    r"(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F]{2}(?:-[0-9a-fA-F]{2}){5})\s+\w+",
+)
+
+
+@runtime_checkable
+class _HostLike(Protocol):
+    """Ping host obyektining minimal interfeysi (`discover_lan` o'qiydigan).
+
+    `icmplib` Host va Windows `_WinHost` ikkalasi ham shu shaklga mos keladi
+    (duck typing) — shuning uchun `discover_lan` ikkala manbadan bir xil ishlaydi.
+    """
+
+    @property
+    def address(self) -> str: ...
+
+    @property
+    def is_alive(self) -> bool: ...
+
+    @property
+    def avg_rtt(self) -> float: ...
 
 
 @runtime_checkable
@@ -161,6 +186,19 @@ async def trace_path(
     Resolve bo'lmasa yoki ICMP xatosi bo'lsa, `error` maydoni o'zbekcha xabar
     bilan to'ldiriladi va `hops` bo'sh bo'ladi (CLI buni ko'rsata oladi).
     """
+    if _platform.IS_WINDOWS:
+        raw_hops: list[_HopLike] = await _win_traceroute(
+            address, max_hops=max_hops, timeout=timeout
+        )
+        if not raw_hops:
+            return TraceResult(
+                address=address,
+                hops=[],
+                error="Traceroute natija bermadi (host yetib bo'lmadi yoki nom resolve bo'lmadi).",
+            )
+        hops = await _map_hops(raw_hops, resolve=resolve)
+        return TraceResult(address=address, hops=hops)
+
     try:
         raw_hops = await asyncio.to_thread(
             _sync_traceroute,
@@ -185,6 +223,15 @@ async def trace_path(
     except OSError as exc:
         return TraceResult(address=address, hops=[], error=f"Tarmoq xatosi: {exc}")
 
+    hops = await _map_hops(raw_hops, resolve=resolve)
+    return TraceResult(address=address, hops=hops)
+
+
+async def _map_hops(raw_hops: list[_HopLike], resolve: bool) -> list[Hop]:
+    """Xom hop obyektlarini (icmplib yoki Windows) `Hop` ro'yxatiga aylantiradi.
+
+    `resolve` True bo'lsa, manzili bor hoplar uchun reverse DNS ham bajariladi.
+    """
     hops: list[Hop] = []
     for h in raw_hops:
         hop = Hop(
@@ -196,7 +243,7 @@ async def trace_path(
         if resolve and hop.address:
             hop.hostname = await _reverse_dns(hop.address)
         hops.append(hop)
-    return TraceResult(address=address, hops=hops)
+    return hops
 
 
 async def _probe_path(
@@ -209,8 +256,11 @@ async def _probe_path(
     """Bitta probe: `icmplib.traceroute`ni thread'da chaqirib, xom hop'larni qaytaradi.
 
     Xato (DNS/ICMP/OS) bo'lsa bo'sh ro'yxat qaytaradi — istisno ko'tarmaydi,
-    chunki `trace_stream` ni uzmasligi kerak (oqim davom etadi).
+    chunki `trace_stream` ni uzmasligi kerak (oqim davom etadi). Windows'da
+    `tracert` (admin shart emas) ishlatiladi; macOS/Linux'da `icmplib`.
     """
+    if _platform.IS_WINDOWS:
+        return await _win_traceroute(address, max_hops=max_hops, timeout=timeout)
     try:
         raw_hops = await asyncio.to_thread(
             _sync_traceroute,
@@ -223,6 +273,81 @@ async def _probe_path(
     except (ICMPLibError, OSError):
         return []
     return list(raw_hops)
+
+
+@dataclass(slots=True)
+class _WinRawHop:
+    """Windows `tracert` hop'i — `_HopLike` (icmplib hop) bilan bir xil shakl.
+
+    `_map_hops`/`trace_stream` faqat `distance`/`address`/`avg_rtt`/`is_alive`
+    o'qiydi, shuning uchun shu to'rt atribut yetarli (duck typing).
+    """
+
+    distance: int
+    address: str | None
+    avg_rtt: float
+    is_alive: bool
+
+
+async def _win_traceroute(
+    address: str,
+    max_hops: int = 30,
+    timeout: float = 2.0,
+) -> list[_HopLike]:
+    """Windows `tracert -d` orqali yo'lni o'lchaydi (admin shart emas).
+
+    `tracert -d -h <max_hops> -w <ms> <address>` chiqishini
+    `_platform.parse_windows_tracert` bilan parse qilib, `_WinRawHop` ro'yxati
+    qaytaradi. Buyruq topilmasa / timeout / chiqish bo'sh bo'lsa — bo'sh ro'yxat.
+    """
+    wait_ms = max(1, int(timeout * 1000))
+    cmd = ["tracert", "-d", "-h", str(max_hops), "-w", str(wait_ms), address]
+    # tracert har hop uchun `-w` kutishi mumkin -> umumiy timeout kengroq.
+    overall = timeout * max_hops + 5.0
+    out = await _platform.run_command(cmd, timeout=overall)
+    if not out:
+        return []
+    parsed = _platform.parse_windows_tracert(out)
+    return [
+        _WinRawHop(distance=idx, address=addr, avg_rtt=rtt, is_alive=alive)
+        for (idx, addr, rtt, alive) in parsed
+    ]
+
+
+@dataclass(slots=True)
+class _WinHost:
+    """Windows LAN sweep host natijasi — `_HostLike` shakliga mos (duck typing)."""
+
+    address: str
+    is_alive: bool
+    avg_rtt: float = 0.0
+
+
+# Windows LAN sweep'da parallel `ping` jarayonlari soni (resurs cheklash).
+_WIN_SWEEP_CONCURRENCY = 64
+
+
+async def _win_multiping(hosts: list[str], timeout: float) -> list[_HostLike]:
+    """Windows'da /24 ping sweep: har host uchun bitta `ping -n 1` (concurrency cheklangan).
+
+    `async_multiping`ning Windows o'rnini bosadi. `_win_ping` (ping.py) orqali
+    har hostni alohida tekshiradi; semaphore bir vaqtdagi jarayonlar sonini
+    cheklaydi (katta tarmoqda resurs portlashining oldini oladi).
+    """
+    # Kech import: ping <-> topology aylanma importining oldini oladi.
+    from systop.core.ping import _win_ping
+
+    sem = asyncio.Semaphore(_WIN_SWEEP_CONCURRENCY)
+
+    async def probe(host: str) -> _WinHost:
+        async with sem:
+            alive, rtts, _loss = await _win_ping(host, count=1, timeout=timeout)
+        avg = (sum(rtts) / len(rtts)) if rtts else 0.0
+        return _WinHost(address=host, is_alive=alive, avg_rtt=avg)
+
+    if not hosts:
+        return []
+    return await asyncio.gather(*(probe(h) for h in hosts))
 
 
 async def trace_stream(
@@ -295,7 +420,10 @@ async def discover_lan(
         return []
 
     gateway = netinfo.default_gateway()
-    results = await async_multiping(hosts, count=1, timeout=timeout, privileged=False)
+    if _platform.IS_WINDOWS:
+        results: list[_HostLike] = await _win_multiping(hosts, timeout=timeout)
+    else:
+        results = await async_multiping(hosts, count=1, timeout=timeout, privileged=False)
     arp_table = _parse_arp_table()
 
     found: list[LanHost] = []
@@ -332,7 +460,19 @@ async def discover_lan(
 
 
 def _parse_arp_table() -> dict[str, str]:
-    """OS ARP jadvalidan {ip: mac} lug'atini o'qiydi (macOS/Linux)."""
+    """OS ARP jadvalidan {ip: mac} lug'atini o'qiydi (Windows/macOS/Linux).
+
+    macOS/Linux: `arp -a` (qavs ichida IP, ':' bilan MAC) yoki zaxira `ip neigh`.
+    Windows: `arp -a` (tire bilan MAC, "dynamic/static" turi). MAC har holatda
+    kichik harf + ':' separatorga normallashtiriladi (oui.lookup_vendor ikkala
+    separatorni ham qabul qiladi, lekin saqlash bir xil bo'lsin).
+
+    Buyruq topilmasa (`FileNotFoundError`) yoki xato bersa — toza yutiladi va
+    keyingi buyruqqa o'tadi (har platformada graceful degrade).
+    """
+    if _platform.IS_WINDOWS:
+        return _parse_arp_table_windows()
+
     table: dict[str, str] = {}
     for cmd in (["arp", "-a"], ["ip", "neigh"]):
         try:
@@ -345,6 +485,21 @@ def _parse_arp_table() -> dict[str, str]:
                 table[m.group(1)] = m.group(2).lower()
         if table:
             break
+    return table
+
+
+def _parse_arp_table_windows() -> dict[str, str]:
+    """Windows `arp -a` chiqishidan {ip: mac} (MAC ':' bilan, kichik harf)."""
+    table: dict[str, str] = {}
+    try:
+        out = subprocess.run(["arp", "-a"], capture_output=True, text=True, timeout=3).stdout
+    except (subprocess.SubprocessError, OSError):
+        return table
+    for line in out.splitlines():
+        m = _ARP_WIN_RE.search(line)
+        if m:
+            # "00-11-22-33-44-55" -> "00:11:22:33:44:55" (saqlash bir xil bo'lsin).
+            table[m.group(1)] = m.group(2).replace("-", ":").lower()
     return table
 
 

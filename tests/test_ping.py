@@ -179,6 +179,143 @@ async def test_ping_many_empty_targets(monkeypatch):
     assert captured["addresses"] == []
 
 
+# --- Windows shoxi: _win_ping / _win_result / platforma branching -----------
+
+# Real `ping -n 4 8.8.8.8` chiqishi (en-US).
+_WIN_PING_OUT = (
+    "Pinging 8.8.8.8 with 32 bytes of data:\n"
+    "Reply from 8.8.8.8: bytes=32 time=12ms TTL=117\n"
+    "Reply from 8.8.8.8: bytes=32 time=10ms TTL=117\n"
+    "Reply from 8.8.8.8: bytes=32 time=14ms TTL=117\n"
+    "Reply from 8.8.8.8: bytes=32 time=12ms TTL=117\n"
+    "\n"
+    "Ping statistics for 8.8.8.8:\n"
+    "    Packets: Sent = 4, Received = 4, Lost = 0 (0% loss),\n"
+)
+
+_WIN_PING_DEAD_OUT = (
+    "Pinging 10.255.255.1 with 32 bytes of data:\n"
+    "Request timed out.\n"
+    "Request timed out.\n"
+    "\n"
+    "Ping statistics for 10.255.255.1:\n"
+    "    Packets: Sent = 2, Received = 0, Lost = 2 (100% loss),\n"
+)
+
+
+def _force_windows(monkeypatch, ping_output: str):
+    """Platformani Windows qilib, `run_command` ni soxta `ping` chiqishi bilan qaytaradi."""
+    monkeypatch.setattr(ping._platform, "IS_WINDOWS", True)
+
+    async def fake_run_command(cmd, timeout):
+        # Buyruq haqiqatan tizim `ping` ekanini tasdiqlaymiz.
+        assert cmd[0] == "ping"
+        return ping_output
+
+    monkeypatch.setattr(ping._platform, "run_command", fake_run_command)
+
+
+async def test_win_ping_parses_alive(monkeypatch):
+    _force_windows(monkeypatch, _WIN_PING_OUT)
+    alive, rtts, loss = await ping._win_ping("8.8.8.8", count=4, timeout=2.0)
+    assert alive is True
+    assert rtts == [12.0, 10.0, 14.0, 12.0]
+    assert loss == 0.0
+
+
+async def test_win_ping_dead_host(monkeypatch):
+    _force_windows(monkeypatch, _WIN_PING_DEAD_OUT)
+    alive, rtts, loss = await ping._win_ping("10.255.255.1", count=2, timeout=1.0)
+    assert alive is False
+    assert rtts == []
+    assert loss == 1.0
+
+
+async def test_win_ping_empty_output_returns_dead(monkeypatch):
+    _force_windows(monkeypatch, "")
+    alive, rtts, loss = await ping._win_ping("1.1.1.1", count=4, timeout=1.0)
+    assert alive is False
+    assert rtts == []
+    assert loss == 1.0
+
+
+async def test_win_ping_ipv6_adds_dash6(monkeypatch):
+    monkeypatch.setattr(ping._platform, "IS_WINDOWS", True)
+    captured = {}
+
+    async def fake_run_command(cmd, timeout):
+        captured["cmd"] = cmd
+        return _WIN_PING_OUT.replace("8.8.8.8", "2001:4860:4860::8888")
+
+    monkeypatch.setattr(ping._platform, "run_command", fake_run_command)
+    await ping._win_ping("2001:4860:4860::8888", count=1, timeout=1.0)
+    assert "-6" in captured["cmd"]
+
+
+async def test_win_result_computes_stats():
+    r = ping._win_result("Google", "8.8.8.8", alive=True, rtts=[10.0, 20.0, 30.0], loss=0.0)
+    assert r.label == "Google"
+    assert r.address == "8.8.8.8"
+    assert r.alive is True
+    assert r.min_rtt == 10.0
+    assert r.avg_rtt == pytest.approx(20.0)
+    assert r.max_rtt == 30.0
+    assert r.packet_loss == 0.0
+    assert r.rtts == [10.0, 20.0, 30.0]
+
+
+async def test_win_result_no_rtts_keeps_loss():
+    r = ping._win_result("dead", "10.0.0.99", alive=False, rtts=[], loss=1.0)
+    assert r.alive is False
+    assert r.packet_loss == 1.0
+    assert r.avg_rtt == 0.0
+    assert r.rtts == []
+
+
+async def test_ping_once_windows_branch(monkeypatch):
+    """ping_once Windows'da icmplib EMAS, _win_ping ishlatishini tasdiqlash."""
+    _force_windows(monkeypatch, _WIN_PING_OUT)
+
+    async def boom(*a, **k):
+        raise AssertionError("icmplib async_ping Windows'da chaqirilmasligi kerak")
+
+    monkeypatch.setattr(ping, "async_ping", boom)
+    r = await ping_once("8.8.8.8", label="Google")
+    assert r.label == "Google"
+    assert r.alive is True
+    assert r.avg_rtt == pytest.approx(12.0)
+
+
+async def test_ping_many_windows_parallel(monkeypatch):
+    """ping_many Windows'da har nishonni alohida `ping` bilan parallel ishlaydi."""
+    monkeypatch.setattr(ping._platform, "IS_WINDOWS", True)
+
+    async def boom(*a, **k):
+        raise AssertionError("icmplib async_multiping Windows'da chaqirilmasligi kerak")
+
+    monkeypatch.setattr(ping, "async_multiping", boom)
+
+    async def fake_run_command(cmd, timeout):
+        # Manzil cmd oxirida; uni chiqishga joylab, har nishon alive bo'lsin.
+        addr = cmd[-1]
+        return _WIN_PING_OUT.replace("8.8.8.8", addr)
+
+    monkeypatch.setattr(ping._platform, "run_command", fake_run_command)
+
+    targets = {"Gateway": "192.168.1.1", "Google": "8.8.8.8", "CF": "1.1.1.1"}
+    results = await ping_many(targets)
+    # Label tartibi saqlanishi kerak.
+    assert [r.label for r in results] == ["Gateway", "Google", "CF"]
+    assert [r.address for r in results] == ["192.168.1.1", "8.8.8.8", "1.1.1.1"]
+    assert all(r.alive for r in results)
+
+
+async def test_ping_many_windows_empty(monkeypatch):
+    monkeypatch.setattr(ping._platform, "IS_WINDOWS", True)
+    results = await ping_many({})
+    assert results == []
+
+
 # --- konstantalar -----------------------------------------------------------
 
 

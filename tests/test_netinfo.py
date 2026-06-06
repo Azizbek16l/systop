@@ -60,6 +60,64 @@ def _patch_platform(monkeypatch, system: str):
     monkeypatch.setattr(netinfo.platform, "system", lambda: system)
 
 
+# --- default_gateway: Windows `route print -4` ------------------------------
+
+# Real `route print -4` chiqishi (IPv4 Route Table qismi).
+_WIN_ROUTE_OUT = (
+    "===========================================================================\n"
+    "IPv4 Route Table\n"
+    "===========================================================================\n"
+    "Active Routes:\n"
+    "Network Destination        Netmask          Gateway       Interface  Metric\n"
+    "          0.0.0.0          0.0.0.0      192.168.1.1     192.168.1.50     35\n"
+    "      192.168.1.0    255.255.255.0         On-link      192.168.1.50    291\n"
+    "===========================================================================\n"
+)
+
+
+def test_default_gateway_windows_route_print(monkeypatch):
+    _patch_platform(monkeypatch, "Windows")
+
+    def fake_run(cmd, **kwargs):
+        assert cmd[:2] == ["route", "print"]
+        return FakeCompletedProcess(stdout=_WIN_ROUTE_OUT)
+
+    monkeypatch.setattr(netinfo.subprocess, "run", fake_run)
+    assert netinfo.default_gateway() == "192.168.1.1"
+
+
+def test_default_gateway_windows_falls_back_to_powershell(monkeypatch):
+    """`route print` gateway bermasa, PowerShell `Get-NetRoute` zaxirasi ishlaydi."""
+    _patch_platform(monkeypatch, "Windows")
+    # Get-NetRoute -ExpandProperty NextHop faqat IP qatorini chiqaradi.
+    ps_out = "10.0.0.1\n"
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:2] == ["route", "print"]:
+            # default qatorisiz chiqish -> parse None qaytaradi -> PowerShell'ga o'tadi.
+            return FakeCompletedProcess(stdout="Active Routes:\n(no default)\n")
+        if cmd[:1] == ["powershell"]:
+            return FakeCompletedProcess(stdout=ps_out)
+        return FakeCompletedProcess(stdout="")
+
+    monkeypatch.setattr(netinfo.subprocess, "run", fake_run)
+    assert netinfo.default_gateway() == "10.0.0.1"
+    assert any(c[:1] == ["powershell"] for c in calls)
+
+
+def test_default_gateway_windows_both_fail_returns_none(monkeypatch):
+    _patch_platform(monkeypatch, "Windows")
+
+    def fake_run(cmd, **kwargs):
+        raise FileNotFoundError("command not found")
+
+    monkeypatch.setattr(netinfo.subprocess, "run", fake_run)
+    assert netinfo.default_gateway() is None
+
+
 def test_default_gateway_linux_ip_route(monkeypatch):
     _patch_platform(monkeypatch, "Linux")
     out = "default via 192.168.1.1 dev eth0 proto dhcp src 192.168.1.50 metric 100\n"

@@ -13,12 +13,14 @@ from conftest import FakeCompletedProcess, FakeHost, FakeRawHop
 from systop.core import topology
 from systop.core.topology import (
     _ARP_RE,
+    _ARP_WIN_RE,
     _NEIGH_RE,
     Hop,
     HopStat,
     LanHost,
     _parse_arp_table,
     discover_lan,
+    trace_path,
     trace_stream,
     traceroute,
 )
@@ -384,6 +386,218 @@ async def test_traceroute_handles_missing_hop_address(monkeypatch):
     assert hops[0].address is None
     assert hops[0].hostname is None
     assert called["dns"] is False
+
+
+# --- Windows: _ARP_WIN_RE ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "line, ip, mac",
+    [
+        ("  192.168.1.1    00-11-22-33-44-55  dynamic", "192.168.1.1", "00-11-22-33-44-55"),
+        ("  192.168.1.42   a4-b1-c2-d3-e4-f5  dynamic", "192.168.1.42", "a4-b1-c2-d3-e4-f5"),
+        ("  10.0.0.254     ff-ee-dd-cc-bb-aa  static", "10.0.0.254", "ff-ee-dd-cc-bb-aa"),
+    ],
+)
+def test_arp_win_re_lines(line, ip, mac):
+    m = _ARP_WIN_RE.search(line)
+    assert m is not None
+    assert m.group(1) == ip
+    assert m.group(2) == mac
+
+
+def test_arp_win_re_header_no_match():
+    # Sarlavha qatori mos kelmasligi kerak.
+    assert _ARP_WIN_RE.search("  Internet Address      Physical Address      Type") is None
+
+
+def test_arp_win_re_interface_line_no_match():
+    # "Interface: 192.168.1.50 --- 0xN" qatori — MAC yo'q, mos kelmaydi.
+    assert _ARP_WIN_RE.search("Interface: 192.168.1.50 --- 0xc") is None
+
+
+# --- Windows: _parse_arp_table ----------------------------------------------
+
+_WIN_ARP_OUT = (
+    "\n"
+    "Interface: 192.168.1.50 --- 0xc\n"
+    "  Internet Address      Physical Address      Type\n"
+    "  192.168.1.1           00-11-22-33-44-55     dynamic\n"
+    "  192.168.1.42          A4-B1-C2-D3-E4-F5     dynamic\n"
+    "  192.168.1.255         ff-ff-ff-ff-ff-ff     static\n"
+    "  224.0.0.22            01-00-5e-00-00-16     static\n"
+)
+
+
+def test_parse_arp_table_windows(monkeypatch):
+    monkeypatch.setattr(topology._platform, "IS_WINDOWS", True)
+
+    def fake_run(cmd, **kwargs):
+        assert cmd == ["arp", "-a"]
+        return FakeCompletedProcess(stdout=_WIN_ARP_OUT)
+
+    monkeypatch.setattr(topology.subprocess, "run", fake_run)
+    table = _parse_arp_table()
+    # MAC tiredan ':' ga, kichik harfga normallashtiriladi.
+    assert table["192.168.1.1"] == "00:11:22:33:44:55"
+    assert table["192.168.1.42"] == "a4:b1:c2:d3:e4:f5"
+    # Broadcast/multicast yozuvlar ham regex'ga tushadi (filtrlash discover_lan'da
+    # tarmoq a'zoligi bo'yicha bo'ladi) — lekin sarlavha tushmaydi.
+    assert "Physical" not in table
+
+
+def test_parse_arp_table_windows_command_missing(monkeypatch):
+    monkeypatch.setattr(topology._platform, "IS_WINDOWS", True)
+
+    def fake_run(cmd, **kwargs):
+        raise FileNotFoundError("arp not found")
+
+    monkeypatch.setattr(topology.subprocess, "run", fake_run)
+    assert _parse_arp_table() == {}
+
+
+def test_win_arp_mac_lookup_vendor_accepts_dash():
+    """oui.lookup_vendor tire-formatli MAC'ni ham qabul qilishini tasdiqlash."""
+    from systop.core import oui
+
+    # Apple OUI (jadvalda bor deb hisoblamaymiz — normalize ikkala formatda bir xil).
+    colon = oui.normalize_oui("a4:b1:c2:d3:e4:f5")
+    dashed = oui.normalize_oui("a4-b1-c2-d3-e4-f5")
+    assert colon == dashed
+
+
+# --- Windows: _win_traceroute + trace_path branch ---------------------------
+
+_WIN_TRACERT_OUT = (
+    "\n"
+    "Tracing route to 8.8.8.8 over a maximum of 30 hops\n"
+    "\n"
+    "  1     1 ms     1 ms     1 ms  192.168.1.1\n"
+    "  2     8 ms     9 ms     7 ms  10.0.0.1\n"
+    "  3     *        *        *     Request timed out.\n"
+    "  4    12 ms    11 ms    13 ms  8.8.8.8\n"
+    "\n"
+    "Trace complete.\n"
+)
+
+
+async def test_win_traceroute_maps_hops(monkeypatch):
+    monkeypatch.setattr(topology._platform, "IS_WINDOWS", True)
+
+    async def fake_run_command(cmd, timeout):
+        assert cmd[0] == "tracert"
+        assert "-d" in cmd  # raqamli (resolve'siz) rejim
+        return _WIN_TRACERT_OUT
+
+    monkeypatch.setattr(topology._platform, "run_command", fake_run_command)
+
+    raw = await topology._win_traceroute("8.8.8.8")
+    assert [h.distance for h in raw] == [1, 2, 3, 4]
+    assert raw[0].address == "192.168.1.1"
+    assert raw[0].avg_rtt == pytest.approx(1.0)
+    assert raw[0].is_alive is True
+    assert raw[2].address is None  # timeout hop
+    assert raw[2].is_alive is False
+
+
+async def test_traceroute_windows_branch(monkeypatch):
+    """traceroute() Windows'da icmplib EMAS, tracert ishlatishini tasdiqlash."""
+    monkeypatch.setattr(topology._platform, "IS_WINDOWS", True)
+
+    def boom(*a, **k):
+        raise AssertionError("icmplib traceroute Windows'da chaqirilmasligi kerak")
+
+    monkeypatch.setattr(topology, "_sync_traceroute", boom)
+
+    async def fake_run_command(cmd, timeout):
+        return _WIN_TRACERT_OUT
+
+    monkeypatch.setattr(topology._platform, "run_command", fake_run_command)
+
+    async def fake_reverse(addr, timeout=1.0):
+        return f"host-{addr}"
+
+    monkeypatch.setattr(topology, "_reverse_dns", fake_reverse)
+
+    hops = await traceroute("8.8.8.8", resolve=True)
+    assert [h.index for h in hops] == [1, 2, 3, 4]
+    assert hops[0].address == "192.168.1.1"
+    assert hops[0].hostname == "host-192.168.1.1"
+    # timeout hop'da reverse DNS chaqirilmaydi.
+    assert hops[2].address is None
+    assert hops[2].hostname is None
+
+
+async def test_trace_path_windows_empty_sets_error(monkeypatch):
+    """Windows tracert bo'sh chiqsa -> TraceResult.error to'ldiriladi (o'zbekcha)."""
+    monkeypatch.setattr(topology._platform, "IS_WINDOWS", True)
+
+    async def fake_run_command(cmd, timeout):
+        return ""  # buyruq yo'q / timeout
+
+    monkeypatch.setattr(topology._platform, "run_command", fake_run_command)
+    result = await trace_path("8.8.8.8", resolve=False)
+    assert result.hops == []
+    assert result.error is not None
+
+
+async def test_trace_stream_windows_branch(monkeypatch):
+    """trace_stream Windows'da _win_traceroute orqali probe qilishini tasdiqlash."""
+    monkeypatch.setattr(topology._platform, "IS_WINDOWS", True)
+
+    def boom(*a, **k):
+        raise AssertionError("icmplib Windows'da chaqirilmasligi kerak")
+
+    monkeypatch.setattr(topology, "_sync_traceroute", boom)
+
+    async def fake_run_command(cmd, timeout):
+        return (
+            "  1     1 ms     1 ms     1 ms  192.168.1.1\n  2    10 ms    10 ms    10 ms  8.8.8.8\n"
+        )
+
+    monkeypatch.setattr(topology._platform, "run_command", fake_run_command)
+
+    snapshots = []
+    async for stats in trace_stream("8.8.8.8", cycles=2, interval=0.0, resolve=False):
+        snapshots.append([(s.index, s.sent, s.recv) for s in stats])
+    assert snapshots[0] == [(1, 1, 1), (2, 1, 1)]
+    assert snapshots[1] == [(1, 2, 2), (2, 2, 2)]
+
+
+# --- Windows: discover_lan sweep --------------------------------------------
+
+
+async def test_discover_lan_windows_uses_win_sweep(monkeypatch):
+    """Windows'da discover_lan async_multiping EMAS, `ping` sweep ishlatadi."""
+    monkeypatch.setattr(topology._platform, "IS_WINDOWS", True)
+    cidr = "192.168.1.0/30"  # hostlar: .1, .2
+
+    async def boom(*a, **k):
+        raise AssertionError("async_multiping Windows'da chaqirilmasligi kerak")
+
+    monkeypatch.setattr(topology, "async_multiping", boom)
+
+    # `ping` sweep: faqat .1 javob beradi.
+    async def fake_run_command(cmd, timeout):
+        addr = cmd[-1]
+        if addr == "192.168.1.1":
+            return (
+                f"Reply from {addr}: bytes=32 time=2ms TTL=64\n"
+                "    Packets: Sent = 1, Received = 1, Lost = 0 (0% loss),\n"
+            )
+        return "Request timed out.\n    Packets: Sent = 1, Received = 0, Lost = 1 (100% loss),\n"
+
+    monkeypatch.setattr(topology._platform, "run_command", fake_run_command)
+    monkeypatch.setattr(topology, "_parse_arp_table", lambda: {"192.168.1.1": "aa:bb:cc:dd:ee:ff"})
+    monkeypatch.setattr(topology.netinfo, "default_gateway", lambda: "192.168.1.1")
+
+    hosts = await discover_lan(cidr=cidr)
+    assert len(hosts) == 1
+    h = hosts[0]
+    assert h.ip == "192.168.1.1"
+    assert h.mac == "aa:bb:cc:dd:ee:ff"
+    assert h.is_gateway is True
+    assert h.rtt_ms == pytest.approx(2.0)
 
 
 # --- dataclass defaultlari --------------------------------------------------

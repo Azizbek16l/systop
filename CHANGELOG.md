@@ -11,7 +11,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - PyPI release and `uvx`/`pipx` install.
 - Homebrew formula.
-- CI workflow (lint + offline tests on macOS and Linux).
+
+## [0.3.0] — 2026-06-06
+
+Cross-platform: first-class **Windows** support alongside Linux and macOS.
+
+### Added
+
+- **Windows support.** `systop` now runs natively on Windows. Default-gateway
+  detection (`route print` / `Get-NetRoute`), ICMP `ping`/`traceroute`/`mtr`,
+  the LAN ping sweep, and ARP-table parsing all have Windows code paths — and
+  still need **no Administrator** (ICMP falls back to the system `ping`/`tracert`
+  on Windows). Linux/macOS behavior is unchanged.
+- **Standalone per-OS binaries.** Tagged releases now publish self-contained
+  executables for Windows, Linux and macOS (PyInstaller) attached to the GitHub
+  Release — no Python install required.
+- **Cross-OS CI matrix.** Every push is tested on `ubuntu-latest`,
+  `windows-latest` and `macos-latest` across Python 3.11–3.13.
+- **Local pre-commit gate** extended with `mypy` and `pytest` so every commit is
+  validated before it lands.
+
+### Changed
+
+- Platform detection centralized in `core/_platform.py`; network commands select
+  the right OS strategy at runtime.
 
 ## [0.2.0] — 2026-06-05
 
