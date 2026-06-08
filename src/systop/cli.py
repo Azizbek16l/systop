@@ -58,6 +58,16 @@ _FORMAT = "table"  # table | json | csv
 _QUIET = False
 _VERBOSE = False
 
+# Windows konsoli odatda cp1252 — emoji/Unicode'ni kodlay olmay xato beradi
+# (UnicodeEncodeError). stdout/stderr'ni UTF-8 ga o'tkazamiz; errors="replace"
+# tufayli ko'rsata olmaydigan terminalda ham hech qachon yiqilmaydi.
+if sys.platform == "win32":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError):
+            pass
+
 console = Console()
 
 

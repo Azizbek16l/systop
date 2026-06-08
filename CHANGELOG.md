@@ -12,6 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PyPI release and `uvx`/`pipx` install.
 - Homebrew formula.
 
+## [0.3.1] — 2026-06-08
+
+### Fixed
+
+- **Windows console encoding.** CLI output (emoji/Unicode) no longer crashes
+  with `UnicodeEncodeError` on legacy Windows consoles (cp1252): stdout/stderr
+  are reconfigured to UTF-8 with `errors="replace"`. Verified on Windows Server
+  2022 (a test host).
+
 ## [0.3.0] — 2026-06-06
 
 Cross-platform: first-class **Windows** support alongside Linux and macOS.
