@@ -4,4 +4,4 @@ Internet tezligini o'lchaydi, lokal va global ping qiladi, tarmoq
 topologiyasini (traceroute + LAN discovery) ko'rsatib beradi.
 """
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"

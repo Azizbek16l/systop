@@ -34,6 +34,7 @@ _GLYPHS: dict[str, tuple[str, str]] = {
     "sep": ("·", "-"),  # interfeys ajratuvchi (name · ip)
     "dash": ("—", "-"),  # bo'sh qiymat (em-dash -> tire)
     "ellipsis": ("…", "..."),  # tugallanmagan jarayon (… -> ...)
+    "empty": ("◌ ◌ ◌", "o o o"),  # bo'sh holat (hali ma'lumot yo'q) glyph qatori
 }
 
 

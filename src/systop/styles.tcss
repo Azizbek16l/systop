@@ -19,11 +19,15 @@ Header, Footer {
     color: $foreground;
 }
 
+/* Chiplar: 1fr emas, auto en — chapga ixcham guruhlanadi (tarqoqlik yo'qoladi).
+   Har biri o'z foni va o'ng-margin'i bilan haqiqiy "chip" his beradi. */
 #status-bar > Static {
-    width: 1fr;
+    width: auto;
     height: 1;
     content-align: left middle;
-    padding: 0 1;
+    background: $panel;
+    margin-right: 1;
+    padding: 0 2;
 }
 
 #chip-gateway {
@@ -52,8 +56,10 @@ Header, Footer {
     margin-right: 1;
 }
 
+/* Speed paneli kontentga mos (auto) — idle holatda ~70% bo'sh qolmaydi;
+   bo'shagan balandlik ping paneliga (1fr) o'tadi. */
 #speed {
-    height: 1fr;
+    height: auto;
     margin-bottom: 1;
 }
 #ping {
@@ -70,6 +76,9 @@ SpeedPanel, PingPanel, TopologyPanel {
     border: round $primary 60%;
     border-title-color: $primary;
     border-title-style: bold;
+    /* Panel sarlavhasi o'ngida klavish hint (border_subtitle) — masalan "s boshlash". */
+    border-subtitle-color: $secondary;
+    border-subtitle-align: right;
     background: transparent;
     padding: 0 1;
     min-height: 8;
@@ -164,6 +173,13 @@ DataTable > .datatable--cursor {
     background: $accent 25%;
 }
 
+/* Ping jadvali kontentga mos (auto) — grafik to'g'ridan-to'g'ri jadval ostiga
+   yopishadi (1fr cho'zilib grafikni panel pastiga itarmaydi). */
+#ping-table {
+    height: auto;
+    max-height: 14;
+}
+
 /* --- Tugmalar --- */
 
 Button {
@@ -171,9 +187,10 @@ Button {
     min-width: 16;
 }
 
+/* Tugma to'liq kenglik emas — ixcham (bu yordamchi amal, `s` ham bor). */
 #run-speed {
     margin: 1 0 0 0;
-    width: 1fr;
+    width: auto;
 }
 
 /* --- Topologiya tablari va boshqaruvlari --- */
@@ -220,11 +237,14 @@ TabbedContent {
 
 /* --- Bo'sh / xato holatlari (placeholder) --- */
 
+/* Bo'sh holat panel markazida (1fr to'ldiradi, matn markazlashadi):
+   glyph qatori + sarlavha + "nima kutiladi" izohi + inline tugma. */
 .empty-state {
-    height: auto;
+    height: 1fr;
     padding: 2 1;
     color: $foreground 70%;
     content-align: center middle;
+    text-align: center;
 }
 
 /* --- Yordam modali --- */

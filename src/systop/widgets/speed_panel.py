@@ -8,7 +8,7 @@ from textual.containers import Vertical
 from textual.widgets import Button, LoadingIndicator, Sparkline, Static
 
 from systop.core.speed import SpeedResult, run_speedtest
-from systop.widgets._glyphs import ellipsis, glyph
+from systop.widgets._glyphs import ellipsis, glyph, unicode_ok
 
 
 class SpeedPanel(Vertical):
@@ -19,6 +19,7 @@ class SpeedPanel(Vertical):
     """
 
     BORDER_TITLE = "Internet tezligi"
+    BORDER_SUBTITLE = "s boshlash"
 
     def compose(self) -> ComposeResult:
         yield Static(self._placeholder(), id="speed-readout")
@@ -30,6 +31,8 @@ class SpeedPanel(Vertical):
     def on_mount(self) -> None:
         self._history: list[float] = []
         self.query_one("#speed-loading", LoadingIndicator).display = False
+        # Grafik ma'lumotsiz yashirin — idle holatda "soxta" to'liq bar ko'rinmasin.
+        self.query_one("#speed-spark", Sparkline).display = False
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "run-speed":
@@ -49,6 +52,7 @@ class SpeedPanel(Vertical):
         loading.display = True
         readout.update(f"[dim]Latency o'lchanmoqda{ell}[/]")
         self._history = []
+        spark.display = False  # yangi test — ma'lumot kelguncha grafik yashirin
 
         def on_download(mbps: float) -> None:
             self._progress(readout, spark, stats, glyph("download"), "Download", "$success", mbps)
@@ -98,6 +102,9 @@ class SpeedPanel(Vertical):
     def _push(self, spark: Sparkline, stats: Static, mbps: float) -> None:
         self._history.append(round(mbps, 1))
         spark.data = self._history[-80:]
+        # Ma'lumot bor — grafikni ko'rsatamiz (ASCII rejimda block belgilar
+        # ko'rinmaydi, shu sababli unicode_ok() bilan shartlaymiz).
+        spark.display = unicode_ok()
         stats.update(self._stats_caption(self._history))
 
     @staticmethod
@@ -115,7 +122,9 @@ class SpeedPanel(Vertical):
         """Grafik ostidagi izoh: joriy / min / o'rt / maks (Mbps)."""
         if not history:
             d = glyph("dash")
-            return f"[dim]joriy {d}   min {d}   o'rt {d}   maks {d}   Mbps[/]"
+            return (
+                f"[dim]joriy {d}   min {d}   o'rt {d}   maks {d}   Mbps   ·   test boshlanmagan[/]"
+            )
         cur = history[-1]
         lo = min(history)
         avg = sum(history) / len(history)

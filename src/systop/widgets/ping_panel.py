@@ -9,7 +9,7 @@ from textual.widgets import DataTable, Sparkline, Static
 
 from systop.core.netinfo import default_gateway
 from systop.core.ping import build_targets, ping_many
-from systop.widgets._glyphs import dash, glyph
+from systop.widgets._glyphs import dash, glyph, unicode_ok
 
 REFRESH_SECONDS = 3.0
 
@@ -22,6 +22,7 @@ class PingPanel(Vertical):
     """
 
     BORDER_TITLE = "Ping — lokal + global"
+    BORDER_SUBTITLE = "r yangilash"
 
     def compose(self) -> ComposeResult:
         yield DataTable(id="ping-table", zebra_stripes=True, cursor_type="row")
@@ -33,6 +34,9 @@ class PingPanel(Vertical):
         table.add_columns("Holat", "Nishon", "Manzil", "Avg ms", "Loss %")
         self._targets = build_targets(default_gateway())
         self._rtt_history: list[float] = []
+        # Grafik ma'lumotsiz yashirin — ma'lumot kelguncha jadval ostida bo'sh
+        # joy/soxta bar bo'lmaydi (grafik to'g'ridan-to'g'ri jadvalga yopishadi).
+        self.query_one("#ping-spark", Sparkline).display = False
         self.update_pings()
         self.set_interval(REFRESH_SECONDS, self.update_pings)
 
@@ -66,7 +70,9 @@ class PingPanel(Vertical):
         if first_alive:
             self._rtt_history.append(round(first_alive.avg_rtt, 1))
             self._rtt_history = self._rtt_history[-80:]
-            self.query_one("#ping-spark", Sparkline).data = self._rtt_history
+            spark = self.query_one("#ping-spark", Sparkline)
+            spark.data = self._rtt_history
+            spark.display = unicode_ok()  # ma'lumot bor — grafikni ko'rsatamiz
             self.query_one("#ping-stats", Static).update(
                 self._stats_caption(self._rtt_history, label=first_alive.label)
             )

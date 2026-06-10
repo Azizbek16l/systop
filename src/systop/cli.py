@@ -47,7 +47,18 @@ from rich.console import Console
 from rich.table import Table
 
 from systop import __version__
+from systop._render import (
+    ERROR,
+    SECONDARY,
+    SUCCESS,
+    WARNING,
+    alive_cell,
+    loss_cell,
+    rtt_cell,
+    styled_table,
+)
 from systop.core import _platform
+from systop.widgets._glyphs import dash, glyph
 
 # Exit kodlari — mazmunli, skriptlar uchun.
 EXIT_OK = 0
@@ -106,7 +117,9 @@ def _harden_console_streams() -> None:
 _platform.init_console()
 _harden_console_streams()
 
-console = Console()
+# Emoji UMUMAN render qilinmaydi (dizayn: belgilar faqat `glyph()` orqali, monoxrom).
+# `--no-color`/`NO_COLOR` chinakam monoxrom bo'lsin — `_apply_color` qayta yaratadi.
+console = Console(emoji=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -182,7 +195,7 @@ def error(message: str) -> None:
     if _is_machine():
         _safe_write(sys.stderr, message + "\n")
     else:
-        console.print(f"[red]Xato:[/] {message}")
+        console.print(f"[{ERROR}]Xato:[/] {message}")
 
 
 # --------------------------------------------------------------------------- #
@@ -412,9 +425,10 @@ def _apply_color(no_color: bool) -> None:
     """Rang sozlamasini qo'llaydi: --no-color yoki NO_COLOR env => rangsiz."""
     global console
     disabled = no_color or bool(os.environ.get("NO_COLOR"))
-    # Mashina rejimida ham terminal bo'yog'i kerak emas.
+    # Emoji har doim o'chiq (dizayn: belgilar faqat glyph()). Mashina yoki
+    # --no-color/NO_COLOR rejimida rang ham o'chadi — chinakam monoxrom chiqish.
     if disabled or _is_machine():
-        console = Console(no_color=True, highlight=False, emoji=not _is_machine())
+        console = Console(no_color=True, highlight=False, emoji=False)
 
 
 def _split_csv_arg(value: str | None) -> list[str]:
@@ -524,12 +538,19 @@ async def _cmd_speed() -> int:
         emit_csv([result])
         return EXIT_OK
 
-    table = Table(title="Internet tezligi", show_header=False)
-    table.add_row("⬇  Download", f"[green]{result.download_mbps:.1f}[/] Mbps")
-    table.add_row("⬆  Upload", f"[cyan]{result.upload_mbps:.1f}[/] Mbps")
-    table.add_row("📶  Latency", f"{result.latency_ms:.1f} ms")
-    table.add_row("〰  Jitter", f"{result.jitter_ms:.1f} ms")
+    table = styled_table("Internet tezligi")
+    table.show_header = False
+    table.add_column("Ko'rsatkich")
+    table.add_column("Qiymat", justify="right")
+    table.add_row(f"{glyph('download')} Download", f"[{SUCCESS}]{result.download_mbps:.1f}[/] Mbps")
+    table.add_row(f"{glyph('upload')} Upload", f"[{SECONDARY}]{result.upload_mbps:.1f}[/] Mbps")
+    # Jitter ALOHIDA qator emas — latency qatoriga so'z bilan (TUI'dagidek).
+    table.add_row(
+        f"{glyph('latency')} Latency",
+        f"{result.latency_ms:.1f} ms   [dim]jitter {result.jitter_ms:.1f} ms[/]",
+    )
     emit_table(table)
+    note(f"[dim]download {result.download_mbps:.1f} · upload {result.upload_mbps:.1f} Mbps[/]")
     return EXIT_OK
 
 
@@ -563,17 +584,19 @@ async def _cmd_ping(ipv6: bool = False, watch: bool = False, targets_arg: str | 
     elif _FORMAT == "csv":
         emit_csv(results)
     else:
-        table = Table(title="Ping natijalari")
+        table = styled_table("Ping natijalari")
+        table.add_column("Holat")
         table.add_column("Nishon")
         table.add_column("Manzil")
         table.add_column("Avg ms", justify="right")
         table.add_column("Loss %", justify="right")
-        table.add_column("Holat", justify="center")
         for r in results:
-            stat = "[green]🟢 OK[/]" if r.alive else "[red]🔴 yo'q[/]"
-            avg = f"{r.avg_rtt:.1f}" if r.alive else "—"
-            table.add_row(r.label, r.address, avg, f"{r.loss_pct:.0f}", stat)
+            avg = rtt_cell(r.avg_rtt) if r.alive else f"[dim]{dash()}[/]"
+            table.add_row(alive_cell(r.alive), r.label, r.address, avg, loss_cell(r.loss_pct))
         emit_table(table)
+        alive = sum(1 for r in results if r.alive)
+        dead = len(results) - alive
+        note(f"[dim]{len(results)} nishon — {alive} tirik · {dead} o'lik[/]")
 
     # Hech bir nishon javob bermasa — tarmoq yo'q deb hisoblaymiz.
     return EXIT_OK if any(r.alive for r in results) else EXIT_UNREACHABLE
@@ -594,7 +617,7 @@ async def _cmd_ping_watch(targets: dict[str, str]) -> int:
     stats: dict[str, WatchStats] = {}
 
     def render() -> Table:
-        table = Table(title="Ping monitor (Ctrl+C to'xtatadi)")
+        table = styled_table("Ping monitor (Ctrl+C to'xtatadi)")
         table.add_column("Nishon")
         table.add_column("Manzil")
         table.add_column("Oxirgi ms", justify="right")
@@ -602,17 +625,16 @@ async def _cmd_ping_watch(targets: dict[str, str]) -> int:
         table.add_column("Min/Max ms", justify="right")
         table.add_column("Yuborildi", justify="right")
         table.add_column("Loss %", justify="right")
+        d = dash()
         for label in targets:
             s = stats.get(label)
             if s is None:
-                table.add_row(label, targets[label], "—", "—", "—", "0", "—")
+                table.add_row(label, targets[label], d, d, d, "0", d)
                 continue
-            last = f"{s.last_rtt:.1f}" if s.received else "—"
-            avg = f"{s.avg_rtt:.1f}" if s.received else "—"
-            minmax = f"{s.min_rtt:.0f}/{s.max_rtt:.0f}" if s.received else "—"
-            loss = s.loss_pct
-            loss_str = f"[green]{loss:.0f}[/]" if loss == 0 else f"[red]{loss:.0f}[/]"
-            table.add_row(label, s.address, last, avg, minmax, str(s.sent), loss_str)
+            last = rtt_cell(s.last_rtt) if s.received else f"[dim]{d}[/]"
+            avg = rtt_cell(s.avg_rtt) if s.received else f"[dim]{d}[/]"
+            minmax = f"{s.min_rtt:.0f}/{s.max_rtt:.0f}" if s.received else f"[dim]{d}[/]"
+            table.add_row(label, s.address, last, avg, minmax, str(s.sent), loss_cell(s.loss_pct))
         return table
 
     async def follow(label: str, address: str, live: Live) -> None:
@@ -663,24 +685,27 @@ async def _cmd_scan(host: str, ports_spec: str | None, timeout: float) -> int:
         return EXIT_OK if result.open_ports else EXIT_UNREACHABLE
 
     open_ports = result.open_ports
-    title = f"Port skaner → {result.host} ({result.resolved_ip}) — {len(open_ports)} ochiq"
-    table = Table(title=title)
+    title = (
+        f"Port skaner {glyph('gateway')} {result.host} "
+        f"({result.resolved_ip}) — {len(open_ports)} ochiq"
+    )
+    table = styled_table(title)
     table.add_column("Port", justify="right")
-    table.add_column("Holat", justify="center")
+    table.add_column("Holat")
     table.add_column("Xizmat")
     table.add_column("RTT ms", justify="right")
     if not open_ports:
         emit_table(table)
-        note(f"[yellow]Hech qaysi port ochiq emas[/] ({len(result.ports)} ta tekshirildi).")
+        note(f"[{WARNING}]Hech qaysi port ochiq emas[/] ({len(result.ports)} ta tekshirildi).")
         return EXIT_UNREACHABLE
     for p in open_ports:
-        table.add_row(str(p.port), "[green]ochiq[/]", p.service or "—", f"{p.rtt_ms:.1f}")
+        table.add_row(str(p.port), f"[{SUCCESS}]ochiq[/]", p.service or dash(), rtt_cell(p.rtt_ms))
     emit_table(table)
     filtered = sum(1 for p in result.ports if p.state == "filtered")
     closed = sum(1 for p in result.ports if p.state == "closed")
     note(
-        f"\n  [dim]{len(result.ports)} port tekshirildi — "
-        f"{len(open_ports)} ochiq, {closed} yopiq, {filtered} filtrlangan.[/]"
+        f"[dim]{len(result.ports)} port tekshirildi — "
+        f"{len(open_ports)} ochiq · {closed} yopiq · {filtered} filtrlangan[/]"
     )
     return EXIT_OK
 
@@ -707,36 +732,38 @@ async def _cmd_dns(name: str, resolvers_arg: str | None = None) -> int:
     if result.system_error:
         error(f"Tizim resolveri: {result.system_error}")
     else:
-        addrs = ", ".join(result.system_addresses) or "—"
-        note(f"  🧭 Tizim resolveri: [bold]{addrs}[/]")
+        addrs = ", ".join(result.system_addresses) or dash()
+        note(f"[dim]Tizim resolveri:[/] [bold]{addrs}[/]")
 
     if not result.resolvers:
         note(
-            "\n[yellow]`dig`/`nslookup` topilmadi[/] — serverlar latency'sini "
+            f"\n[{WARNING}]`dig`/`nslookup` topilmadi[/] — serverlar latency'sini "
             "taqqoslab bo'lmadi (faqat tizim resolve ko'rsatildi)."
         )
         return EXIT_OK if not result.system_error else EXIT_UNREACHABLE
 
-    table = Table(title=f"DNS serverlar taqqoslovi ({result.tool})")
+    table = styled_table(f"DNS serverlar taqqoslovi ({result.tool})")
     table.add_column("Server")
     table.add_column("IP")
     table.add_column("RTT ms", justify="right")
     table.add_column("Javob (manzillar)")
-    table.add_column("Holat", justify="center")
+    table.add_column("Holat")
     fastest = min((r for r in result.resolvers if r.ok), key=lambda r: r.rtt_ms, default=None)
     for r in result.resolvers:
         if r.ok:
-            mark = "[bold green]⚡ eng tez[/]" if r is fastest else "[green]OK[/]"
-            rtt = f"{r.rtt_ms:.1f}"
+            mark = f"[b {SUCCESS}]eng tez[/]" if r is fastest else f"[{SUCCESS}]tirik[/]"
+            rtt = rtt_cell(r.rtt_ms)
             answers = ", ".join(r.addresses[:3])
             if len(r.addresses) > 3:
                 answers += f" (+{len(r.addresses) - 3})"
         else:
-            mark = f"[red]{r.error or 'xato'}[/]"
-            rtt = "—"
-            answers = "—"
+            mark = f"[{ERROR}]{r.error or 'xato'}[/]"
+            rtt = f"[dim]{dash()}[/]"
+            answers = dash()
         table.add_row(r.name, r.server, rtt, answers, mark)
     emit_table(table)
+    if fastest is not None:
+        note(f"[dim]eng tez: {fastest.name} ({fastest.server}) — {fastest.rtt_ms:.1f} ms[/]")
     return EXIT_OK if not result.system_error else EXIT_UNREACHABLE
 
 
@@ -757,17 +784,23 @@ async def _cmd_trace(host: str) -> int:
         error(result.error)
         return EXIT_UNREACHABLE
     if not result.hops:
-        note("[yellow]Hech qanday hop topilmadi (yo'l yopiq yoki bloklangan).[/]")
+        note(f"[{WARNING}]Hech qanday hop topilmadi (yo'l yopiq yoki bloklangan).[/]")
         return EXIT_UNREACHABLE
-    table = Table(title=f"Traceroute → {host}")
+    table = styled_table(f"Traceroute {glyph('gateway')} {host}")
     table.add_column("#", justify="right")
     table.add_column("IP")
     table.add_column("Hostname")
     table.add_column("RTT ms", justify="right")
+    alive_hops = 0
     for hop in result.hops:
-        rtt = f"{hop.rtt_ms:.1f}" if hop.alive else "*"
-        table.add_row(str(hop.index), hop.address or "* * *", hop.hostname or "—", rtt)
+        if hop.alive:
+            rtt = rtt_cell(hop.rtt_ms)
+            alive_hops += 1
+        else:
+            rtt = f"[dim]{glyph('cross')}[/]"
+        table.add_row(str(hop.index), hop.address or "* * *", hop.hostname or dash(), rtt)
     emit_table(table)
+    note(f"[dim]{len(result.hops)} hop — {alive_hops} javob berdi[/]")
     return EXIT_OK
 
 
@@ -790,7 +823,7 @@ async def _cmd_mtr(host: str, interval: float = 1.0, cycles: int | None = None) 
     from rich.live import Live
 
     def render(hops: list[HopStat]) -> Table:
-        table = Table(title=f"mtr → {host} (Ctrl+C to'xtatadi)")
+        table = styled_table(f"mtr {glyph('gateway')} {host} (Ctrl+C to'xtatadi)")
         table.add_column("#", justify="right")
         table.add_column("Host")
         table.add_column("Loss %", justify="right")
@@ -799,15 +832,16 @@ async def _cmd_mtr(host: str, interval: float = 1.0, cycles: int | None = None) 
         table.add_column("Avg", justify="right")
         table.add_column("Best", justify="right")
         table.add_column("Worst", justify="right")
+        d = dash()
         for h in hops:
             name = h.hostname or h.address or "???"
-            loss = h.loss_pct
-            loss_str = f"[green]{loss:.0f}[/]" if loss == 0 else f"[red]{loss:.0f}[/]"
-            last = f"{h.last_rtt:.1f}" if h.recv else "—"
-            avg = f"{h.avg_rtt:.1f}" if h.recv else "—"
-            best = f"{h.best_rtt:.1f}" if h.recv else "—"
-            worst = f"{h.worst_rtt:.1f}" if h.recv else "—"
-            table.add_row(str(h.index), name, loss_str, str(h.sent), last, avg, best, worst)
+            last = rtt_cell(h.last_rtt) if h.recv else f"[dim]{d}[/]"
+            avg = rtt_cell(h.avg_rtt) if h.recv else f"[dim]{d}[/]"
+            best = rtt_cell(h.best_rtt) if h.recv else f"[dim]{d}[/]"
+            worst = rtt_cell(h.worst_rtt) if h.recv else f"[dim]{d}[/]"
+            table.add_row(
+                str(h.index), name, loss_cell(h.loss_pct), str(h.sent), last, avg, best, worst
+            )
         return table
 
     saw_hops = False
@@ -867,18 +901,18 @@ def _human_bps(bps: float) -> str:
 
 def _bw_table(rates: list[Any]) -> Table:
     """IfaceRate ro'yxatidan Rich jadval yasaydi (RX/TX human-readable)."""
-    table = Table(title="Interfeys bandwidth (Ctrl+C to'xtatadi)")
+    table = styled_table("Interfeys bandwidth (Ctrl+C to'xtatadi)")
     table.add_column("Interfeys")
-    table.add_column("⬇ RX", justify="right")
-    table.add_column("⬆ TX", justify="right")
+    table.add_column(f"{glyph('download')} RX", justify="right")
+    table.add_column(f"{glyph('upload')} TX", justify="right")
     table.add_column("RX pps", justify="right")
     table.add_column("TX pps", justify="right")
     table.add_column("Umumiy", justify="right")
     for r in rates:
         table.add_row(
             r.name,
-            f"[green]{_human_bps(r.rx_bps)}[/]",
-            f"[cyan]{_human_bps(r.tx_bps)}[/]",
+            f"[{SUCCESS}]{_human_bps(r.rx_bps)}[/]",
+            f"[{SECONDARY}]{_human_bps(r.tx_bps)}[/]",
             f"{r.rx_pps:.0f}",
             f"{r.tx_pps:.0f}",
             _human_bps(r.total_bps),
@@ -904,24 +938,34 @@ async def _cmd_tls(host: str, timeout: float = 5.0, warn_days: int = 14) -> int:
         error(result.error or "TLS tekshiruvi muvaffaqiyatsiz.")
         return EXIT_UNREACHABLE
 
-    table = Table(title=f"TLS sertifikat → {result.host}:{result.port}", show_header=False)
+    table = styled_table(f"TLS sertifikat {glyph('gateway')} {result.host}:{result.port}")
+    table.show_header = False
+    table.add_column("Maydon")
+    table.add_column("Qiymat")
     days = result.days_left
     if days is None:
-        days_str = "—"
+        days_str = dash()
     elif days < 0:
-        days_str = f"[red]muddati tugagan ({-days} kun oldin)[/]"
+        days_str = f"[{ERROR}]muddati tugagan ({-days} kun oldin)[/]"
     elif days <= warn_days:
-        days_str = f"[yellow]{days} kun (yaqin!)[/]"
+        days_str = f"[{WARNING}]{days} kun (yaqin!)[/]"
     else:
-        days_str = f"[green]{days} kun[/]"
+        days_str = f"[{SUCCESS}]{days} kun[/]"
     table.add_row("Muddat", days_str)
-    table.add_row("Tugaydi", result.not_after or "—")
-    table.add_row("Issuer", result.issuer or "—")
-    table.add_row("Subject", result.subject or "—")
+    table.add_row("Tugaydi", result.not_after or dash())
+    table.add_row("Issuer", result.issuer or dash())
+    table.add_row("Subject", result.subject or dash())
     table.add_row("SAN soni", str(len(result.san)))
-    table.add_row("TLS versiya", result.tls_version or "—")
+    table.add_row("TLS versiya", result.tls_version or dash())
     emit_table(table)
-    return _tls_exit_code(result, warn_days)
+    code = _tls_exit_code(result, warn_days)
+    if code == EXIT_OK:
+        note(f"[dim]exit 0 · warn-days {warn_days} chegarasidan uzoq[/]")
+    elif days is not None and days < 0:
+        note("[dim]exit 2 · sertifikat muddati tugagan[/]")
+    else:
+        note(f"[dim]exit 2 · muddat warn-days {warn_days} chegarasiga yaqin[/]")
+    return code
 
 
 def _tls_exit_code(result: Any, warn_days: int) -> int:
@@ -952,20 +996,25 @@ async def _cmd_http(url: str, timeout: float = 5.0) -> int:
         error(result.error)
         return EXIT_UNREACHABLE
 
-    table = Table(title=f"HTTP → {result.url}", show_header=False)
+    table = styled_table(f"HTTP {glyph('gateway')} {result.url}")
+    table.show_header = False
+    table.add_column("Maydon")
+    table.add_column("Qiymat")
     status_code = result.status or 0
     if 200 <= status_code < 400:
-        status_str = f"[green]{status_code}[/]"
+        status_str = f"[{SUCCESS}]{status_code}[/]"
     else:
-        status_str = f"[red]{status_code}[/]"
+        status_str = f"[{ERROR}]{status_code}[/]"
     table.add_row("Status", status_str)
-    table.add_row("Yakuniy URL", result.final_url or "—")
+    table.add_row("Yakuniy URL", result.final_url or dash())
     table.add_row("Vaqt", f"{result.elapsed_ms:.0f} ms")
-    table.add_row("Server", result.server or "—")
+    table.add_row("Server", result.server or dash())
     if result.redirects:
-        table.add_row("Redirect'lar", " → ".join(result.redirects))
+        table.add_row("Redirect'lar", " -> ".join(result.redirects))
     emit_table(table)
-    return _http_exit_code(result)
+    code = _http_exit_code(result)
+    note(f"[dim]exit {code} · {result.elapsed_ms:.0f} ms[/]")
+    return code
 
 
 def _http_exit_code(result: Any) -> int:
@@ -990,7 +1039,7 @@ async def _cmd_conn(listen_only: bool = False) -> int:
         emit_csv(conns)
         return EXIT_OK
 
-    table = Table(title=f"Tarmoq ulanishlari ({len(conns)} ta)")
+    table = styled_table(f"Tarmoq ulanishlari ({len(conns)} ta)")
     table.add_column("Proto")
     table.add_column("Lokal")
     table.add_column("Masofaviy")
@@ -1001,17 +1050,20 @@ async def _cmd_conn(listen_only: bool = False) -> int:
         table.add_row(
             c.proto,
             c.laddr,
-            c.raddr or "—",
-            c.status or "—",
-            str(c.pid) if c.pid is not None else "—",
-            c.process or "—",
+            c.raddr or dash(),
+            c.status or dash(),
+            str(c.pid) if c.pid is not None else dash(),
+            c.process or dash(),
         )
     emit_table(table)
     if not conns:
         note(
-            "[yellow]Ulanishlar topilmadi[/] — macOS'da to'liq jadval uchun "
+            f"[{WARNING}]Ulanishlar topilmadi[/] — macOS'da to'liq jadval uchun "
             "ko'pincha root (sudo) kerak bo'ladi."
         )
+    else:
+        listening = sum(1 for c in conns if c.status == "LISTEN")
+        note(f"[dim]{len(conns)} ulanish — {listening} LISTEN[/]")
     return EXIT_OK
 
 
@@ -1044,12 +1096,13 @@ async def _cmd_config(show: bool = False, path_only: bool = False) -> int:
         return EXIT_OK
 
     exists = cfg_path.exists()
-    note(f"  📄 Konfiguratsiya fayli: [bold]{cfg_path}[/]")
-    note(f"     Holat: {'[green]mavjud[/]' if exists else '[yellow]yo`q (default ishlatiladi)[/]'}")
-    note(f"     Env override ({ENV_VAR}): {os.environ.get(ENV_VAR) or '—'}")
+    note(f"[dim]Konfiguratsiya fayli:[/] [bold]{cfg_path}[/]")
+    state = f"[{SUCCESS}]mavjud[/]" if exists else f"[{WARNING}]yo`q (default ishlatiladi)[/]"
+    note(f"[dim]Holat:[/] {state}")
+    note(f"[dim]Env override ({ENV_VAR}):[/] {os.environ.get(ENV_VAR) or dash()}")
 
     if show or not exists:
-        table = Table(title="Joriy (samarali) sozlamalar")
+        table = styled_table("Joriy (samarali) sozlamalar")
         table.add_column("Maydon")
         table.add_column("Qiymat")
         for name in config_fields():
@@ -1074,7 +1127,7 @@ async def _cmd_lan() -> int:
         emit_csv(hosts)
         return EXIT_OK
 
-    table = Table(title=f"LAN hostlar ({len(hosts)} ta)")
+    table = styled_table(f"LAN hostlar ({len(hosts)} ta)")
     table.add_column("IP")
     table.add_column("MAC")
     table.add_column("Vendor")
@@ -1082,10 +1135,11 @@ async def _cmd_lan() -> int:
     table.add_column("RTT ms", justify="right")
     table.add_column("Rol")
     for h in hosts:
-        role = "[yellow]🌐 gateway[/]" if h.is_gateway else "host"
-        rtt = f"{h.rtt_ms:.1f}" if h.rtt_ms else "—"
-        table.add_row(h.ip, h.mac or "—", h.vendor or "—", h.hostname or "—", rtt, role)
+        role = f"[{WARNING}]{glyph('gateway')}[/] gateway" if h.is_gateway else "host"
+        rtt = rtt_cell(h.rtt_ms) if h.rtt_ms else f"[dim]{dash()}[/]"
+        table.add_row(h.ip, h.mac or dash(), h.vendor or dash(), h.hostname or dash(), rtt, role)
     emit_table(table)
+    note(f"[dim]{len(hosts)} host topildi · /24 ping sweep + ARP[/]")
     return EXIT_OK
 
 
@@ -1102,18 +1156,25 @@ async def _cmd_info() -> int:
         emit_csv(summary.interfaces)
         return EXIT_OK
 
-    table = Table(title="Tarmoq interfeyslari")
+    table = styled_table("Tarmoq interfeyslari")
     table.add_column("Interfeys")
     table.add_column("IPv4")
     table.add_column("Tarmoq (CIDR)")
     table.add_column("MAC")
     table.add_column("Holat")
     for iface in summary.interfaces:
-        st = "[green]up[/]" if iface.is_up else "[red]down[/]"
-        table.add_row(iface.name, iface.ipv4 or "—", iface.cidr or "—", iface.mac or "—", st)
+        if iface.is_up:
+            st = f"[{SUCCESS}]{glyph('ok')}[/] up"
+        else:
+            st = f"[{ERROR}]{glyph('dead')}[/] down"
+        table.add_row(
+            iface.name, iface.ipv4 or dash(), iface.cidr or dash(), iface.mac or dash(), st
+        )
     emit_table(table)
-    note(f"\n  🌐 Gateway:    [bold]{summary.gateway or '—'}[/]")
-    note(f"  🛰  Public IP:  [bold]{summary.public_ip or '—'}[/]")
+    note(
+        f"\n[{WARNING}]{glyph('gateway')}[/] gateway [bold]{summary.gateway or dash()}[/]   "
+        f"[dim]public IP[/] [bold]{summary.public_ip or dash()}[/]"
+    )
     return EXIT_OK
 
 

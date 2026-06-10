@@ -47,6 +47,7 @@ class TopologyPanel(Vertical):
     """
 
     BORDER_TITLE = "Tarmoq diagnostikasi"
+    BORDER_SUBTITLE = "l LAN skan"
 
     def compose(self) -> ComposeResult:
         with TabbedContent():
@@ -55,7 +56,10 @@ class TopologyPanel(Vertical):
                     yield Button("LAN ni skanerlash", id="scan-lan", variant="primary")
                     yield LoadingIndicator(id="lan-loading")
                 yield Static(
-                    "[dim]LAN hostlarni ko'rish uchun [b]l[/] yoki tugmani bosing.[/]",
+                    f"[dim]{glyph('empty')}[/]\n\n"
+                    "[dim]LAN hali skanerlanmagan[/]\n"
+                    f"[$secondary]l[/][dim] — /24 ping sweep + ARP {glyph('sep')} "
+                    "IP, MAC, vendor, hostname[/]",
                     id="lan-empty",
                     classes="empty-state",
                 )
