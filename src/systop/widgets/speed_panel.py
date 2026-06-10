@@ -8,6 +8,7 @@ from textual.containers import Vertical
 from textual.widgets import Button, LoadingIndicator, Sparkline, Static
 
 from systop.core.speed import SpeedResult, run_speedtest
+from systop.widgets._glyphs import ellipsis, glyph
 
 
 class SpeedPanel(Vertical):
@@ -42,34 +43,57 @@ class SpeedPanel(Vertical):
         stats = self.query_one("#speed-stats", Static)
         loading = self.query_one("#speed-loading", LoadingIndicator)
 
+        ell = ellipsis()
         btn.disabled = True
-        btn.label = "O'lchanmoqda…"
+        btn.label = f"O'lchanmoqda{ell}"
         loading.display = True
-        readout.update("[dim]Latency o'lchanmoqda…[/]")
+        readout.update(f"[dim]Latency o'lchanmoqda{ell}[/]")
         self._history = []
 
         def on_download(mbps: float) -> None:
-            self._push(spark, stats, mbps)
-            readout.update(
-                f"⬇ Download   [b $success]{mbps:6.1f}[/] [dim]Mbps[/]   [dim]jarayonda…[/]"
-            )
+            self._progress(readout, spark, stats, glyph("download"), "Download", "$success", mbps)
 
         def on_upload(mbps: float) -> None:
-            self._push(spark, stats, mbps)
-            readout.update(
-                f"⬆ Upload     [b $secondary]{mbps:6.1f}[/] [dim]Mbps[/]   [dim]jarayonda…[/]"
-            )
+            self._progress(readout, spark, stats, glyph("upload"), "Upload", "$secondary", mbps)
 
         try:
             result = await run_speedtest(on_download=on_download, on_upload=on_upload)
             readout.update(self._format(result))
             stats.update(self._stats_caption(self._history))
         except Exception as exc:  # tarmoq xatosi — UI yiqilmasin
-            readout.update(f"[$error]✗ Xato:[/] {exc}")
+            readout.update(f"[$error]{glyph('cross')} Xato:[/] {exc}")
         finally:
             loading.display = False
             btn.disabled = False
             btn.label = "Qayta o'lchash"
+
+    def _progress(
+        self,
+        readout: Static,
+        spark: Sparkline,
+        stats: Static,
+        icon: str,
+        label: str,
+        color: str,
+        mbps: float,
+    ) -> None:
+        """Bosqich (download/upload) jonli holatini ko'rsatadi.
+
+        Warmup paytida core `mbps=0.0` yuboradi (TCP slow-start baytlari o'lchovga
+        kirmaydi). Bunday paytda "0.0 jarayonda" osilgandek ko'rinadi — shuning
+        o'rniga "isinmoqda…" deb ko'rsatamiz va grafikka 0 qo'shmaymiz (statistika
+        buzilmasin). Haqiqiy o'lchov boshlangach (mbps>0) odatdagi ko'rinish.
+        """
+        ell = ellipsis()
+        if mbps <= 0.0:
+            readout.update(
+                f"{icon} {label:<10}[dim]isinmoqda{ell}[/]   [dim]ulanish tayyorlanmoqda[/]"
+            )
+            return
+        self._push(spark, stats, mbps)
+        readout.update(
+            f"{icon} {label:<10}[b {color}]{mbps:6.1f}[/] [dim]Mbps[/]   [dim]jarayonda{ell}[/]"
+        )
 
     def _push(self, spark: Sparkline, stats: Static, mbps: float) -> None:
         self._history.append(round(mbps, 1))
@@ -78,10 +102,11 @@ class SpeedPanel(Vertical):
 
     @staticmethod
     def _placeholder() -> str:
+        d = glyph("dash")
         return (
-            "⬇ Download    [dim]—[/] [dim]Mbps[/]\n"
-            "⬆ Upload      [dim]—[/] [dim]Mbps[/]\n"
-            "⊚ Latency     [dim]—[/] [dim]ms[/]\n\n"
+            f"{glyph('download')} Download    [dim]{d}[/] [dim]Mbps[/]\n"
+            f"{glyph('upload')} Upload      [dim]{d}[/] [dim]Mbps[/]\n"
+            f"{glyph('latency')} Latency     [dim]{d}[/] [dim]ms[/]\n\n"
             "[dim]Boshlash uchun [b]s[/] yoki tugmani bosing.[/]"
         )
 
@@ -89,7 +114,8 @@ class SpeedPanel(Vertical):
     def _stats_caption(history: list[float] | None) -> str:
         """Grafik ostidagi izoh: joriy / min / o'rt / maks (Mbps)."""
         if not history:
-            return "[dim]joriy —   min —   o'rt —   maks —   Mbps[/]"
+            d = glyph("dash")
+            return f"[dim]joriy {d}   min {d}   o'rt {d}   maks {d}   Mbps[/]"
         cur = history[-1]
         lo = min(history)
         avg = sum(history) / len(history)
@@ -104,8 +130,8 @@ class SpeedPanel(Vertical):
     @staticmethod
     def _format(r: SpeedResult) -> str:
         return (
-            f"⬇ Download   [b $success]{r.download_mbps:6.1f}[/] [dim]Mbps[/]\n"
-            f"⬆ Upload     [b $secondary]{r.upload_mbps:6.1f}[/] [dim]Mbps[/]\n"
-            f"⊚ Latency    [b]{r.latency_ms:5.1f}[/] [dim]ms[/]"
+            f"{glyph('download')} Download   [b $success]{r.download_mbps:6.1f}[/] [dim]Mbps[/]\n"
+            f"{glyph('upload')} Upload     [b $secondary]{r.upload_mbps:6.1f}[/] [dim]Mbps[/]\n"
+            f"{glyph('latency')} Latency    [b]{r.latency_ms:5.1f}[/] [dim]ms[/]"
             f"   [dim]jitter[/] {r.jitter_ms:.1f} [dim]ms[/]"
         )

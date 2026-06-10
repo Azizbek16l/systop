@@ -361,3 +361,84 @@ def test_primary_interface_invalid_gateway_string(monkeypatch, gw):
     monkeypatch.setattr(netinfo, "list_interfaces", lambda: ifaces)
     monkeypatch.setattr(netinfo, "default_gateway", lambda: gw)
     assert primary_interface().name == "en0"
+
+
+# --- primary_interface: APIPA (169.254.x) / link-local filtri ---------------
+
+
+def test_primary_interface_skips_apipa_when_no_gateway(monkeypatch):
+    """Gateway yo'q: APIPA (169.254.x) interfeys o'tkazib, normalini tanlaydi.
+
+    Windows DHCP javob bermaganda APIPA tayinlaydi (ulanmagan adapter, masalan
+    Hyper-V vEthernet). Bunday interfeys primary bo'la olmaydi.
+    """
+    ifaces = [
+        Interface(name="vEthernet", ipv4="169.254.10.20", netmask="255.255.0.0"),
+        Interface(name="Ethernet", ipv4="192.168.1.50", netmask="255.255.255.0"),
+    ]
+    monkeypatch.setattr(netinfo, "list_interfaces", lambda: ifaces)
+    monkeypatch.setattr(netinfo, "default_gateway", lambda: None)
+    chosen = primary_interface()
+    assert chosen is not None and chosen.name == "Ethernet"
+
+
+def test_primary_interface_apipa_first_real_second(monkeypatch):
+    """Birinchi interfeys APIPA bo'lsa ham — keyingi NON-APIPA tanlanadi."""
+    ifaces = [
+        Interface(name="APIPA0", ipv4="169.254.1.1", netmask="255.255.0.0"),
+        Interface(name="APIPA1", ipv4="169.254.99.99", netmask="255.255.0.0"),
+        Interface(name="Real", ipv4="10.0.0.5", netmask="255.255.255.0"),
+    ]
+    monkeypatch.setattr(netinfo, "list_interfaces", lambda: ifaces)
+    monkeypatch.setattr(netinfo, "default_gateway", lambda: None)
+    assert primary_interface().name == "Real"
+
+
+def test_primary_interface_gateway_match_wins_over_apipa(monkeypatch):
+    """Gateway mos kelgan interfeys APIPA filtridan oldin afzal (1-qoida)."""
+    ifaces = [
+        Interface(name="APIPA", ipv4="169.254.5.5", netmask="255.255.0.0"),
+        Interface(name="LAN", ipv4="192.168.1.50", netmask="255.255.255.0"),
+    ]
+    monkeypatch.setattr(netinfo, "list_interfaces", lambda: ifaces)
+    monkeypatch.setattr(netinfo, "default_gateway", lambda: "192.168.1.1")
+    assert primary_interface().name == "LAN"
+
+
+def test_primary_interface_all_apipa_falls_back_to_first(monkeypatch):
+    """Hamma interfeys APIPA bo'lsa — oxirgi zaxira birinchi (None emas)."""
+    ifaces = [
+        Interface(name="A", ipv4="169.254.1.1", netmask="255.255.0.0"),
+        Interface(name="B", ipv4="169.254.2.2", netmask="255.255.0.0"),
+    ]
+    monkeypatch.setattr(netinfo, "list_interfaces", lambda: ifaces)
+    monkeypatch.setattr(netinfo, "default_gateway", lambda: None)
+    chosen = primary_interface()
+    assert chosen is not None and chosen.name == "A"
+
+
+def test_primary_interface_gateway_outside_network_skips_apipa(monkeypatch):
+    """Gateway hech qaysi tarmoqqa kirmasa, APIPA o'tkazilib normal tanlanadi."""
+    ifaces = [
+        Interface(name="APIPA", ipv4="169.254.7.7", netmask="255.255.0.0"),
+        Interface(name="Real", ipv4="192.168.1.50", netmask="255.255.255.0"),
+    ]
+    monkeypatch.setattr(netinfo, "list_interfaces", lambda: ifaces)
+    monkeypatch.setattr(netinfo, "default_gateway", lambda: "8.8.8.8")
+    assert primary_interface().name == "Real"
+
+
+@pytest.mark.parametrize(
+    "ipv4, expected",
+    [
+        ("169.254.0.1", True),
+        ("169.254.255.254", True),
+        ("192.168.1.1", False),
+        ("10.0.0.1", False),
+        ("8.8.8.8", False),
+        (None, True),
+        ("not-an-ip", True),
+    ],
+)
+def test_is_apipa(ipv4, expected):
+    assert netinfo._is_apipa(ipv4) is expected

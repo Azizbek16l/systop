@@ -62,9 +62,16 @@ jobs:
       - name: Sync deps
         run: uv sync
 
-      - name: Build standalone binary (PyInstaller)
+      # MUHIM: `--console` (console=True) — systop terminal ilovasi (TUI + CLI).
+      # `--windowed`/`--noconsole` (console=False) Windows'da konsolsiz GUI EXE
+      # yasaydi: stdout/stderr bo'lmaydi, `--json` skript chiqishi yo'qoladi va
+      # Textual TUI ishlamaydi. `console=True` bo'lgani uchun `init_console()`
+      # konsolni UTF-8 (65001) + VT rejimiga o'tkaza oladi — RUS/DE Windows'da
+      # ham sparkline/box belgilar mojibake bo'lmaydi. Bu flag default bilan mos,
+      # ammo regressiya bo'lmasligi uchun ATAYIN ko'rsatilgan.
+      - name: Build standalone binary (PyInstaller, console=True)
         run: >
-          uv run --with pyinstaller pyinstaller --onefile --name systop
+          uv run --with pyinstaller pyinstaller --onefile --console --name systop
           --collect-all systop --collect-all textual --collect-all rich
           --collect-submodules systop
           src/systop/__main__.py

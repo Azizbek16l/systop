@@ -483,6 +483,8 @@ _WIN_TRACERT_OUT = (
 
 async def test_win_traceroute_maps_hops(monkeypatch):
     monkeypatch.setattr(topology._platform, "IS_WINDOWS", True)
+    # tracert.exe parse yo'lini deterministik sinash uchun IcmpSendEcho'ni o'chiramiz.
+    monkeypatch.setattr(topology._platform, "win_icmp_traceroute", lambda *a, **k: None)
 
     async def fake_run_command(cmd, timeout):
         assert cmd[0] == "tracert"
@@ -500,9 +502,55 @@ async def test_win_traceroute_maps_hops(monkeypatch):
     assert raw[2].is_alive is False
 
 
+async def test_win_traceroute_uses_icmpsendecho_when_available(monkeypatch):
+    """ILDIZ yo'l: _win_traceroute IcmpSendEcho natijasini (tracert.exe EMAS) oladi."""
+    monkeypatch.setattr(topology._platform, "IS_WINDOWS", True)
+
+    def fake_icmp_trace(address, max_hops, timeout):
+        assert address == "8.8.8.8"
+        return [
+            (1, "192.168.1.1", 1.0, True),
+            (2, None, 0.0, False),
+            (3, "8.8.8.8", 12.0, True),
+        ]
+
+    monkeypatch.setattr(topology._platform, "win_icmp_traceroute", fake_icmp_trace)
+
+    async def boom(cmd, timeout):
+        raise AssertionError("IcmpSendEcho mavjud bo'lsa tracert.exe chaqirilmasligi kerak")
+
+    monkeypatch.setattr(topology._platform, "run_command", boom)
+
+    raw = await topology._win_traceroute("8.8.8.8")
+    assert [h.distance for h in raw] == [1, 2, 3]
+    assert raw[0].address == "192.168.1.1"
+    assert raw[0].avg_rtt == pytest.approx(1.0)
+    assert raw[1].address is None  # timeout hop
+    assert raw[1].is_alive is False
+    assert raw[2].address == "8.8.8.8"
+
+
+async def test_win_traceroute_falls_back_to_parse_when_icmp_none(monkeypatch):
+    """IcmpSendEcho None -> tracert.exe parse zaxirasiga o'tadi."""
+    monkeypatch.setattr(topology._platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(topology._platform, "win_icmp_traceroute", lambda *a, **k: None)
+
+    async def fake_run_command(cmd, timeout):
+        assert cmd[0] == "tracert"
+        return _WIN_TRACERT_OUT
+
+    monkeypatch.setattr(topology._platform, "run_command", fake_run_command)
+    raw = await topology._win_traceroute("8.8.8.8")
+    assert [h.distance for h in raw] == [1, 2, 3, 4]
+    assert raw[0].address == "192.168.1.1"
+    assert raw[2].address is None
+
+
 async def test_traceroute_windows_branch(monkeypatch):
     """traceroute() Windows'da icmplib EMAS, tracert ishlatishini tasdiqlash."""
     monkeypatch.setattr(topology._platform, "IS_WINDOWS", True)
+    # Bu test ping.exe/tracert.exe parse yo'lini tekshiradi -> IcmpSendEcho'ni o'chiramiz.
+    monkeypatch.setattr(topology._platform, "win_icmp_traceroute", lambda *a, **k: None)
 
     def boom(*a, **k):
         raise AssertionError("icmplib traceroute Windows'da chaqirilmasligi kerak")
@@ -531,6 +579,8 @@ async def test_traceroute_windows_branch(monkeypatch):
 async def test_trace_path_windows_empty_sets_error(monkeypatch):
     """Windows tracert bo'sh chiqsa -> TraceResult.error to'ldiriladi (o'zbekcha)."""
     monkeypatch.setattr(topology._platform, "IS_WINDOWS", True)
+    # IcmpSendEcho ham yo'q -> tracert.exe ham bo'sh -> xato to'ldiriladi.
+    monkeypatch.setattr(topology._platform, "win_icmp_traceroute", lambda *a, **k: None)
 
     async def fake_run_command(cmd, timeout):
         return ""  # buyruq yo'q / timeout
@@ -544,6 +594,8 @@ async def test_trace_path_windows_empty_sets_error(monkeypatch):
 async def test_trace_stream_windows_branch(monkeypatch):
     """trace_stream Windows'da _win_traceroute orqali probe qilishini tasdiqlash."""
     monkeypatch.setattr(topology._platform, "IS_WINDOWS", True)
+    # tracert.exe parse yo'lini sinaymiz -> IcmpSendEcho'ni o'chiramiz.
+    monkeypatch.setattr(topology._platform, "win_icmp_traceroute", lambda *a, **k: None)
 
     def boom(*a, **k):
         raise AssertionError("icmplib Windows'da chaqirilmasligi kerak")
@@ -576,6 +628,8 @@ async def test_discover_lan_windows_uses_win_sweep(monkeypatch):
         raise AssertionError("async_multiping Windows'da chaqirilmasligi kerak")
 
     monkeypatch.setattr(topology, "async_multiping", boom)
+    # Sweep ping.exe parse yo'lini sinaymiz -> IcmpSendEcho'ni o'chiramiz.
+    monkeypatch.setattr(topology._platform, "win_icmp_ping", lambda *a, **k: None)
 
     # `ping` sweep: faqat .1 javob beradi.
     async def fake_run_command(cmd, timeout):

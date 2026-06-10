@@ -9,6 +9,7 @@ from textual.widgets import DataTable, Sparkline, Static
 
 from systop.core.netinfo import default_gateway
 from systop.core.ping import build_targets, ping_many
+from systop.widgets._glyphs import dash, glyph
 
 REFRESH_SECONDS = 3.0
 
@@ -48,14 +49,16 @@ class PingPanel(Vertical):
         table = self.query_one("#ping-table", DataTable)
         table.clear()
         for r in results:
+            # Holat HAR DOIM haqiqiy parse natijasidan: o'lik bo'lsa ham
+            # r.loss_pct ko'rsatiladi (qattiq "100" emas). Qisman yo'qotishda
+            # (alive=True, lekin loss>0) sariq, to'liq o'lik bo'lsa qizil.
+            loss = self._loss_cell(r.loss_pct)
             if r.alive:
-                dot = "[green]●[/] [dim]tirik[/]"
+                dot = f"[green]{glyph('ok')}[/] [dim]tirik[/]"
                 avg = self._rtt_cell(r.avg_rtt)
-                loss = self._loss_cell(r.loss_pct)
             else:
-                dot = "[red]●[/] [dim]o'lik[/]"
-                avg = "[dim]—[/]"
-                loss = "[red]100[/]"
+                dot = f"[red]{glyph('dead')}[/] [dim]o'lik[/]"
+                avg = f"[dim]{dash()}[/]"
             table.add_row(dot, r.label, r.address, avg, loss)
 
         # Grafik uchun birinchi tirik nishonni kuzatamiz.
@@ -90,7 +93,8 @@ class PingPanel(Vertical):
         """Grafik ostidagi izoh: joriy / min / o'rt / maks RTT (ms)."""
         head = f"[dim]{label}[/]  " if label else ""
         if not history:
-            return f"{head}[dim]joriy —   min —   o'rt —   maks —   ms[/]"
+            d = dash()
+            return f"{head}[dim]joriy {d}   min {d}   o'rt {d}   maks {d}   ms[/]"
         cur = history[-1]
         lo = min(history)
         avg = sum(history) / len(history)

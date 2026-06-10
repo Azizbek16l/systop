@@ -13,6 +13,7 @@ from textual.containers import Horizontal, Vertical
 from textual.theme import Theme
 from textual.widgets import Footer, Header
 
+from systop.core import _platform
 from systop.widgets import HelpScreen, PingPanel, SpeedPanel, StatusBar, TopologyPanel
 
 # systop uchun maxsus tema — sovuq "terminal" palitrasi (oklch'ga yaqin tonlar).
@@ -73,6 +74,11 @@ class SystopApp(App):
         self.register_theme(SYSTOP_THEME)
         self.register_theme(SYSTOP_LIGHT)
         self.theme = "systop"
+        # Legacy konsol (Unicode'siz) — ekran'ga `-ascii` klassi qo'shamiz;
+        # styles.tcss ramkalarni ASCII'ga tushiradi va sparkline'larni yashiradi
+        # (block belgilar mojibake bo'lmasligi uchun). macOS/Linux: hech narsa.
+        if not _platform.unicode_ok():
+            self.screen.add_class("-ascii")
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -106,7 +112,13 @@ class SystopApp(App):
 
 
 def run() -> None:
-    """Dashboard'ni ishga tushiradi."""
+    """Dashboard'ni ishga tushiradi.
+
+    Avval konsolni tayyorlaymiz (`init_console`): Windows'da UTF-8 + VT rejimi —
+    Textual sparkline/braille/box belgilari legacy cmd.exe'da ham to'g'ri
+    ko'rinadi. Boshqa OS'da bu no-op. Shundan keyingina ilova ishga tushadi.
+    """
+    _platform.init_console()
     SystopApp().run()
 
 

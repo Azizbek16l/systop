@@ -13,6 +13,7 @@ Har bir bosqich `on_progress(mbps)` callback orqali jonli yangilanadi.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
@@ -132,6 +133,15 @@ async def _upload_stream(
         pass
 
 
+# `stop` o'rnatilgandan keyin uchib turgan (in-flight) so'rovni kutish muddati.
+# Upload fazasida server javobni sekin bersa POST `stop`'dan keyin ham osilib
+# qolishi mumkin edi (foydalanuvchiga "osilgandek" ko'rinardi). Shu grace
+# o'tgach uchayotgan worker'lar bekor qilinadi — natija (commit qilingan
+# baytlar) o'zgarmaydi, faqat osilish to'xtaydi. Mock transport darhol javob
+# bergani uchun bu yo'l testlarda hech qachon ishga tushmaydi.
+_DRAIN_GRACE_S = 3.0
+
+
 async def _run_phase(
     workers: list,
     counter: list[int],
@@ -146,6 +156,11 @@ async def _run_phase(
     `warmup` — boshlang'ich ramp-up soniyalari: shu vaqtgacha o'tgan baytlar
     o'lchovga kirmaydi (TCP slow-start tufayli past tezlik o'rtachani buzmasin).
     O'lchov oynasi warmup'dan keyin boshlanadi va `duration` soniya davom etadi.
+
+    `on_progress` warmup davomida ham JONLI qiymat oladi (boshlanish vaqtidan
+    hisoblangan oraliq throughput) — upload fazasi "0.0 da osilgandek"
+    ko'rinmasligi uchun. O'lchovga kiradigan (qaytariladigan) Mbps esa faqat
+    warmup'dan keyingi oynadan hisoblanadi — aniqlik o'zgarmaydi.
     """
     start = time.perf_counter()
     base_bytes = 0  # warmup oxiridagi bayt hisoblagichi
@@ -162,16 +177,23 @@ async def _run_phase(
                 base_bytes = counter[0]
                 base_time = now
                 warmed = True
-            window = now - base_time
-            measured_bytes = counter[0] - base_bytes
-            mbps = (measured_bytes * 8) / window / 1e6 if window > 0 and warmed else 0.0
+            if warmed:
+                window = now - base_time
+                measured_bytes = counter[0] - base_bytes
+                mbps = (measured_bytes * 8) / window / 1e6 if window > 0 else 0.0
+            else:
+                # Warmup ichida — boshlanishdan oraliq throughput ko'rsatamiz,
+                # shunda UI harakatda turadi (0.0 da qotib qolmaydi). Bu qiymat
+                # YAKUNIY o'lchovga kirmaydi, faqat jonli ko'rsatkich.
+                warm_window = now - start
+                mbps = (counter[0] * 8) / warm_window / 1e6 if warm_window > 0 else 0.0
             if on_progress:
                 on_progress(mbps)
             if elapsed >= warmup + duration or gather.done():
                 stop.set()
                 break
     finally:
-        await gather
+        await _drain_workers(gather)
     if not warmed:
         # Worker'lar warmup tugashidan oldin yakunlandi — hammasini hisoblaymiz.
         base_bytes = 0
@@ -179,6 +201,31 @@ async def _run_phase(
     window = max(time.perf_counter() - base_time, 1e-6)
     measured = counter[0] - base_bytes
     return (measured * 8) / window / 1e6, counter[0]
+
+
+async def _drain_workers(gather: asyncio.Future) -> None:
+    """`stop`'dan keyin uchayotgan worker'larni kutadi; osilib qolsa bekor qiladi.
+
+    Normal holatda worker'lar `stop`'ni ko'rib darhol tugaydi (`gather` zudlik
+    bilan yakunlanadi). Lekin upload POST'i server javobini kutib turgan bo'lsa
+    `_DRAIN_GRACE_S` dan ortiq osilishi mumkin — bu muddatdan keyin `gather`
+    bekor qilinadi (in-flight POST baytlari allaqachon `counter`ga commit
+    qilinmagani uchun natija buzilmaydi). Bekor qilingach `CancelledError`'ni
+    yutamiz — chaqiruvchi faza hisobini bemalol yakunlaydi.
+    """
+    try:
+        await asyncio.wait_for(gather, timeout=_DRAIN_GRACE_S)
+    except TimeoutError:
+        gather.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await gather
+    except asyncio.CancelledError:
+        # Tashqaridan bekor qilindi (masalan butun speedtest cancel) — gather'ni
+        # ham bekor qilib, qayta ko'taramiz (cancel semantikasini saqlash uchun).
+        gather.cancel()
+        with contextlib.suppress(Exception):
+            await gather
+        raise
 
 
 async def measure_download(

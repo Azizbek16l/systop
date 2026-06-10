@@ -241,6 +241,132 @@ async def test_run_phase_finishes_early_when_workers_done():
     assert mbps > 0.0
 
 
+# --- warmup UX: progress "0.0 da osilib qolmaydi" ---------------------------
+
+
+async def test_run_phase_warmup_reports_intermediate_progress():
+    """Warmup ichida baytlar oqayotgan bo'lsa, progress 0.0 EMAS oraliq qiymat.
+
+    Upload fazasi "osilgandek" ko'rinmasligi uchun: o'lchov oynasi boshlanmagan
+    bo'lsa ham (warmup), boshlanishdan hisoblangan jonli throughput ko'rsatiladi.
+    """
+    counter = [0]
+    stop = asyncio.Event()
+
+    async def steady_worker():
+        # Warmup davomida ham doimiy bayt oqimi.
+        while not stop.is_set():
+            counter[0] += 2_000_000
+            await asyncio.sleep(0.02)
+
+    seen: list[float] = []
+    # warmup (0.4s) duration (0.2s) dan uzun => dastlabki callback'lar warmup ichida.
+    await speed._run_phase(
+        [steady_worker()],
+        counter,
+        duration=0.2,
+        stop=stop,
+        on_progress=seen.append,
+        warmup=0.4,
+    )
+    assert seen, "progress callback hech chaqirilmadi"
+    # Birinchi (warmup ichidagi) yangilanish 0.0 dan KATTA bo'lishi shart —
+    # ya'ni foydalanuvchi harakatni ko'radi, qotib qolmaydi.
+    assert seen[0] > 0.0, f"warmup progress 0.0 da osilib qoldi: {seen[:3]}"
+    assert all(v >= 0.0 for v in seen)
+
+
+async def test_run_phase_warmup_excludes_warmup_bytes_from_measurement():
+    """Jonli warmup ko'rsatkichi YAKUNIY o'lchovga ta'sir qilmaydi.
+
+    Warmup baytlari faqat progress callback'da ko'rinadi; qaytariladigan Mbps
+    esa warmup'dan keyingi oynadan hisoblanadi (aniqlik o'zgarmaganini tasdiqlash).
+    """
+    counter = [0]
+    stop = asyncio.Event()
+
+    async def steady_worker():
+        while not stop.is_set():
+            counter[0] += 1_000_000
+            await asyncio.sleep(0.02)
+
+    mbps_warm, total = await speed._run_phase(
+        [steady_worker()], counter, duration=0.3, stop=stop, on_progress=None, warmup=0.3
+    )
+    assert total > 0
+    assert mbps_warm > 0.0  # o'lchov oynasi (warmup'dan keyin) ham baytlarni ko'radi
+
+
+# --- drain: stop'dan keyin osilgan worker bekor qilinadi --------------------
+
+
+async def test_drain_workers_cancels_hung_worker(monkeypatch):
+    """`stop`'dan keyin uchib turgan (osilgan) worker grace o'tgach bekor qilinadi.
+
+    Upload POST server javobini kutib osilib qolsa, faza cheksiz turib
+    qolmasligi kerak. Grace'ni qisqa qilib (test tez bo'lsin), osilgan
+    worker bekor qilinishini va istisno yutilishini tasdiqlaymiz.
+    """
+    monkeypatch.setattr(speed, "_DRAIN_GRACE_S", 0.2)
+    cancelled = {"hit": False}
+
+    async def hung_worker():
+        try:
+            await asyncio.sleep(100)  # hech qachon tugamaydigan "in-flight POST"
+        except asyncio.CancelledError:
+            cancelled["hit"] = True
+            raise
+
+    gather = asyncio.gather(hung_worker())
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    # _drain_workers istisno KO'TARMASLIGI kerak (jim bekor qiladi).
+    await speed._drain_workers(gather)
+    elapsed = loop.time() - start
+    assert elapsed < 2.0, f"drain juda uzoq kutdi: {elapsed:.2f}s"
+    assert cancelled["hit"] is True
+    assert gather.cancelled() or gather.done()
+
+
+async def test_drain_workers_returns_promptly_for_finished_worker():
+    """Worker allaqachon tugagan bo'lsa, drain darhol qaytadi (cancel'siz)."""
+
+    async def done_worker():
+        return None
+
+    gather = asyncio.gather(done_worker())
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    await speed._drain_workers(gather)
+    assert (loop.time() - start) < 0.5
+    assert not gather.cancelled()
+
+
+async def test_run_phase_with_hung_worker_does_not_hang(monkeypatch):
+    """To'liq faza: worker stop'ni e'tiborsiz qoldirib osilsa ham faza tugaydi.
+
+    Bu upload fazasidagi haqiqiy "osilish" simptomining integratsiya testi —
+    drain grace tufayli faza cheksiz turmaydi.
+    """
+    monkeypatch.setattr(speed, "_DRAIN_GRACE_S", 0.2)
+    counter = [5_000_000]
+    stop = asyncio.Event()
+
+    async def stubborn_worker():
+        # `stop`'ni butunlay e'tiborsiz qoldiradi (osilgan POST'ni simulyatsiya).
+        await asyncio.sleep(100)
+
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    mbps, total = await speed._run_phase(
+        [stubborn_worker()], counter, duration=0.3, stop=stop, on_progress=None, warmup=0.0
+    )
+    elapsed = loop.time() - start
+    assert elapsed < 3.0, f"osilgan worker fazani osib qo'ydi: {elapsed:.2f}s"
+    assert stop.is_set()
+    assert total == 5_000_000  # commit qilingan baytlar saqlanadi
+
+
 # --- run_speedtest (to'liq, soxta transport bilan) --------------------------
 
 

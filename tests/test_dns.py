@@ -197,3 +197,50 @@ def test_dns_result_defaults():
     assert r.system_error is None
     assert r.resolvers == []
     assert r.tool is None
+
+
+# --- _query_resolver: Windows OEM codepage (cp866) dekodlash ----------------
+
+
+class _FakeProc:
+    """`asyncio.create_subprocess_exec` natijasining minimal o'rni (bytes stdout)."""
+
+    def __init__(self, stdout: bytes) -> None:
+        self._stdout = stdout
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        return self._stdout, b""
+
+
+async def test_query_resolver_decodes_oem_codepage(monkeypatch):
+    """RUS nslookup chiqishi cp866 baytlardan to'g'ri dekodlanib parse qilinadi.
+
+    Tasdiqlash: subprocess stdout BAYT sifatida olinadi va `_platform.
+    decode_console` orqali OEM codepage (cp866) bilan dekodlanadi — UTF-8 emas.
+    """
+    # Windows + cp866 konsol simulyatsiyasi.
+    monkeypatch.setattr(dns._platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(dns._platform, "_console_output_cp", lambda: 866)
+
+    # nslookup natijasi: server + javob manzili (ascii IP'lar), lekin atrofda
+    # kirill matn (cp866) — UTF-8 dekodlash mojibake qilardi.
+    ns_out = (
+        "Сервер:  dns.google\nAddress:  8.8.8.8\n\nИмя:     example.com\nAddress: 93.184.216.34\n"
+    )
+    raw = ns_out.encode("cp866")
+
+    captured = {}
+
+    async def fake_exec(*cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["creationflags"] = kwargs.get("creationflags")
+        return _FakeProc(raw)
+
+    monkeypatch.setattr(dns.asyncio, "create_subprocess_exec", fake_exec)
+
+    result = await dns._query_resolver("example.com", "8.8.8.8", "nslookup", timeout=2.0)
+    assert result.ok is True
+    # Birinchi Address (server) tashlanadi, ikkinchisi javob.
+    assert result.addresses == ["93.184.216.34"]
+    # CREATE_NO_WINDOW (yoki 0) uzatilgan bo'lishi kerak (oyna miltillamasin).
+    assert captured["creationflags"] == dns._platform.subprocess_flags()

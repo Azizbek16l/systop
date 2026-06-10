@@ -12,6 +12,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PyPI release and `uvx`/`pipx` install.
 - Homebrew formula.
 
+## [0.3.2] — 2026-06-10
+
+Windows correctness overhaul — the localized-Windows ping/render defects.
+
+### Fixed
+
+- **Ping reported 100% loss on non-English Windows.** Root cause: the Windows
+  path parsed `ping.exe` text, but on Russian Windows (codepage 866, `время=…мс`)
+  the RTT regex never matched → every target looked dead even with working
+  internet. Windows ICMP now uses the **Win32 `IcmpSendEcho` API** (`iphlpapi.dll`
+  via ctypes) — locale- and codepage-independent, structured, no Administrator,
+  no flashing console window. Traceroute uses `IcmpSendEcho` with increasing TTL.
+- **Mojibake in the TUI / route/ARP parsing on Windows.** The console output
+  codepage is now set to UTF-8 (`SetConsoleOutputCP(65001)` + VT processing) at
+  startup; subprocess output (route/arp/ip-neigh) is decoded with the actual OEM
+  codepage instead of assuming UTF-8.
+- **ASCII fallback** for legacy consoles that can't render Unicode block/braille
+  glyphs (`unicode_ok()` gate): sparklines hide, emoji/box-drawing degrade to
+  ASCII — the dashboard stays readable.
+- **APIPA interface selection** — `primary_interface()` now skips `169.254.x`
+  link-local / virtual NICs and prefers the gateway's interface.
+- **POSIX `LANG=C` safety** — stdout/stderr are hardened so non-ASCII output
+  (Uzbek text, JSON) never raises `UnicodeEncodeError`.
+- Upload phase no longer looks "stuck": warm-up shows a "preparing" state.
+
+### Added
+
+- CI: locale matrix (C/ascii, ru_RU, de_DE) + a `windows-latest` live smoke job
+  (`ping --json --targets 127.0.0.1` must be alive — catches the regression).
+
 ## [0.3.1] — 2026-06-08
 
 ### Fixed

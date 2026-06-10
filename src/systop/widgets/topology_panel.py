@@ -25,6 +25,7 @@ from systop.core.connections import list_connections
 from systop.core.dns import diagnose_dns
 from systop.core.ports import parse_ports, scan_host
 from systop.core.topology import discover_lan, trace_stream, traceroute
+from systop.widgets._glyphs import dash, ellipsis, glyph
 
 
 def _fmt_bps(bps: float) -> str:
@@ -127,7 +128,12 @@ class TopologyPanel(Vertical):
             "Server", "Holat", "RTT ms", "Manzillar"
         )
         self.query_one("#bw-table", DataTable).add_columns(
-            "Interfeys", "⬇ RX", "⬆ TX", "Jami", "RX pps", "TX pps"
+            "Interfeys",
+            f"{glyph('download')} RX",
+            f"{glyph('upload')} TX",
+            "Jami",
+            "RX pps",
+            "TX pps",
         )
         self.query_one("#conn-table", DataTable).add_columns(
             "Proto", "Lokal", "Masofaviy", "Holat", "PID", "Jarayon"
@@ -189,12 +195,13 @@ class TopologyPanel(Vertical):
         empty = self.query_one("#lan-empty", Static)
 
         btn.disabled = True
-        btn.label = "Skanerlanmoqda…"
+        btn.label = f"Skanerlanmoqda{ellipsis()}"
         loading.display = True
         empty.display = False
         table.display = False
         table.clear()
 
+        d = dash()
         try:
             hosts = await discover_lan(resolve=True)
             if not hosts:
@@ -203,20 +210,20 @@ class TopologyPanel(Vertical):
                 btn.label = "Qayta skanerlash"
                 return
             for h in hosts:
-                role = "[cyan]◆ gateway[/]" if h.is_gateway else "[dim]host[/]"
-                rtt = f"{h.rtt_ms:.1f}" if h.rtt_ms else "[dim]—[/]"
+                role = f"[cyan]{glyph('gateway')} gateway[/]" if h.is_gateway else "[dim]host[/]"
+                rtt = f"{h.rtt_ms:.1f}" if h.rtt_ms else f"[dim]{d}[/]"
                 table.add_row(
                     h.ip,
-                    h.mac or "[dim]—[/]",
-                    h.vendor or "[dim]—[/]",
-                    h.hostname or "[dim]—[/]",
+                    h.mac or f"[dim]{d}[/]",
+                    h.vendor or f"[dim]{d}[/]",
+                    h.hostname or f"[dim]{d}[/]",
                     rtt,
                     role,
                 )
             table.display = True
             btn.label = f"Qayta skanerlash ({len(hosts)} ta)"
         except Exception as exc:
-            empty.update(f"[red]✗ Xato:[/] {exc}")
+            empty.update(f"[red]{glyph('cross')} Xato:[/] {exc}")
             empty.display = True
             btn.label = "LAN ni skanerlash"
         finally:
@@ -253,11 +260,12 @@ class TopologyPanel(Vertical):
         empty = self.query_one("#trace-empty", Static)
 
         btn.disabled = True
-        btn.label = "Kuzatilmoqda…"
+        btn.label = f"Kuzatilmoqda{ellipsis()}"
         loading.display = True
         empty.display = False
         table.display = False
 
+        d = dash()
         try:
             hops = await traceroute(target)
             if not hops:
@@ -271,10 +279,10 @@ class TopologyPanel(Vertical):
                 else:
                     rtt = "[dim]*[/]"
                     addr = "[dim]* * *[/]"
-                table.add_row(str(hop.index), addr, hop.hostname or "[dim]—[/]", rtt)
+                table.add_row(str(hop.index), addr, hop.hostname or f"[dim]{d}[/]", rtt)
             table.display = True
         except Exception as exc:
-            empty.update(f"[red]✗ Xato:[/] {exc}")
+            empty.update(f"[red]{glyph('cross')} Xato:[/] {exc}")
             empty.display = True
         finally:
             loading.display = False
@@ -294,11 +302,12 @@ class TopologyPanel(Vertical):
         empty = self.query_one("#trace-empty", Static)
 
         btn.disabled = True
-        btn.label = "Jonli kuzatilmoqda…"
+        btn.label = f"Jonli kuzatilmoqda{ellipsis()}"
         loading.display = True
         empty.display = False
         table.display = False
 
+        d = dash()
         try:
             async for hops in trace_stream(target, interval=1.0):
                 table.clear()
@@ -313,7 +322,7 @@ class TopologyPanel(Vertical):
                     table.add_row(
                         str(hop.index),
                         addr,
-                        hop.hostname or "[dim]—[/]",
+                        hop.hostname or f"[dim]{d}[/]",
                         self._loss_cell(hop.loss_pct),
                         avg,
                         best,
@@ -321,7 +330,7 @@ class TopologyPanel(Vertical):
                     )
                 table.display = True
         except Exception as exc:
-            empty.update(f"[red]✗ Xato:[/] {exc}")
+            empty.update(f"[red]{glyph('cross')} Xato:[/] {exc}")
             empty.display = True
         finally:
             loading.display = False
@@ -341,13 +350,13 @@ class TopologyPanel(Vertical):
 
         ports = parse_ports(ports_spec) if ports_spec else None
         if ports_spec and not ports:
-            empty.update("[red]✗ Portlar ro'yxati noto'g'ri.[/]")
+            empty.update(f"[red]{glyph('cross')} Portlar ro'yxati noto'g'ri.[/]")
             empty.display = True
             table.display = False
             return
 
         btn.disabled = True
-        btn.label = "Skanerlanmoqda…"
+        btn.label = f"Skanerlanmoqda{ellipsis()}"
         loading.display = True
         empty.display = False
         table.display = False
@@ -356,7 +365,7 @@ class TopologyPanel(Vertical):
         try:
             result = await scan_host(host, ports=ports)
             if result.error:
-                empty.update(f"[red]✗ {result.error}[/]")
+                empty.update(f"[red]{glyph('cross')} {result.error}[/]")
                 empty.display = True
                 btn.label = "Skan"
                 return
@@ -372,14 +381,14 @@ class TopologyPanel(Vertical):
             for p in open_ports:
                 table.add_row(
                     str(p.port),
-                    p.service or "[dim]—[/]",
+                    p.service or f"[dim]{dash()}[/]",
                     "[green]ochiq[/]",
                     self._rtt_cell(p.rtt_ms),
                 )
             table.display = True
             btn.label = f"Qayta skan ({len(open_ports)}/{len(result.ports)} ochiq)"
         except Exception as exc:
-            empty.update(f"[red]✗ Xato:[/] {exc}")
+            empty.update(f"[red]{glyph('cross')} Xato:[/] {exc}")
             empty.display = True
             btn.label = "Skan"
         finally:
@@ -397,30 +406,31 @@ class TopologyPanel(Vertical):
         empty = self.query_one("#dns-empty", Static)
 
         btn.disabled = True
-        btn.label = "So'ralmoqda…"
+        btn.label = f"So'ralmoqda{ellipsis()}"
         loading.display = True
         empty.display = False
         table.display = False
         table.clear()
 
+        d = dash()
         try:
             result = await diagnose_dns(name)
             # Tizim resolveri natijasi — birinchi qator.
             if result.system_error:
-                table.add_row("Tizim", "[red]xato[/]", "[dim]—[/]", result.system_error)
+                table.add_row("Tizim", "[red]xato[/]", f"[dim]{d}[/]", result.system_error)
             else:
-                addrs = ", ".join(result.system_addresses[:3]) or "[dim]—[/]"
-                table.add_row("Tizim resolver", "[green]ok[/]", "[dim]—[/]", addrs)
+                addrs = ", ".join(result.system_addresses[:3]) or f"[dim]{d}[/]"
+                table.add_row("Tizim resolver", "[green]ok[/]", f"[dim]{d}[/]", addrs)
 
             ok_resolvers = [r for r in result.resolvers if r.ok]
             fastest = min(ok_resolvers, key=lambda r: r.rtt_ms) if ok_resolvers else None
             for r in result.resolvers:
                 if r.ok:
-                    tag = " [yellow]⚡[/]" if r is fastest else ""
+                    tag = f" [yellow]{glyph('fast')}[/]" if r is fastest else ""
                     addrs = ", ".join(r.addresses[:3])
                     table.add_row(f"{r.name}{tag}", "[green]ok[/]", self._rtt_cell(r.rtt_ms), addrs)
                 else:
-                    table.add_row(r.name, "[red]—[/]", "[dim]—[/]", r.error or "xato")
+                    table.add_row(r.name, f"[red]{d}[/]", f"[dim]{d}[/]", r.error or "xato")
 
             if not result.tool:
                 empty.update("[dim]Eslatma: dig/nslookup topilmadi — faqat tizim resolveri.[/]")
@@ -428,7 +438,7 @@ class TopologyPanel(Vertical):
             table.display = True
             btn.label = "Qayta so'rash"
         except Exception as exc:
-            empty.update(f"[red]✗ Xato:[/] {exc}")
+            empty.update(f"[red]{glyph('cross')} Xato:[/] {exc}")
             empty.display = True
             btn.label = "DNS"
         finally:
@@ -485,7 +495,7 @@ class TopologyPanel(Vertical):
                     empty.display = True
                     table.display = False
         except Exception as exc:
-            empty.update(f"[red]✗ Xato:[/] {exc}")
+            empty.update(f"[red]{glyph('cross')} Xato:[/] {exc}")
             empty.display = True
             table.display = False
         finally:
@@ -500,12 +510,13 @@ class TopologyPanel(Vertical):
         empty = self.query_one("#conn-empty", Static)
 
         btn.disabled = True
-        btn.label = "Yuklanmoqda…"
+        btn.label = f"Yuklanmoqda{ellipsis()}"
         loading.display = True
         empty.display = False
         table.display = False
         table.clear()
 
+        d = dash()
         try:
             # list_connections sinxron va psutil'da sekin bo'lishi mumkin —
             # event loop bloklanmasligi uchun thread'da chaqiramiz.
@@ -521,16 +532,16 @@ class TopologyPanel(Vertical):
             for c in conns:
                 table.add_row(
                     c.proto,
-                    c.laddr or "[dim]—[/]",
-                    c.raddr or "[dim]—[/]",
+                    c.laddr or f"[dim]{d}[/]",
+                    c.raddr or f"[dim]{d}[/]",
                     self._status_cell(c.status),
-                    str(c.pid) if c.pid is not None else "[dim]—[/]",
-                    c.process or "[dim]—[/]",
+                    str(c.pid) if c.pid is not None else f"[dim]{d}[/]",
+                    c.process or f"[dim]{d}[/]",
                 )
             table.display = True
             btn.label = f"Yangilash ({len(conns)} ta)"
         except Exception as exc:
-            empty.update(f"[red]✗ Xato:[/] {exc}")
+            empty.update(f"[red]{glyph('cross')} Xato:[/] {exc}")
             empty.display = True
             btn.label = "Yangilash"
         finally:
@@ -541,7 +552,7 @@ class TopologyPanel(Vertical):
     def _status_cell(status: str) -> str:
         """Ulanish holatini ranglaydi (DataTable Rich markup)."""
         if not status:
-            return "[dim]—[/]"
+            return f"[dim]{dash()}[/]"
         up = status.upper()
         if up == "ESTABLISHED":
             return f"[green]{status}[/]"

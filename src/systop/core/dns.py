@@ -17,6 +17,8 @@ import socket
 import time
 from dataclasses import dataclass, field
 
+from systop.core import _platform
+
 # Taqqoslanadigan ommaviy DNS serverlar.
 PUBLIC_RESOLVERS: dict[str, str] = {
     "Google": "8.8.8.8",
@@ -100,6 +102,7 @@ async def _query_resolver(name: str, server: str, tool: str, timeout: float) -> 
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            creationflags=_platform.subprocess_flags(),
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout + 1.0)
     except TimeoutError:
@@ -108,7 +111,8 @@ async def _query_resolver(name: str, server: str, tool: str, timeout: float) -> 
         return ResolverResult(name=label, server=server, error=str(exc))
 
     rtt = (time.perf_counter() - start) * 1000.0
-    out = stdout.decode(errors="replace")
+    # Windows nslookup OEM codepage'da yozadi (RUS = cp866) -> decode_console.
+    out = _platform.decode_console(stdout)
     addrs = _parse_dig(out) if tool == "dig" else _parse_nslookup(out)
     if not addrs:
         return ResolverResult(

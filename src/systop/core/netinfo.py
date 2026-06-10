@@ -79,28 +79,29 @@ def default_gateway() -> str | None:
             return _default_gateway_windows()
 
         if system == "Linux":
-            out = subprocess.run(
+            raw = subprocess.run(
                 ["ip", "route", "show", "default"],
                 capture_output=True,
-                text=True,
                 timeout=3,
             ).stdout
+            out = _platform.decode_console(raw)
             m = re.search(r"default via (\d+\.\d+\.\d+\.\d+)", out)
             return m.group(1) if m else None
 
         # macOS / BSD
-        out = subprocess.run(
+        raw = subprocess.run(
             ["route", "-n", "get", "default"],
             capture_output=True,
-            text=True,
             timeout=3,
         ).stdout
+        out = _platform.decode_console(raw)
         m = re.search(r"gateway:\s*(\d+\.\d+\.\d+\.\d+)", out)
         if m:
             return m.group(1)
 
         # Universal zaxira: netstat marshrut jadvali
-        out = subprocess.run(["netstat", "-rn"], capture_output=True, text=True, timeout=3).stdout
+        raw = subprocess.run(["netstat", "-rn"], capture_output=True, timeout=3).stdout
+        out = _platform.decode_console(raw)
         for line in out.splitlines():
             if line.split()[:1] == ["default"]:
                 parts = line.split()
@@ -123,12 +124,13 @@ def _default_gateway_windows() -> str | None:
     """
     # 1) route print -4
     try:
-        out = subprocess.run(
+        raw = subprocess.run(
             ["route", "print", "-4"],
             capture_output=True,
-            text=True,
             timeout=3,
+            creationflags=_platform.subprocess_flags(),
         ).stdout
+        out = _platform.decode_console(raw)
         gw = _platform.parse_windows_route_print(out)
         if gw:
             return gw
@@ -137,7 +139,7 @@ def _default_gateway_windows() -> str | None:
 
     # 2) Zaxira: PowerShell Get-NetRoute (faqat NextHop ustunini chiqaramiz).
     try:
-        out = subprocess.run(
+        raw = subprocess.run(
             [
                 "powershell",
                 "-NoProfile",
@@ -147,9 +149,10 @@ def _default_gateway_windows() -> str | None:
                 "| Select-Object -First 1 -ExpandProperty NextHop)",
             ],
             capture_output=True,
-            text=True,
             timeout=5,
+            creationflags=_platform.subprocess_flags(),
         ).stdout
+        out = _platform.decode_console(raw)
         m = _platform._WIN_NETROUTE_NEXTHOP_RE.search(out)
         if m and m.group(1) != "0.0.0.0":
             return m.group(1)
@@ -159,21 +162,52 @@ def _default_gateway_windows() -> str | None:
     return None
 
 
+def _is_apipa(ipv4: str | None) -> bool:
+    """IPv4 manzil APIPA/link-local (169.254.0.0/16) yoki noto'g'ri bo'lsa True.
+
+    APIPA — DHCP javob bermaganda Windows o'zi tayinlaydigan "ulanmagan" manzil;
+    bunday interfeys asosiy (primary) bo'la olmaydi. `None`/buzuq IP ham primary
+    sifatida yaramaydi (True qaytaradi).
+    """
+    if not ipv4:
+        return True
+    try:
+        addr = ipaddress.ip_address(ipv4)
+    except ValueError:
+        return True
+    return bool(addr.is_link_local)
+
+
 def primary_interface() -> Interface | None:
-    """Default gateway bilan bir tarmoqda turgan asosiy interfeys."""
+    """Default gateway bilan bir tarmoqda turgan asosiy interfeys.
+
+    Tanlash tartibi:
+      1. Gateway IP'si kiradigan tarmoqdagi interfeys (eng ishonchli);
+      2. Aks holda — birinchi NON-APIPA (169.254.x emas, link-local emas)
+         interfeys (Hyper-V vEthernet APIPA / ulanmagan adapterlardan qochish);
+      3. Hech narsa topilmasa — birinchi interfeys (oxirgi zaxira).
+
+    `list_interfaces` o'zgarmaydi (u barcha interfeyslarni beradi) — filtr faqat
+    shu yerda, primary tanlashda qo'llanadi.
+    """
     gw = default_gateway()
     ifaces = list_interfaces()
     if gw:
         try:
-            gw_addr = ipaddress.ip_address(gw)
+            gw_addr: ipaddress.IPv4Address | ipaddress.IPv6Address | None = ipaddress.ip_address(gw)
         except ValueError:
-            # Buzuq/kutilmagan gateway satri — birinchi interfeysga tushamiz.
+            # Buzuq/kutilmagan gateway satri — APIPA-filtrli fallback'ga tushamiz.
             gw_addr = None
         if gw_addr is not None:
             for iface in ifaces:
                 cidr = iface.cidr
                 if cidr and gw_addr in ipaddress.ip_network(cidr):
                     return iface
+    # Gateway mos kelmadi -> birinchi NON-APIPA interfeysni afzal ko'ramiz.
+    for iface in ifaces:
+        if not _is_apipa(iface.ipv4):
+            return iface
+    # Hammasi APIPA/buzuq bo'lsa — oxirgi zaxira sifatida birinchisi.
     return ifaces[0] if ifaces else None
 
 

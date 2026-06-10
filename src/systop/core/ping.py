@@ -283,13 +283,25 @@ async def _win_ping(
     count: int = 4,
     timeout: float = 2.0,
 ) -> tuple[bool, list[float], float]:
-    """Windows tizim `ping` buyrug'i orqali ping (alive, rtts_ms, loss).
+    """Windows'da ICMP ping (alive, rtts_ms, loss) — admin shart emas.
 
-    `ping -n <count> -w <ms> [-6] <address>` ishga tushiriladi (admin shart
-    emas). Chiqish `_platform.parse_windows_ping` bilan parse qilinadi.
+    Ildiz yo'l: Win32 `IcmpSendEcho` (`_platform.win_icmp_ping`) — til/codepage'
+    dan mustaqil, matn-parse'siz. Bu IPv4 manzil uchun ishlaydi.
+
+    Zaxira yo'l: `IcmpSendEcho` mavjud bo'lmasa (juda eski muhit) yoki manzil
+    IPv4'ga resolve bo'lmasa (masalan IPv6) -> tizim `ping.exe` buyrug'iga
+    tushib, chiqishni TIL-MUSTAQIL parse qilamiz (`parse_windows_ping`).
     Buyruq topilmasa / timeout bo'lsa -> (False, [], 1.0).
     """
     count = max(1, count)
+
+    # 1) Ildiz yo'l: IcmpSendEcho (IPv4, til/codepage'dan mustaqil).
+    if not _is_ipv6(address):
+        icmp = await asyncio.to_thread(_platform.win_icmp_ping, address, count, timeout)
+        if icmp is not None:
+            return icmp
+
+    # 2) Zaxira yo'l: tizim `ping.exe` + til-mustaqil parse (IPv6 yoki DLL yo'q).
     wait_ms = max(1, int(timeout * 1000))
     cmd = ["ping", "-n", str(count), "-w", str(wait_ms)]
     if _is_ipv6(address):

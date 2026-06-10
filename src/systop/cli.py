@@ -47,6 +47,7 @@ from rich.console import Console
 from rich.table import Table
 
 from systop import __version__
+from systop.core import _platform
 
 # Exit kodlari — mazmunli, skriptlar uchun.
 EXIT_OK = 0
@@ -58,15 +59,52 @@ _FORMAT = "table"  # table | json | csv
 _QUIET = False
 _VERBOSE = False
 
-# Windows konsoli odatda cp1252 — emoji/Unicode'ni kodlay olmay xato beradi
-# (UnicodeEncodeError). stdout/stderr'ni UTF-8 ga o'tkazamiz; errors="replace"
-# tufayli ko'rsata olmaydigan terminalda ham hech qachon yiqilmaydi.
-if sys.platform == "win32":
-    for _stream in (sys.stdout, sys.stderr):
+
+def _stream_encoding_is_safe(stream: object) -> bool:
+    """Oqim kodlashi Unicode (kamida UTF) chiqishini xavfsiz qabul qiladimi?
+
+    POSIX'da `LANG=C`/`LC_ALL=C` ostida stdout `ascii` codec'ida bo'ladi —
+    o'zbekcha matn yoki JSON'dagi har qanday ASCII-bo'lmagan belgi
+    `UnicodeEncodeError` ko'taradi. Shu holatni aniqlash uchun: kodlash nomi
+    `utf` bilan boshlanmasa (ascii/ANSI_X3.4/POSIX/C) — xavfsiz emas.
+    """
+    enc = getattr(stream, "encoding", None)
+    if not enc:
+        # Kodlash noma'lum (qayta yo'naltirilgan / g'ayrioddiy oqim) — himoyalaymiz.
+        return False
+    return enc.lower().replace("-", "").startswith("utf")
+
+
+def _harden_console_streams() -> None:
+    """stdout/stderr'ni ASCII-bo'lmagan chiqishda yiqilmaydigan qiladi.
+
+    Ikki holatni qoplaydi:
+
+    * **Windows** — legacy konsol OEM/cp1252 codepage'da; emoji/Unicode
+      `UnicodeEncodeError` beradi.
+    * **POSIX C/ASCII lokal** (`LANG=C`) — stdout `ascii` codec'ida; o'zbekcha
+      matn yoki JSON'dagi har qanday non-ASCII belgi ham yiqitadi.
+
+    Har ikkalasida `errors="replace"` bilan UTF-8 ga o'tkazamiz: ko'rsata
+    olmaydigan terminalda belgi `?`/`\\ufffd` ga aylanadi, ammo hech qachon
+    istisno ko'tarilmaydi (CLI skript-do'st bo'lib qoladi). Allaqachon UTF
+    bo'lgan oqimga tegmaymiz (macOS/Linux odatiy holati o'zgarmaydi).
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if _stream_encoding_is_safe(stream):
+            continue
         try:
-            _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
-        except (AttributeError, ValueError):
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError, OSError):
+            # reconfigure yo'q (eski Python / o'ralgan oqim) — jim davom etamiz;
+            # quyidagi emit_json/print yo'llari baribir errors="replace" qiladi.
             pass
+
+
+# Windows konsoli (UTF-8 + VT) — `_platform.init_console` orqali; keyin oqimlarni
+# har platformada (POSIX C lokal ham) ASCII-xavfsiz qilamiz.
+_platform.init_console()
+_harden_console_streams()
 
 console = Console()
 
@@ -117,10 +155,32 @@ def verbose(message: str) -> None:
         console.print(f"[dim]{message}[/]")
 
 
+def _safe_write(stream: Any, text: str) -> None:
+    """Matnni oqimga yozadi; ASCII lokalda ham hech qachon yiqilmaydi.
+
+    `reconfigure` muvaffaqiyatsiz bo'lgan (o'ralgan / eski Python) oqimda
+    `UnicodeEncodeError` bo'lishi mumkin — bunda oqim kodlashiga `errors="replace"`
+    bilan qayta kodlab, `buffer`ga yozamiz. Bu — emit_json/error uchun oxirgi
+    himoya qatlami (POSIX `LANG=C`).
+    """
+    try:
+        stream.write(text)
+    except UnicodeEncodeError:
+        enc = getattr(stream, "encoding", None) or "utf-8"
+        data = text.encode(enc, errors="replace")
+        buffer = getattr(stream, "buffer", None)
+        if buffer is not None:
+            buffer.write(data)
+            buffer.flush()
+        else:
+            # buffer yo'q (StringIO va h.k.) — replacement belgilar bilan qayta yozamiz.
+            stream.write(data.decode(enc, errors="replace"))
+
+
 def error(message: str) -> None:
     """Xato xabari — JSON/CSV rejimida ham stderr'ga (stdout toza qoladi)."""
     if _is_machine():
-        print(message, file=sys.stderr)
+        _safe_write(sys.stderr, message + "\n")
     else:
         console.print(f"[red]Xato:[/] {message}")
 
@@ -158,8 +218,13 @@ def _to_dict(obj: Any) -> Any:
 
 
 def emit_json(payload: Any) -> None:
-    """Payload'ni sof JSON sifatida stdout'ga yozadi (faqat json rejimi)."""
-    print(json.dumps(_to_dict(payload), ensure_ascii=False, indent=2))
+    """Payload'ni sof JSON sifatida stdout'ga yozadi (faqat json rejimi).
+
+    `ensure_ascii=False` — o'zbekcha/kirill matn o'qishli chiqsin. ASCII lokalda
+    (`LANG=C`) bu non-ASCII baytlar yiqitishi mumkin edi; `_safe_write` oxirgi
+    himoya qatlami (errors="replace" bilan qayta kodlaydi).
+    """
+    _safe_write(sys.stdout, json.dumps(_to_dict(payload), ensure_ascii=False, indent=2) + "\n")
 
 
 def emit_csv(rows: Iterable[Any]) -> None:
@@ -171,7 +236,7 @@ def emit_csv(rows: Iterable[Any]) -> None:
     dict_rows = [_flatten_for_csv(_to_dict(r)) for r in rows]
     if not dict_rows:
         # Bo'sh natija — hech bo'lmasa header yo'qligini bildirib, jim chiqamiz.
-        print("")
+        _safe_write(sys.stdout, "\n")
         return
     fieldnames: list[str] = []
     for row in dict_rows:
@@ -183,7 +248,7 @@ def emit_csv(rows: Iterable[Any]) -> None:
     writer.writeheader()
     for row in dict_rows:
         writer.writerow(row)
-    sys.stdout.write(buf.getvalue())
+    _safe_write(sys.stdout, buf.getvalue())
 
 
 def _flatten_for_csv(d: Any) -> dict[str, Any]:
@@ -361,6 +426,12 @@ def _split_csv_arg(value: str | None) -> list[str]:
 
 def main() -> None:
     global _FORMAT, _QUIET, _VERBOSE
+
+    # Konsolni (Windows UTF-8/VT + POSIX C-lokal himoyasi) ishonchli holatga
+    # keltiramiz. Modul importida bir marta chaqirilgan, ammo `main()` to'g'ridan
+    # chaqirilgan (test/embed) holat uchun ham idempotent ravishda takrorlaymiz.
+    _platform.init_console()
+    _harden_console_streams()
 
     parser = _build_parser()
 
@@ -959,7 +1030,7 @@ async def _cmd_config(show: bool = False, path_only: bool = False) -> int:
 
     if path_only and not _is_machine():
         # Skript uchun: sof yo'l (Rich markup'siz, `$(systop config --path)` mos).
-        print(str(cfg_path))
+        _safe_write(sys.stdout, str(cfg_path) + "\n")
         return EXIT_OK
 
     if _FORMAT == "json":

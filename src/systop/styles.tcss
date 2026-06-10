@@ -81,6 +81,32 @@ SpeedPanel:focus-within, PingPanel:focus-within, TopologyPanel:focus-within {
     border-title-color: $accent;
 }
 
+/* --- ASCII-degrade rejimi (legacy Windows konsol, Unicode'siz) ---
+   `Screen.-ascii` klassi `app.py`da unicode_ok() False bo'lsa qo'shiladi.
+   Yumaloq (round) ramka Unicode box belgilaridan iborat — legacy cmd.exe'da
+   mojibake bo'ladi. Shu sababli ASCII ramka (+- |) ga o'tamiz va braille/block
+   sparkline'larni yashiramiz (numeric stats caption baribir ko'rsatadi). */
+
+.-ascii SpeedPanel, .-ascii PingPanel, .-ascii TopologyPanel {
+    border: ascii $primary 60%;
+}
+.-ascii SpeedPanel:focus-within,
+.-ascii PingPanel:focus-within,
+.-ascii TopologyPanel:focus-within {
+    border: ascii $accent;
+}
+.-ascii #help-box {
+    border: ascii $accent;
+}
+.-ascii #help-title {
+    border-bottom: ascii $primary 40%;
+}
+/* Sparkline block belgilari (▁▂▃▅▆▇) legacy codepage'da yo'q — yashiramiz.
+   O'rnida grafik ostidagi joriy/min/o'rt/maks caption qoladi. */
+.-ascii Sparkline {
+    display: none;
+}
+
 /* --- Tezlik paneli --- */
 
 #speed-readout {

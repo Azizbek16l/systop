@@ -272,3 +272,374 @@ def test_platform_constants_exist():
     assert isinstance(_platform.IS_WINDOWS, bool)
     assert isinstance(_platform.IS_MACOS, bool)
     assert isinstance(_platform.IS_LINUX, bool)
+
+
+# --- TIL-MUSTAQIL parse: RUS (cp866) + DE (cp850) namunalar -----------------
+#
+# Bu Unicode satrlar dekodlangan (decode_console natijasi) ko'rinishida. Byte
+# darajadagi cp866 dekodlash alohida (decode_console) testlarda sinaladi.
+
+# RUS `ping 8.8.8.8` (codepage 866, ru-RU) — real a test host chiqishi shaklida.
+# Diqqat: RTT "время=84мс" (kirill 'мс'), "время<1мс" submilliyenniy, statistika
+# "Пакетов: отправлено = 4, получено = 4 ... (0% потерь)".
+_PING_RU = (
+    "Обмен пакетами с 8.8.8.8 по с 32 байтами данных:\n"
+    "Ответ от 8.8.8.8: число байт=32 время=84мс TTL=107\n"
+    "Ответ от 8.8.8.8: число байт=32 время=85мс TTL=107\n"
+    "Ответ от 8.8.8.8: число байт=32 время<1мс TTL=107\n"
+    "Ответ от 8.8.8.8: число байт=32 время=83мс TTL=107\n"
+    "\n"
+    "Статистика Ping для 8.8.8.8:\n"
+    "    Пакетов: отправлено = 4, получено = 4, потеряно = 0 (0% потерь),\n"
+)
+
+# RUS — barcha paket yo'qolgan (host o'lik): "(100% потерь)".
+_PING_RU_DEAD = (
+    "Обмен пакетами с 10.255.255.1 по с 32 байтами данных:\n"
+    "Превышен интервал ожидания для запроса.\n"
+    "Превышен интервал ожидания для запроса.\n"
+    "\n"
+    "Статистика Ping для 10.255.255.1:\n"
+    "    Пакетов: отправлено = 2, получено = 0, потеряно = 2 (100% потерь),\n"
+)
+
+# Nemis `ping 8.8.8.8` (codepage 850, de-DE) — RTT "Zeit=12ms", qisman yo'qotish.
+_PING_DE = (
+    "Ping wird ausgeführt für 8.8.8.8 mit 32 Bytes Daten:\n"
+    "Antwort von 8.8.8.8: Bytes=32 Zeit=12ms TTL=117\n"
+    "Antwort von 8.8.8.8: Bytes=32 Zeit=11ms TTL=117\n"
+    "\n"
+    "Ping-Statistik für 8.8.8.8:\n"
+    "    Pakete: Gesendet = 4, Empfangen = 2, Verloren = 2 (50% Verlust),\n"
+)
+
+
+def test_parse_ping_russian_cp866_text():
+    """RUS chiqish: kirill 'мс' RTT va '(0% потерь)' loss to'g'ri o'qiladi."""
+    alive, rtts, loss = parse_windows_ping(_PING_RU, expected_count=4)
+    assert alive is True
+    # 84, 85, <1мс->0.5, 83
+    assert rtts == [84.0, 85.0, 0.5, 83.0]
+    assert loss == pytest.approx(0.0)
+
+
+def test_parse_ping_russian_dead_host():
+    """RUS '(100% потерь)' -> alive=False, loss=1.0."""
+    alive, rtts, loss = parse_windows_ping(_PING_RU_DEAD, expected_count=2)
+    assert alive is False
+    assert rtts == []
+    assert loss == pytest.approx(1.0)
+
+
+def test_parse_ping_german_cp850_text():
+    """DE chiqish: 'Zeit=12ms' RTT va '(50% Verlust)' loss to'g'ri o'qiladi."""
+    alive, rtts, loss = parse_windows_ping(_PING_DE, expected_count=4)
+    assert alive is True
+    assert rtts == [12.0, 11.0]
+    assert loss == pytest.approx(0.5)
+
+
+def test_parse_ping_russian_loss_from_sent_recv_without_pct():
+    """RUS, foizsiz: 'отправлено = 4, получено = 1' dan loss hisoblanadi."""
+    out = (
+        "Ответ от 8.8.8.8: число байт=32 время=10мс TTL=117\n"
+        "    Пакетов: отправлено = 4, получено = 1, потеряно = 3\n"  # foizsiz
+    )
+    alive, rtts, loss = parse_windows_ping(out, expected_count=4)
+    assert alive is True
+    assert rtts == [10.0]
+    assert loss == pytest.approx(0.75)
+
+
+def test_parse_ping_decimal_comma_rtt():
+    """O'nlik vergul (RUS/DE) RTT: 'время=1,5мс' -> 1.5."""
+    out = "Ответ от 1.1.1.1: число байт=32 время=1,5мс TTL=64\n"
+    alive, rtts, _loss = parse_windows_ping(out, expected_count=1)
+    assert alive is True
+    assert rtts == [1.5]
+
+
+# RUS `tracert -d 8.8.8.8` (codepage 866).
+_TRACERT_RU = (
+    "Трассировка маршрута к 8.8.8.8 с максимальным числом прыжков 30\n"
+    "\n"
+    "  1     1 мс     1 мс     1 мс  192.168.1.1\n"
+    "  2     8 мс     9 мс     7 мс  10.0.0.1\n"
+    "  3     *        *        *     Превышен интервал ожидания для запроса.\n"
+    "  4    12 мс    11 мс    13 мс  8.8.8.8\n"
+    "\n"
+    "Трассировка завершена.\n"
+)
+
+
+def test_parse_tracert_russian_cp866_text():
+    """RUS tracert: kirill 'мс' RTT, '* * *' timeout hop."""
+    hops = parse_windows_tracert(_TRACERT_RU)
+    assert [h[0] for h in hops] == [1, 2, 3, 4]
+    assert hops[0] == (1, "192.168.1.1", pytest.approx(1.0), True)
+    assert hops[1] == (2, "10.0.0.1", pytest.approx(8.0), True)
+    assert hops[2] == (3, None, pytest.approx(0.0), False)
+    assert hops[3] == (4, "8.8.8.8", pytest.approx(12.0), True)
+
+
+# --- decode_console: BYTE darajada cp866 / cp850 dekodlash ------------------
+
+
+def test_decode_console_passthrough_str():
+    """Allaqachon str kelsa — o'zgartirmasdan qaytaradi (text=True/fixture)."""
+    assert _platform.decode_console("hello мир") == "hello мир"
+
+
+def test_decode_console_non_windows_uses_utf8(monkeypatch):
+    """Windows EMAS bo'lganda UTF-8 dekodlanadi (macOS/Linux)."""
+    monkeypatch.setattr(_platform, "IS_WINDOWS", False)
+    data = "Ответ от 8.8.8.8".encode()
+    assert _platform.decode_console(data) == "Ответ от 8.8.8.8"
+
+
+def test_decode_console_windows_cp866(monkeypatch):
+    """Windows cp866 baytlari kirill matnga to'g'ri dekodlanishi kerak.
+
+    UTF-8 dekodlash bu baytlarni mojibake qilardi — `decode_console`
+    GetConsoleOutputCP -> 866 ni o'qib cp866 bilan dekodlaydi.
+    """
+    monkeypatch.setattr(_platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(_platform, "_console_output_cp", lambda: 866)
+    text = "Ответ от 8.8.8.8: число байт=32 время=84мс TTL=107"
+    data = text.encode("cp866")
+    decoded = _platform.decode_console(data)
+    assert decoded == text
+    # UTF-8 bilan dekodlash boshqacha (mojibake) bo'lardi — farqni tasdiqlaymiz.
+    assert decoded != data.decode("utf-8", errors="replace")
+
+
+def test_decode_console_windows_cp850(monkeypatch):
+    """Nemis Windows: cp850 baytlari to'g'ri dekodlanadi."""
+    monkeypatch.setattr(_platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(_platform, "_console_output_cp", lambda: 850)
+    text = "Ping wird ausgeführt für 8.8.8.8"
+    data = text.encode("cp850")
+    assert _platform.decode_console(data) == text
+
+
+def test_decode_console_full_ru_ping_bytes(monkeypatch):
+    """To'liq RUS ping chiqishi cp866 baytlardan dekodlanib parse qilinadi."""
+    monkeypatch.setattr(_platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(_platform, "_console_output_cp", lambda: 866)
+    raw = _PING_RU.encode("cp866")
+    decoded = _platform.decode_console(raw)
+    alive, rtts, loss = parse_windows_ping(decoded, expected_count=4)
+    assert alive is True
+    assert rtts == [84.0, 85.0, 0.5, 83.0]
+    assert loss == pytest.approx(0.0)
+
+
+def test_decode_console_unknown_codepage_falls_back_utf8(monkeypatch):
+    """Noma'lum codepage (LookupError) -> UTF-8 zaxirasi (istisno yo'q)."""
+    monkeypatch.setattr(_platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(_platform, "_console_output_cp", lambda: 999999)
+    data = b"hello"
+    assert _platform.decode_console(data) == "hello"
+
+
+def test_decode_console_cp_zero_uses_utf8(monkeypatch):
+    """GetConsoleOutputCP 0 (aniqlanmadi) -> UTF-8."""
+    monkeypatch.setattr(_platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(_platform, "_console_output_cp", lambda: 0)
+    assert _platform.decode_console(b"ascii") == "ascii"
+
+
+# --- init_console / unicode_ok / subprocess_flags ---------------------------
+
+
+def test_init_console_noop_on_non_windows(monkeypatch):
+    """init_console Windows bo'lmaganda hech narsa qilmaydi (xato yo'q)."""
+    monkeypatch.setattr(_platform, "IS_WINDOWS", False)
+    # Hech qanday istisno ko'tarmasligi kerak.
+    assert _platform.init_console() is None
+
+
+def test_unicode_ok_true_on_non_windows(monkeypatch):
+    monkeypatch.setattr(_platform, "IS_WINDOWS", False)
+    assert _platform.unicode_ok() is True
+
+
+def test_unicode_ok_windows_terminal_session(monkeypatch):
+    """Windows Terminal (WT_SESSION) ostida Unicode OK."""
+    monkeypatch.setattr(_platform, "IS_WINDOWS", True)
+    monkeypatch.setenv("WT_SESSION", "abc-123")
+    assert _platform.unicode_ok() is True
+
+
+def test_unicode_ok_windows_utf8_codepage(monkeypatch):
+    """Legacy konsol, lekin codepage 65001 (UTF-8) -> Unicode OK."""
+    monkeypatch.setattr(_platform, "IS_WINDOWS", True)
+    monkeypatch.delenv("WT_SESSION", raising=False)
+    monkeypatch.setattr(_platform, "_console_output_cp", lambda: 65001)
+    assert _platform.unicode_ok() is True
+
+
+def test_unicode_ok_windows_legacy_cp866_false(monkeypatch):
+    """Legacy cmd.exe (cp866, WT yo'q) -> Unicode raster ko'rsata olmaydi -> False."""
+    monkeypatch.setattr(_platform, "IS_WINDOWS", True)
+    monkeypatch.delenv("WT_SESSION", raising=False)
+    monkeypatch.setattr(_platform, "_console_output_cp", lambda: 866)
+    assert _platform.unicode_ok() is False
+
+
+def test_subprocess_flags_zero_on_non_windows(monkeypatch):
+    monkeypatch.setattr(_platform, "IS_WINDOWS", False)
+    assert _platform.subprocess_flags() == 0
+
+
+def test_subprocess_flags_create_no_window_on_windows(monkeypatch):
+    monkeypatch.setattr(_platform, "IS_WINDOWS", True)
+    # win32'da CREATE_NO_WINDOW (0x08000000); test hostida getattr fallback 0
+    # bo'lishi mumkin — shuning uchun _CREATE_NO_WINDOW konstantasiga tenglashtiramiz.
+    assert _platform.subprocess_flags() == _platform._CREATE_NO_WINDOW
+
+
+# --- Win32 IcmpSendEcho yo'li (ctypes monkeypatch bilan) --------------------
+
+
+def test_win_icmp_ping_success(monkeypatch):
+    """IcmpSendEcho SUCCESS javoblari -> alive, RTT yig'iladi, loss=0."""
+    # iphlpapi "mavjud" deb ko'rsatamiz (None emas).
+    monkeypatch.setattr(_platform, "_iphlpapi", lambda: object())
+    monkeypatch.setattr(_platform, "_resolve_ipv4", lambda a: "8.8.8.8")
+
+    rtts_seq = [84.0, 85.0, 83.0]
+    calls = {"n": 0}
+
+    def fake_icmp(ipv4, timeout_ms, ttl=None):
+        i = calls["n"]
+        calls["n"] += 1
+        return _platform.IP_SUCCESS, rtts_seq[i], "8.8.8.8"
+
+    monkeypatch.setattr(_platform, "icmp_ping_ipv4", fake_icmp)
+
+    result = _platform.win_icmp_ping("8.8.8.8", count=3, timeout=2.0)
+    assert result is not None
+    alive, rtts, loss = result
+    assert alive is True
+    assert rtts == [84.0, 85.0, 83.0]
+    assert loss == pytest.approx(0.0)
+
+
+def test_win_icmp_ping_partial_loss(monkeypatch):
+    """Ba'zi probe'lar TIMED_OUT -> loss hisoblanadi (alive baribir True)."""
+    monkeypatch.setattr(_platform, "_iphlpapi", lambda: object())
+    monkeypatch.setattr(_platform, "_resolve_ipv4", lambda a: "1.1.1.1")
+
+    seq = [
+        (_platform.IP_SUCCESS, 20.0, "1.1.1.1"),
+        (_platform.IP_REQ_TIMED_OUT, 0.0, None),
+        (_platform.IP_SUCCESS, 22.0, "1.1.1.1"),
+        (_platform.IP_REQ_TIMED_OUT, 0.0, None),
+    ]
+    calls = {"n": 0}
+
+    def fake_icmp(ipv4, timeout_ms, ttl=None):
+        out = seq[calls["n"]]
+        calls["n"] += 1
+        return out
+
+    monkeypatch.setattr(_platform, "icmp_ping_ipv4", fake_icmp)
+    alive, rtts, loss = _platform.win_icmp_ping("1.1.1.1", count=4, timeout=2.0)
+    assert alive is True
+    assert rtts == [20.0, 22.0]
+    assert loss == pytest.approx(0.5)
+
+
+def test_win_icmp_ping_all_timeout_dead(monkeypatch):
+    monkeypatch.setattr(_platform, "_iphlpapi", lambda: object())
+    monkeypatch.setattr(_platform, "_resolve_ipv4", lambda a: "10.255.255.1")
+    monkeypatch.setattr(
+        _platform,
+        "icmp_ping_ipv4",
+        lambda ipv4, timeout_ms, ttl=None: (_platform.IP_REQ_TIMED_OUT, 0.0, None),
+    )
+    alive, rtts, loss = _platform.win_icmp_ping("10.255.255.1", count=4, timeout=1.0)
+    assert alive is False
+    assert rtts == []
+    assert loss == pytest.approx(1.0)
+
+
+def test_win_icmp_ping_none_when_no_dll(monkeypatch):
+    """iphlpapi yo'q -> None (chaqiruvchi ping.exe zaxirasiga o'tadi)."""
+    monkeypatch.setattr(_platform, "_iphlpapi", lambda: None)
+    assert _platform.win_icmp_ping("8.8.8.8", count=4, timeout=2.0) is None
+
+
+def test_win_icmp_ping_none_when_unresolvable(monkeypatch):
+    """IPv4'ga resolve bo'lmasa -> None (IPv6/nom zaxirasiga o'tadi)."""
+    monkeypatch.setattr(_platform, "_iphlpapi", lambda: object())
+    monkeypatch.setattr(_platform, "_resolve_ipv4", lambda a: None)
+    assert _platform.win_icmp_ping("ipv6.example", count=2, timeout=1.0) is None
+
+
+def test_win_icmp_traceroute_reaches_target(monkeypatch):
+    """TTL_EXPIRED oraliq hoplar + SUCCESS oxirgi hop; SUCCESS'da to'xtaydi."""
+    monkeypatch.setattr(_platform, "_iphlpapi", lambda: object())
+    monkeypatch.setattr(_platform, "_resolve_ipv4", lambda a: "8.8.8.8")
+
+    # ttl=1 -> router, ttl=2 -> router, ttl=3 -> manzil (SUCCESS).
+    by_ttl = {
+        1: (_platform.IP_TTL_EXPIRED_TRANSIT, 1.0, "192.168.1.1"),
+        2: (_platform.IP_TTL_EXPIRED_TRANSIT, 8.0, "10.0.0.1"),
+        3: (_platform.IP_SUCCESS, 12.0, "8.8.8.8"),
+    }
+
+    def fake_icmp(ipv4, timeout_ms, ttl=None):
+        return by_ttl[ttl]
+
+    monkeypatch.setattr(_platform, "icmp_ping_ipv4", fake_icmp)
+    hops = _platform.win_icmp_traceroute("8.8.8.8", max_hops=30, timeout=2.0)
+    assert hops is not None
+    assert hops == [
+        (1, "192.168.1.1", 1.0, True),
+        (2, "10.0.0.1", 8.0, True),
+        (3, "8.8.8.8", 12.0, True),
+    ]
+
+
+def test_win_icmp_traceroute_timeout_hop(monkeypatch):
+    """Javobsiz TTL -> (ttl, None, 0.0, False) hop; manzilga yetguncha davom."""
+    monkeypatch.setattr(_platform, "_iphlpapi", lambda: object())
+    monkeypatch.setattr(_platform, "_resolve_ipv4", lambda a: "8.8.8.8")
+
+    by_ttl = {
+        1: (_platform.IP_TTL_EXPIRED_TRANSIT, 1.0, "192.168.1.1"),
+        2: (_platform.IP_REQ_TIMED_OUT, 0.0, None),  # `* * *`
+        3: (_platform.IP_SUCCESS, 12.0, "8.8.8.8"),
+    }
+    monkeypatch.setattr(_platform, "icmp_ping_ipv4", lambda ipv4, timeout_ms, ttl=None: by_ttl[ttl])
+    hops = _platform.win_icmp_traceroute("8.8.8.8", max_hops=30, timeout=2.0)
+    assert hops == [
+        (1, "192.168.1.1", 1.0, True),
+        (2, None, 0.0, False),
+        (3, "8.8.8.8", 12.0, True),
+    ]
+
+
+def test_win_icmp_traceroute_none_when_no_dll(monkeypatch):
+    monkeypatch.setattr(_platform, "_iphlpapi", lambda: None)
+    assert _platform.win_icmp_traceroute("8.8.8.8", max_hops=30, timeout=2.0) is None
+
+
+def test_win_icmp_traceroute_none_when_unresolvable(monkeypatch):
+    monkeypatch.setattr(_platform, "_iphlpapi", lambda: object())
+    monkeypatch.setattr(_platform, "_resolve_ipv4", lambda a: None)
+    assert _platform.win_icmp_traceroute("bad.host", max_hops=10, timeout=1.0) is None
+
+
+def test_addr_dword_roundtrip():
+    """IPv4 <-> DWORD aylantirish ikki tomonlama mos."""
+    for ip in ("8.8.8.8", "192.168.1.1", "1.1.1.1", "255.255.255.255", "0.0.0.0"):
+        dword = _platform._addr_to_dword(ip)
+        assert dword is not None
+        assert _platform._dword_to_addr(dword) == ip
+
+
+def test_addr_to_dword_invalid_returns_none():
+    assert _platform._addr_to_dword("not-an-ip") is None

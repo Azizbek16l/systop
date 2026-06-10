@@ -47,3 +47,138 @@ jobs:
 
       - name: Pytest
         run: uv run pytest -q
+
+  # ---------------------------------------------------------------------------
+  # Lokalizatsiya regressiya to'ri: ruscha/nemischa va C/ASCII lokal ostida ham
+  # testlar o'tishi SHART. systop'ning eng yashirin xatosi shu yerda yashiringan
+  # edi (RUS Windows konsoli cp866; POSIX `LANG=C` ascii codec). Bu ish stdout'ni
+  # ascii codec'ga majburlab (PYTHONUTF8=0 + PYTHONCOERCECLOCALE=0 + LC_ALL=C),
+  # CLI'ning non-ASCII chiqishda yiqilmasligini (UnicodeEncodeError yo'q)
+  # tasdiqlaydi.
+  locale-matrix:
+    name: Locale (${{ matrix.locale.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        locale:
+          # C/ASCII — eng qattiq holat: stdout ascii codec'da ochiladi.
+          - name: C-ascii
+            LANG: C
+            LC_ALL: C
+            PYTHONUTF8: "0"
+            PYTHONCOERCECLOCALE: "0"
+          # Ruscha UTF-8 — kirill matn + ru-RU oylar/sonlar formati.
+          - name: ru_RU.UTF-8
+            LANG: ru_RU.UTF-8
+            LC_ALL: ru_RU.UTF-8
+            PYTHONUTF8: "0"
+            PYTHONCOERCECLOCALE: "0"
+          # Nemischa UTF-8 — o'nlik vergul (1,5) formatli lokal.
+          - name: de_DE.UTF-8
+            LANG: de_DE.UTF-8
+            LC_ALL: de_DE.UTF-8
+            PYTHONUTF8: "0"
+            PYTHONCOERCECLOCALE: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate RU/DE locales (UTF-8 variantlar uchun)
+        if: matrix.locale.name != 'C-ascii'
+        run: |
+          sudo locale-gen ru_RU.UTF-8 de_DE.UTF-8
+          sudo update-locale
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --extra dev
+
+      - name: Pytest (forced locale)
+        env:
+          LANG: ${{ matrix.locale.LANG }}
+          LC_ALL: ${{ matrix.locale.LC_ALL }}
+          PYTHONUTF8: ${{ matrix.locale.PYTHONUTF8 }}
+          PYTHONCOERCECLOCALE: ${{ matrix.locale.PYTHONCOERCECLOCALE }}
+        run: uv run pytest -q
+
+      - name: Smoke — offline buyruqlar (config) bu lokalda yiqilmasligi shart
+        env:
+          LANG: ${{ matrix.locale.LANG }}
+          LC_ALL: ${{ matrix.locale.LC_ALL }}
+          PYTHONUTF8: ${{ matrix.locale.PYTHONUTF8 }}
+          PYTHONCOERCECLOCALE: ${{ matrix.locale.PYTHONCOERCECLOCALE }}
+          NO_COLOR: "1"
+        run: |
+          uv run systop config --show --json
+          uv run systop config --show
+
+  # ---------------------------------------------------------------------------
+  # Windows tirik (live) smoke-test: bu OFFLINE EMAS — localhost/gateway'ga
+  # tegadi. Maqsad: ruscha simptomning ASOSIY sababini (ICMP parse/codepage)
+  # to'g'ri OS'da, haqiqiy konsolda ushlash. `--json` toza JSON berishi va
+  # exit kodi mazmunli bo'lishi tekshiriladi (loopback har doim tirik).
+  windows-smoke:
+    name: Windows live smoke (ping/info --json)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Konsol kodlash sahifasini ko'rsatish (diagnostika)
+        shell: cmd
+        run: chcp
+
+      - name: systop info --json (interfeyslar/gateway)
+        shell: pwsh
+        run: |
+          $out = uv run systop info --json | Out-String
+          Write-Host $out
+          $json = $out | ConvertFrom-Json
+          if ($null -eq $json.interfaces) { throw "info --json: interfaces yo'q" }
+
+      - name: systop ping --json (localhost — har doim tirik)
+        shell: pwsh
+        run: |
+          # 127.0.0.1 loopback — internet bo'lmasa ham tirik bo'lishi shart.
+          # RUS konsoli xatosi (rtts=[] -> alive=False) bo'lsa BU YERDA tushadi.
+          $out = uv run systop ping --json --targets 127.0.0.1 | Out-String
+          Write-Host $out
+          $json = $out | ConvertFrom-Json
+          $loop = $json | Where-Object { $_.address -eq "127.0.0.1" } | Select-Object -First 1
+          if ($null -eq $loop) { throw "ping --json: 127.0.0.1 natijasi yo'q" }
+          if (-not $loop.alive) { throw "ping --json: loopback 'o'lik' deb topildi (ICMP/codepage regressiyasi!)" }
+
+      - name: systop ping --json exit kodi mazmunli (o'lik nishon -> 2)
+        shell: pwsh
+        run: |
+          # 192.0.2.1 — TEST-NET-1 (RFC 5737), hech qachon javob bermaydi.
+          # Yetib bo'lmaydigan nishon EXIT_UNREACHABLE (2) berishi kerak.
+          uv run systop ping --json --targets 192.0.2.1 | Out-Null
+          if ($LASTEXITCODE -ne 2) {
+            throw "o'lik nishon exit kodi 2 emas: $LASTEXITCODE"
+          }
+          Write-Host "OK: o'lik nishon -> exit 2"
+
+      - name: systop tls --json (chiqish UTF-8 toza)
+        shell: pwsh
+        run: |
+          # cloudflare.com — barqaror TLS endpoint. Asosiy maqsad: JSON konsolda
+          # mojibake'siz chiqsin (init_console UTF-8 codepage o'rnatadi).
+          $out = uv run systop tls cloudflare.com --json | Out-String
+          Write-Host $out
+          $null = $out | ConvertFrom-Json

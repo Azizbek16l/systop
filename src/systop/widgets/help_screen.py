@@ -7,7 +7,17 @@ from textual.containers import Center, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
-HELP_TEXT = """\
+from systop.widgets._glyphs import unicode_ok
+
+
+def _help_text() -> str:
+    """Yordam matnini quradi — strelka belgilari terminalga moslangan.
+
+    Legacy konsol (Unicode'siz) ↑/↓ strelkalarini mojibake qilishi mumkin —
+    bunday holatda so'z bilan ("Yuqori / Past") ko'rsatamiz. Matn import emas,
+    chaqiruvda quriladi (konsol holati shu paytda aniq)."""
+    arrows = "↑ / ↓" if unicode_ok() else "Yuqori / Past"
+    return f"""\
 [b]systop[/] — sysadminlar uchun terminal tarmoq tooli.
 
 [b $accent]Panellar[/]
@@ -26,7 +36,7 @@ HELP_TEXT = """\
 
 [b $accent]Navigatsiya[/]
   [b $secondary]Tab / Shift+Tab[/]   panellar va elementlar orasida
-  [b $secondary]↑ / ↓[/]            jadval qatorlari bo'ylab
+  [b $secondary]{arrows}[/]            jadval qatorlari bo'ylab
   [b $secondary]Ctrl+P[/]           buyruqlar palitrasi (command palette)
   [b $secondary]Esc[/]              ushbu oynani yopish
 
@@ -47,7 +57,7 @@ class HelpScreen(ModalScreen):
         with Center(id="help-wrap"):
             with VerticalScroll(id="help-box"):
                 yield Static(" Yordam — systop ", id="help-title")
-                yield Static(HELP_TEXT, id="help-body")
+                yield Static(_help_text(), id="help-body")
 
     def action_dismiss(self) -> None:  # type: ignore[override]
         self.dismiss()

@@ -294,12 +294,26 @@ async def _win_traceroute(
     max_hops: int = 30,
     timeout: float = 2.0,
 ) -> list[_HopLike]:
-    """Windows `tracert -d` orqali yo'lni o'lchaydi (admin shart emas).
+    """Windows'da yo'lni o'lchaydi (admin shart emas).
 
-    `tracert -d -h <max_hops> -w <ms> <address>` chiqishini
-    `_platform.parse_windows_tracert` bilan parse qilib, `_WinRawHop` ro'yxati
-    qaytaradi. Buyruq topilmasa / timeout / chiqish bo'sh bo'lsa — bo'sh ro'yxat.
+    Ildiz yo'l: Win32 `IcmpSendEcho` + TTL (`_platform.win_icmp_traceroute`) —
+    til/codepage'dan mustaqil, matn-parse'siz (IPv4).
+
+    Zaxira yo'l: `IcmpSendEcho` yo'q yoki manzil IPv4'ga resolve bo'lmasa,
+    `tracert -d -h <max_hops> -w <ms> <address>` chiqishini TIL-MUSTAQIL
+    `parse_windows_tracert` bilan parse qilamiz. Har ikkala holatda `_WinRawHop`
+    ro'yxati qaytadi (`_map_hops`/`trace_stream` shu shaklni o'qiydi). Hech narsa
+    bo'lmasa — bo'sh ro'yxat.
     """
+    # 1) Ildiz yo'l: IcmpSendEcho + TTL (IPv4, til/codepage'dan mustaqil).
+    icmp = await asyncio.to_thread(_platform.win_icmp_traceroute, address, max_hops, timeout)
+    if icmp is not None:
+        return [
+            _WinRawHop(distance=idx, address=addr, avg_rtt=rtt, is_alive=alive)
+            for (idx, addr, rtt, alive) in icmp
+        ]
+
+    # 2) Zaxira yo'l: tizim `tracert.exe` + til-mustaqil parse.
     wait_ms = max(1, int(timeout * 1000))
     cmd = ["tracert", "-d", "-h", str(max_hops), "-w", str(wait_ms), address]
     # tracert har hop uchun `-w` kutishi mumkin -> umumiy timeout kengroq.
@@ -476,9 +490,10 @@ def _parse_arp_table() -> dict[str, str]:
     table: dict[str, str] = {}
     for cmd in (["arp", "-a"], ["ip", "neigh"]):
         try:
-            out = subprocess.run(cmd, capture_output=True, text=True, timeout=3).stdout
+            raw = subprocess.run(cmd, capture_output=True, timeout=3).stdout
         except (subprocess.SubprocessError, OSError):
             continue
+        out = _platform.decode_console(raw)
         for line in out.splitlines():
             m = _ARP_RE.search(line) or _NEIGH_RE.search(line)
             if m:
@@ -489,12 +504,23 @@ def _parse_arp_table() -> dict[str, str]:
 
 
 def _parse_arp_table_windows() -> dict[str, str]:
-    """Windows `arp -a` chiqishidan {ip: mac} (MAC ':' bilan, kichik harf)."""
+    """Windows `arp -a` chiqishidan {ip: mac} (MAC ':' bilan, kichik harf).
+
+    Chiqish bayt sifatida olinib `decode_console` (OEM codepage) bilan
+    dekodlanadi — RUS konsolida ham IP/MAC to'g'ri o'qiladi. Konsol oynasi
+    miltillamasligi uchun CREATE_NO_WINDOW.
+    """
     table: dict[str, str] = {}
     try:
-        out = subprocess.run(["arp", "-a"], capture_output=True, text=True, timeout=3).stdout
+        raw = subprocess.run(
+            ["arp", "-a"],
+            capture_output=True,
+            timeout=3,
+            creationflags=_platform.subprocess_flags(),
+        ).stdout
     except (subprocess.SubprocessError, OSError):
         return table
+    out = _platform.decode_console(raw)
     for line in out.splitlines():
         m = _ARP_WIN_RE.search(line)
         if m:

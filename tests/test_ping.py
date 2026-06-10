@@ -204,8 +204,13 @@ _WIN_PING_DEAD_OUT = (
 
 
 def _force_windows(monkeypatch, ping_output: str):
-    """Platformani Windows qilib, `run_command` ni soxta `ping` chiqishi bilan qaytaradi."""
+    """Platformani Windows qilib, ping.exe PARSE yo'lini sinash uchun sozlaydi.
+
+    IcmpSendEcho'ni o'chiramiz (None) — shunda bu testlar deterministik ravishda
+    `ping.exe` + parse zaxira yo'lini sinaydi (real Windows'da ham, macOS'da ham).
+    """
     monkeypatch.setattr(ping._platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(ping._platform, "win_icmp_ping", lambda *a, **k: None)
 
     async def fake_run_command(cmd, timeout):
         # Buyruq haqiqatan tizim `ping` ekanini tasdiqlaymiz.
@@ -289,6 +294,8 @@ async def test_ping_once_windows_branch(monkeypatch):
 async def test_ping_many_windows_parallel(monkeypatch):
     """ping_many Windows'da har nishonni alohida `ping` bilan parallel ishlaydi."""
     monkeypatch.setattr(ping._platform, "IS_WINDOWS", True)
+    # ping.exe parse yo'lini deterministik sinash uchun IcmpSendEcho'ni o'chiramiz.
+    monkeypatch.setattr(ping._platform, "win_icmp_ping", lambda *a, **k: None)
 
     async def boom(*a, **k):
         raise AssertionError("icmplib async_multiping Windows'da chaqirilmasligi kerak")
@@ -314,6 +321,87 @@ async def test_ping_many_windows_empty(monkeypatch):
     monkeypatch.setattr(ping._platform, "IS_WINDOWS", True)
     results = await ping_many({})
     assert results == []
+
+
+# --- Windows ILDIZ yo'l: IcmpSendEcho (_platform.win_icmp_ping) --------------
+
+
+async def test_win_ping_uses_icmpsendecho_when_available(monkeypatch):
+    """IPv4 nishon uchun _win_ping IcmpSendEcho'ni (run_command EMAS) ishlatadi."""
+    monkeypatch.setattr(ping._platform, "IS_WINDOWS", True)
+
+    # win_icmp_ping mavjud natija qaytaradi -> ping.exe chaqirilmasligi kerak.
+    def fake_icmp(address, count, timeout):
+        assert address == "8.8.8.8"
+        assert count == 4
+        return True, [84.0, 85.0, 83.0, 84.0], 0.0
+
+    monkeypatch.setattr(ping._platform, "win_icmp_ping", fake_icmp)
+
+    async def boom(cmd, timeout):
+        raise AssertionError("IcmpSendEcho mavjud bo'lsa ping.exe chaqirilmasligi kerak")
+
+    monkeypatch.setattr(ping._platform, "run_command", boom)
+
+    alive, rtts, loss = await ping._win_ping("8.8.8.8", count=4, timeout=2.0)
+    assert alive is True
+    assert rtts == [84.0, 85.0, 83.0, 84.0]
+    assert loss == 0.0
+
+
+async def test_win_ping_falls_back_to_parse_when_icmp_none(monkeypatch):
+    """IcmpSendEcho None (DLL yo'q/resolve yo'q) -> ping.exe parse zaxirasi."""
+    monkeypatch.setattr(ping._platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(ping._platform, "win_icmp_ping", lambda *a, **k: None)
+
+    async def fake_run_command(cmd, timeout):
+        assert cmd[0] == "ping"
+        return _WIN_PING_OUT
+
+    monkeypatch.setattr(ping._platform, "run_command", fake_run_command)
+    alive, rtts, loss = await ping._win_ping("8.8.8.8", count=4, timeout=2.0)
+    assert alive is True
+    assert rtts == [12.0, 10.0, 14.0, 12.0]
+    assert loss == 0.0
+
+
+async def test_win_ping_ipv6_skips_icmpsendecho(monkeypatch):
+    """IPv6 nishon IcmpSendEcho (IPv4-only) ni o'tkazib, ping.exe -6 ga tushadi."""
+    monkeypatch.setattr(ping._platform, "IS_WINDOWS", True)
+
+    def boom(*a, **k):
+        raise AssertionError("IPv6 uchun win_icmp_ping (IPv4) chaqirilmasligi kerak")
+
+    monkeypatch.setattr(ping._platform, "win_icmp_ping", boom)
+
+    captured = {}
+
+    async def fake_run_command(cmd, timeout):
+        captured["cmd"] = cmd
+        return _WIN_PING_OUT.replace("8.8.8.8", "2001:4860:4860::8888")
+
+    monkeypatch.setattr(ping._platform, "run_command", fake_run_command)
+    await ping._win_ping("2001:4860:4860::8888", count=1, timeout=1.0)
+    assert "-6" in captured["cmd"]
+
+
+async def test_ping_once_windows_icmpsendecho_branch(monkeypatch):
+    """ping_once Windows'da IcmpSendEcho natijasidan PingResult yig'adi."""
+    monkeypatch.setattr(ping._platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(
+        ping._platform, "win_icmp_ping", lambda *a, **k: (True, [10.0, 20.0, 30.0], 0.0)
+    )
+
+    async def boom(*a, **k):
+        raise AssertionError("icmplib async_ping Windows'da chaqirilmasligi kerak")
+
+    monkeypatch.setattr(ping, "async_ping", boom)
+    r = await ping_once("8.8.8.8", label="Google")
+    assert r.label == "Google"
+    assert r.alive is True
+    assert r.min_rtt == 10.0
+    assert r.avg_rtt == pytest.approx(20.0)
+    assert r.max_rtt == 30.0
 
 
 # --- konstantalar -----------------------------------------------------------
