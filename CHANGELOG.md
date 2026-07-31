@@ -103,7 +103,7 @@ against real macOS, Linux **and** Windows command output in the test suite.
 
 ## [0.9.0] — 2026-07-31
 
-Four defects found by a multi-agent audit, each reproduced independently before
+Four defects found during a systematic audit, each reproduced independently before
 being fixed. Three of them made a documented capability quietly untrue.
 
 ### Fixed
