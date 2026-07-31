@@ -1,10 +1,10 @@
-"""Core o'lchov mantig'i — TUI'dan mustaqil, alohida ham ishlatsa bo'ladi.
+"""Core measurement logic — independent of the TUI, usable on its own.
 
-Modullar:
-    netinfo   — lokal interfeyslar, default gateway, public IP
-    ping      — ICMP ping (lokal + global, IPv6, --watch oqimi), icmplib asosida
-    speed     — internet bandwidth (Cloudflare endpointlari, httpx async, warmup)
+Modules:
+    netinfo   — local interfaces, default gateway, public IP
+    ping      — ICMP ping (local + global, IPv6, --watch stream), built on icmplib
+    speed     — internet bandwidth (Cloudflare endpoints, httpx async, warmup)
     topology  — traceroute + LAN host discovery (ping sweep + ARP)
-    ports     — TCP port skaner (asyncio connect, stdlib)
-    dns       — DNS diagnostika (resolve + serverlar latency taqqoslash)
+    ports     — TCP port scanner (asyncio connect, stdlib)
+    dns       — DNS diagnostics (resolve + latency comparison across servers)
 """

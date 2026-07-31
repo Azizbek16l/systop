@@ -8,6 +8,7 @@ Every `evaluate_*` function is pure: it takes a finished measurement and returns
 from systop.core.diagnose import (
     CAT_CONNECTIVITY,
     CAT_EXPOSURE,
+    MANAGEMENT_KINDS,
     RISKY_LISTENERS,
     SEV_CRITICAL,
     SEV_HIGH,
@@ -714,3 +715,21 @@ def test_remote_exposure_ignores_unknown_ports():
 
 def test_remote_exposure_empty():
     assert evaluate_remote_exposure([]) == []
+
+
+def test_management_kinds_match_webscan_contract():
+    """`MANAGEMENT_KINDS` is a data contract with `webscan`, not display text.
+
+    The tokens must match `Fingerprint.device_kind` exactly. If the two modules
+    ever drift apart, `systop web --mgmt` filters everything away and reports
+    "no management devices" with a straight face — a silent empty result, which
+    is worse than an error because it reads like good news.
+
+    Comparing the two sets directly (instead of hard-coding a copy here) is what
+    makes the drift fail loudly.
+    """
+    from systop.core import webscan
+
+    produced = {fp.device_kind for fp in webscan._FINGERPRINTS if fp.device_kind}
+    missing = MANAGEMENT_KINDS - produced
+    assert not missing, f"diagnose expects kinds webscan never emits: {missing}"
