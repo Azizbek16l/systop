@@ -54,7 +54,7 @@ if _typed.is_file():
 # collecting them keeps this working if a lazy import is added later.
 hiddenimports += collect_submodules("systop")
 
-# --- 2. textual + rich: data fayllari BILAN ----------------------------------
+# --- 2. textual + rich: WITH their data files --------------------------------
 # textual carries its own `.tcss` / `.css` / widget assets inside the package,
 # yuradi (masalan `textual/widgets/*.tcss`, `textual/tree-sitter/*`).
 # collect_all = submodules + data + binaries; all three are needed.

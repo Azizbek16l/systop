@@ -28,7 +28,7 @@ jobs:
   # ---------------------------------------------------------------------------
 
   # ---------------------------------------------------------------------------
-  # 1. Standalone onefile binarlar — HAR BIR OS O'Z OS'IDA.
+  # 1. Standalone onefile binaries — EACH OS BUILT ON ITS OWN OS.
   #
   #    NEGA MATRITSA MAJBURIY: PyInstaller cross-compile QILMAYDI. U host
   #    embeds the host OS's CPython library (libpython / python3xx.dll) and a
@@ -109,7 +109,7 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # 2. GitHub Release — barcha binarlar bitta joyda.
+  # 2. GitHub Release — every binary in one place.
   # ---------------------------------------------------------------------------
   github-release:
     name: Attach binaries to Release

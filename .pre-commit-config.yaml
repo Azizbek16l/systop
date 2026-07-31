@@ -1,10 +1,11 @@
-# Pre-commit hooks — har commit'da (ya'ni har o'zgarishda) sifat darvozasi.
+# Pre-commit hooks — a quality gate on every commit.
 # O'rnatish: uv run pre-commit install
 # Versiyani yangilash: uv run pre-commit autoupdate
 #
-# ruff/format — tez, har faylga. mypy + pytest — local (loyiha uv muhitidan),
-# kommit oldidan to'liq tekshiradi. Haqiqiy cross-OS (Windows/Linux/macOS)
-# tekshiruvi CI matritsasida (.github/workflows/ci.yml) push paytida bo'ladi.
+# ruff/format — fast, per file. mypy + pytest — local (from the project uv env),
+# runs the full check before the commit lands. Real cross-OS coverage
+# (Windows/Linux/macOS) happens in the CI matrix (.github/workflows/ci.yml)
+# on push.
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.6.9

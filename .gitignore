@@ -25,8 +25,8 @@ htmlcov/
 # macOS Spotlight
 .metadata_never_index
 
-# Yig'ilgan binarlar (git uchun juda katta)
+# Built binaries (too large for git)
 release/
 
-# Ichki ish fayllari (repoga chiqmaydi)
+# Local working files (never committed)
 _local/
