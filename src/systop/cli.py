@@ -2285,11 +2285,18 @@ async def _cmd_wifi(show_neighbours: bool = False) -> int:
                 if w.is_24ghz
                 else f"{w.width_mhz or 20} MHz kanal bir nechta 20 MHz uyachani egallaydi"
             )
-            qism = f", shundan {len(same)} tasi AYNAN shu kanalda" if same else ""
-            note(
-                f"[{WARNING}]Kanal {w.channel} ga {len(ov)} ta AP xalaqit beryapti[/]{qism} "
-                f"[dim]({izoh})[/]"
-            )
+            # Hammasi bir kanalda bo'lsa "2 ta ... shundan 2 tasi" deb yozish
+            # ortiqcha — eng yomon holatni to'g'ridan-to'g'ri aytamiz.
+            if len(same) == len(ov):
+                bosh = f"Kanal {w.channel} da yana {len(ov)} ta AP bor — to'liq raqobat"
+            elif same:
+                bosh = (
+                    f"Kanal {w.channel} ga {len(ov)} ta AP xalaqit beryapti, "
+                    f"shundan {len(same)} tasi AYNAN shu kanalda"
+                )
+            else:
+                bosh = f"Kanal {w.channel} bilan {len(ov)} ta AP kesishadi"
+            note(f"[{WARNING}]{bosh}[/] [dim]({izoh})[/]")
     if w.is_24ghz and w.five_ghz_available:
         note(f"[{WARNING}]Atrofda 5 GHz mavjud[/] - unga o'tsangiz tezlik sezilarli oshadi.")
 
