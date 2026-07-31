@@ -23,9 +23,8 @@ top that converts measurements into ranked findings with a suggested fix.
 
 ## Why it exists
 
-It is built and used against a real multi-site corporate network (Kerio Control
-firewalls, Hyper-V clusters, Asterisk telephony, Hikvision NVRs, Docker hosts).
-Every feature traces to an incident that was hard to diagnose with existing
+It is built and used against real multi-site corporate networks. Every feature
+traces to an incident that was hard to diagnose with existing
 single-purpose tools — the driving observation being that the expensive part of
 network troubleshooting is rarely collecting data, it is **knowing which number
 is the anomaly**.

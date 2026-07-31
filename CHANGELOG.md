@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`doctor` reported false "all DNS servers down" on localized Windows.**
-  Found on a live server (Russian Windows 10, a Hyper-V host): `ipconfig
+  Found on a live server (Russian-language Windows 10): `ipconfig
   /all` prints `DNS-серверы`, not `DNS Servers`, so the label regex never
   matched, `system_resolvers()` returned empty, and the check fell back to
   public resolvers only — producing exactly the false HIGH this release series
@@ -535,8 +535,7 @@ Windows correctness overhaul — the localized-Windows ping/render defects.
 
 - **Windows console encoding.** CLI output (emoji/Unicode) no longer crashes
   with `UnicodeEncodeError` on legacy Windows consoles (cp1252): stdout/stderr
-  are reconfigured to UTF-8 with `errors="replace"`. Verified on Windows Server
-  2022 (a test host).
+  are reconfigured to UTF-8 with `errors="replace"`. Verified on Windows Server 2022.
 
 ## [0.3.0] — 2026-06-06
 

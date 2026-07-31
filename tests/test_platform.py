@@ -279,7 +279,7 @@ def test_platform_constants_exist():
 # Bu Unicode satrlar dekodlangan (decode_console natijasi) ko'rinishida. Byte
 # darajadagi cp866 dekodlash alohida (decode_console) testlarda sinaladi.
 
-# RUS `ping 8.8.8.8` (codepage 866, ru-RU) — real a test host chiqishi shaklida.
+# RUS `ping 8.8.8.8` (codepage 866, ru-RU) chiqishi shaklida.
 # Diqqat: RTT "время=84мс" (kirill 'мс'), "время<1мс" submilliyenniy, statistika
 # "Пакетов: отправлено = 4, получено = 4 ... (0% потерь)".
 _PING_RU = (

@@ -388,7 +388,7 @@ def test_parserlar_ip_bolmagan_qiymatni_rad_etadi():
 # Windows ipconfig — TILGA BOG'LIQ EMAS
 # --------------------------------------------------------------------------- #
 
-# Bu bug ruscha Windows serverida (ruscha Windows 10) topildi: `systop doctor`
+# Bu bug ruscha Windows 10 serverida topildi: `systop doctor`
 # "Barcha DNS serverlar javob bermayapti" degan soxta HIGH bergan edi, chunki
 # `DNS Servers` yorlig'i topilmagan. v0.3.2 da ping'da AYNAN shu sabab RUS
 # Windows'da hamma nishonni "o'lik" ko'rsatgandi — bir xil xato ikkinchi marta.
