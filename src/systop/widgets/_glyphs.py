@@ -1,17 +1,18 @@
-"""Markazlashgan glyph (belgi) helper — Unicode yoki ASCII fallback.
+"""A centralised glyph (symbol) helper — Unicode, or an ASCII fallback.
 
-Legacy Windows konsoli (raster cmd.exe, codepage 65001 EMAS) Unicode blok/emoji
-belgilarni (⬇ ⬆ ⊚ ◆ ⚡ ● 🌐 …) ko'rsata olmaydi — mojibake yoki bo'sh kvadrat
-chiqaradi. `core._platform.unicode_ok()` shu holatni aniqlaydi: True bo'lsa
-to'liq Unicode, False bo'lsa ASCII ekvivalent ishlatiladi.
+The legacy Windows console (raster cmd.exe, codepage NOT 65001) cannot display
+Unicode block/emoji characters (⬇ ⬆ ⊚ ◆ ⚡ ● 🌐 …) — it produces mojibake or an
+empty square. `core._platform.unicode_ok()` detects that situation: on True the
+full Unicode is used, on False the ASCII equivalent.
 
-Barcha widget'lar foydalanuvchiga ko'rinadigan maxsus belgini shu modul orqali
-oladi (`glyph("download")` kabi) — shunda fallback bitta joyda boshqariladi va
-macOS/Linux xulqi (har doim Unicode) o'zgarmaydi.
+Every widget obtains its user-visible special characters through this module
+(like `glyph("download")`) — that way the fallback is governed in one place and
+the macOS/Linux behaviour (always Unicode) does not change.
 
-Eslatma: `unicode_ok()` har chaqiruvda baholanadi (Windows'da `GetConsoleOutputCP`
-o'qiladi). Bu arzon va konsol holati ish davomida o'zgarishi mumkin (foydalanuvchi
-`chcp` qilsa). Testlarda `unicode_ok` ni monkeypatch qilib har ikki shox sinaladi.
+Note: `unicode_ok()` is evaluated on every call (on Windows it reads
+`GetConsoleOutputCP`). That is cheap, and the console state can change while the
+program runs (if the user runs `chcp`). In the tests `unicode_ok` is
+monkeypatched so that both branches are exercised.
 """
 
 from __future__ import annotations
@@ -20,42 +21,42 @@ from rich.text import Text
 
 from systop.core import _platform
 
-# Har bir mantiqiy belgi uchun (Unicode, ASCII) juftligi.
-# ASCII varianti SOF ASCII (codepage 437/866 da ham bir xil ko'rinadi).
+# The (Unicode, ASCII) pair for every logical symbol.
+# The ASCII variant is PURE ASCII (it looks the same in codepage 437/866 too).
 _GLYPHS: dict[str, tuple[str, str]] = {
-    # Tezlik paneli
-    "download": ("⬇", "[v]"),  # download yo'nalishi
-    "upload": ("⬆", "[^]"),  # upload yo'nalishi
-    "latency": ("⊚", "[~]"),  # latency / ping vaqti
-    # Holat belgilari
-    "ok": ("●", "*"),  # tirik / faol nuqta
-    "dead": ("●", "x"),  # o'lik nuqta (rang qizil bo'ladi)
-    "gateway": ("◆", "=>"),  # gateway roli (LAN jadvali)
-    "fast": ("⚡", "*"),  # eng tez resolver (DNS)
-    "cross": ("✗", "X"),  # xato belgisi
-    "sep": ("·", "-"),  # interfeys ajratuvchi (name · ip)
-    "dash": ("—", "-"),  # bo'sh qiymat (em-dash -> tire)
-    "ellipsis": ("…", "..."),  # tugallanmagan jarayon (… -> ...)
-    "empty": ("◌ ◌ ◌", "o o o"),  # bo'sh holat (hali ma'lumot yo'q) glyph qatori
+    # The speed panel
+    "download": ("⬇", "[v]"),  # the download direction
+    "upload": ("⬆", "[^]"),  # the upload direction
+    "latency": ("⊚", "[~]"),  # latency / ping time
+    # State marks
+    "ok": ("●", "*"),  # an alive / active dot
+    "dead": ("●", "x"),  # a dead dot (the colour will be red)
+    "gateway": ("◆", "=>"),  # the gateway role (the LAN table)
+    "fast": ("⚡", "*"),  # the fastest resolver (DNS)
+    "cross": ("✗", "X"),  # the error mark
+    "sep": ("·", "-"),  # the interface separator (name · ip)
+    "dash": ("—", "-"),  # an empty value (em dash -> hyphen)
+    "ellipsis": ("…", "..."),  # an unfinished process (… -> ...)
+    "empty": ("◌ ◌ ◌", "o o o"),  # the glyph row for the empty state (no data yet)
 }
 
 
 def unicode_ok() -> bool:
-    """Terminal Unicode blok/emoji ko'rsata oladimi (core._platform orqali).
+    """Can the terminal display Unicode block/emoji characters (via core._platform)?
 
-    Bitta o'rab beruvchi funksiya — testlar uni yoki `_platform.unicode_ok` ni
-    monkeypatch qilishi mumkin. Atribut sifatida o'qiladi (`_platform.unicode_ok()`)
-    shunda core'dagi monkeypatch ham ta'sir qiladi.
+    A single wrapping function — the tests can monkeypatch either it or
+    `_platform.unicode_ok`. It is read as an attribute
+    (`_platform.unicode_ok()`), so that a monkeypatch in core takes effect too.
     """
     return _platform.unicode_ok()
 
 
 def glyph(name: str) -> str:
-    """Mantiqiy belgi nomini terminalga mos satrga aylantiradi.
+    """Turns a logical symbol name into a string suited to the terminal.
 
-    `unicode_ok()` True bo'lsa Unicode variant, aks holda ASCII fallback.
-    Noma'lum nom kelsa — o'sha nomning o'zini qaytaradi (xato ko'tarmaydi),
-    shunda noto'g'ri kalit ham UI'ni yiqitmaydi.
+    If `unicode_ok()` is True the Unicode variant, otherwise the ASCII fallback.
+    If an unknown name arrives — that name itself is returned (no exception is
+    raised), so that a wrong key does not bring the UI down either.
     """
     pair = _GLYPHS.get(name)
     if pair is None:
@@ -64,31 +65,32 @@ def glyph(name: str) -> str:
 
 
 def ellipsis() -> str:
-    """Jarayon tugallanmaganini bildiruvchi qo'shimcha (`…` yoki `...`)."""
+    """The suffix that marks a process as unfinished (`…` or `...`)."""
     return glyph("ellipsis")
 
 
 def dash() -> str:
-    """Bo'sh / mavjud emas qiymat belgisi (`—` yoki `-`)."""
+    """The mark for an empty / non-existent value (`—` or `-`)."""
     return glyph("dash")
 
 
 def data_cell(value: object, empty: str | None = None) -> Text:
-    """Ma'lumot qiymatini `Text` sifatida qaytaradi — markup/emoji parse QILINMAYDI.
+    """Returns a data value as a `Text` — markup/emoji are NOT parsed.
 
-    Nima uchun kerak: Rich `:ab:` kabi ketma-ketlikni **emoji shortcode** deb
-    biladi va almashtiradi. MAC manzil `62:46:3c:ab:d1:1a` ekranda
-    `62:46:3c🆎d1:1a` bo'lib chiqadi — ya'ni sysadmin ko'rgan MAC haqiqiy MAC
-    emas. IPv6 yanada xavfli: 16-lik belgilardan iborat 10 ta shortcode bor
-    (`:a:`->🅰, `:b:`->🅱, `:ab:`->🆎, `:cd:`->💿, `:abc:`->🔤, `:abcd:`->🔡,
-    `:bed:`->🛏, `:bee:`->🐝, `:100:`->💯, `:1234:`->🔢).
+    Why this is needed: Rich treats a sequence like `:ab:` as an **emoji
+    shortcode** and substitutes it. The MAC address `62:46:3c:ab:d1:1a` comes
+    out on screen as `62:46:3c🆎d1:1a` — that is, the MAC the sysadmin sees is
+    not the real MAC. IPv6 is even more dangerous: there are 10 shortcodes made
+    up of hex characters (`:a:`->🅰, `:b:`->🅱, `:ab:`->🆎, `:cd:`->💿,
+    `:abc:`->🔤, `:abcd:`->🔡, `:bed:`->🛏, `:bee:`->🐝, `:100:`->💯,
+    `:1234:`->🔢).
 
-    CLI'da `Console(emoji=False)` shu muammoni yopadi, ammo **Textual TUI**
-    o'z render quvuridan o'tadi va u yerda almashtirish yoqilgan. `Text`
-    obyekti esa parse qilinmaydi — shuning uchun har qanday MAC/IP/hostname
-    katakchasi shu funksiyadan o'tishi kerak.
+    In the CLI `Console(emoji=False)` closes this hole, but the **Textual TUI**
+    goes through its own render pipeline and the substitution is enabled there.
+    A `Text` object, on the other hand, is not parsed — which is why every
+    MAC/IP/hostname cell has to pass through this function.
 
-    `empty` — qiymat bo'sh bo'lganda ko'rsatiladigan belgi (xira uslubda).
+    `empty` — the mark shown when the value is empty (in a dim style).
     """
     if value is None or value == "":
         return Text(empty or "", style="dim")

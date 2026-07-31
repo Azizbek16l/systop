@@ -1,10 +1,10 @@
-"""Per-interfeys jonli bandwidth monitori — `bandwhich`/`nload` bo'shlig'i.
+"""Live per-interface bandwidth monitor — the `bandwhich`/`nload` gap.
 
-`psutil.net_io_counters(pernic=True)` davriy o'qiladi va ikki o'qish orasidagi
-delta vaqtga bo'linib bit/sekund (bps) va paket/sekund (pps) hisoblanadi.
-Root kerak emas — hisoblagichlar yadro tomonidan beriladi.
+`psutil.net_io_counters(pernic=True)` is read periodically and the delta between
+two readings is divided by the time to get bits per second (bps) and packets per
+second (pps). No root is required — the counters are provided by the kernel.
 
-Faqat stdlib + psutil ishlatiladi; modul boshqa core modullarni import qilmaydi.
+Only stdlib + psutil are used; the module imports no other core module.
 """
 
 from __future__ import annotations
@@ -17,16 +17,17 @@ from typing import Any
 
 import psutil
 
-# psutil.net_io_counters(pernic=True) qaytaradigan named-tuple turi.
-# (snetio'ning bytes_recv/sent, packets_recv/sent maydonlari uchun Any.)
+# The named-tuple type returned by psutil.net_io_counters(pernic=True).
+# (Any, for snetio's bytes_recv/sent and packets_recv/sent fields.)
 Counters = dict[str, Any]
 
 
 @dataclass(slots=True)
 class IfaceRate:
-    """Bitta interfeysning jonli bandwidth tezligi (delta asosida).
+    """The live bandwidth rate of a single interface (based on the delta).
 
-    rx_bps/tx_bps — bit/sekund (qabul/yuborish); rx_pps/tx_pps — paket/sekund.
+    rx_bps/tx_bps — bits per second (received/sent); rx_pps/tx_pps — packets per
+    second.
     """
 
     name: str
@@ -37,28 +38,28 @@ class IfaceRate:
 
     @property
     def total_bps(self) -> float:
-        """Umumiy (rx+tx) bit/sekund."""
+        """The total (rx+tx) bits per second."""
         return self.rx_bps + self.tx_bps
 
 
 def _read_counters() -> Counters:
-    """Har interfeys bo'yicha xom IO hisoblagichlarini o'qiydi."""
+    """Reads the raw IO counters for every interface."""
     return psutil.net_io_counters(pernic=True)
 
 
 def _compute_rates(prev: Counters, curr: Counters, elapsed: float) -> list[IfaceRate]:
-    """Ikki o'qish orasidagi delta'dan har interfeys tezligini hisoblaydi.
+    """Computes each interface's rate from the delta between two readings.
 
-    elapsed — soniyalardagi haqiqiy vaqt farqi (>0 bo'lishi shart). Hisoblagich
-    qayta yuklangan (yoki interfeys yangi paydo bo'lgan) holatda manfiy delta
-    e'tiborsiz qoldiriladi (0 deb olinadi).
+    elapsed — the real time difference in seconds (it must be > 0). If a counter
+    has been reset (or the interface has just appeared), a negative delta is
+    ignored (taken as 0).
     """
     dt = elapsed if elapsed > 0 else 1e-9
     rates: list[IfaceRate] = []
     for name, c in curr.items():
         p = prev.get(name)
         if p is None:
-            # Yangi interfeys — taqqoslash uchun avvalgi nuqta yo'q.
+            # A new interface — there is no earlier point to compare against.
             rates.append(IfaceRate(name=name))
             continue
 
@@ -81,11 +82,12 @@ def _compute_rates(prev: Counters, curr: Counters, elapsed: float) -> list[Iface
 
 
 async def sample_bandwidth(interval: float = 1.0) -> list[IfaceRate]:
-    """Ikki o'qish orasidagi delta'dan har interfeys bandwidth tezligini o'lchaydi.
+    """Measures each interface's bandwidth rate from the delta between two readings.
 
-    `interval` soniya kutib, ikkita hisoblagich nuqtasi orasidagi farqni
-    bit/sekund va paket/sekundga aylantiradi. Bloklamaydi — `asyncio.sleep`
-    ishlatadi. Natija interfeys nomi bo'yicha tartiblangan `IfaceRate` ro'yxati.
+    It waits `interval` seconds and turns the difference between the two counter
+    points into bits per second and packets per second. It does not block — it
+    uses `asyncio.sleep`. The result is a list of `IfaceRate` sorted by
+    interface name.
     """
     prev = _read_counters()
     t0 = time.monotonic()
@@ -96,11 +98,11 @@ async def sample_bandwidth(interval: float = 1.0) -> list[IfaceRate]:
 
 
 async def bandwidth_stream(interval: float = 1.0) -> AsyncIterator[list[IfaceRate]]:
-    """Doimiy bandwidth oqimi — TUI panel yoki `--watch` rejimi uchun.
+    """A continuous bandwidth stream — for the TUI panel or `--watch` mode.
 
-    Har `interval` soniyada yangi `IfaceRate` ro'yxati beradi. Birinchi natija
-    ham bitta to'liq interval kutgandan keyin keladi (ya'ni har bir element
-    haqiqiy delta'ga asoslangan). Iste'molchi `break` qilsa to'xtaydi.
+    It yields a fresh `IfaceRate` list every `interval` seconds. Even the first
+    result arrives only after one full interval has passed (that is, every
+    element is based on a real delta). It stops when the consumer `break`s.
     """
     prev = _read_counters()
     t0 = time.monotonic()

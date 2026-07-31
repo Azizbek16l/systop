@@ -1,8 +1,8 @@
-"""`core/diagnose.py` uchun offline testlar — muammo topish mantiqini sinaydi.
+"""Offline tests for `core/diagnose.py` — they exercise the problem-finding logic.
 
-Barcha `evaluate_*` funksiyalari sof: tayyor o'lchovni oladi, `Finding` beradi.
-Shuning uchun tarmoqsiz to'liq sinaladi (orkestrator `run_diagnostics` sinalmaydi
-— u tarmoqqa chiqadi).
+Every `evaluate_*` function is pure: it takes a finished measurement and returns
+`Finding`s. That makes them fully testable without a network (the orchestrator
+`run_diagnostics` is not tested here — it goes out on the network).
 """
 
 from systop.core.diagnose import (
@@ -42,13 +42,13 @@ def test_ping_dead_gateway_is_critical():
 
 
 def test_ping_dead_internet_is_high_not_critical():
-    """Internet nishoni o'lishi gateway o'limidan kamroq jiddiy."""
+    """A dead internet target is less serious than a dead gateway."""
     f = evaluate_ping("Cloudflare", "1.1.1.1", False, 100.0, 0, 0, is_lan=False)
     assert f[0].severity == SEV_HIGH
 
 
 def test_ping_dead_skips_rtt_and_jitter():
-    """Javob bermasa RTT/jitter topilmasligi kerak — ular ma'nosiz."""
+    """With no reply there must be no RTT/jitter finding — they are meaningless."""
     f = evaluate_ping("Gateway", "10.0.0.1", False, 100.0, 9999, 9999, is_lan=True)
     assert len(f) == 1
 
@@ -67,10 +67,10 @@ def test_ping_clean_result_has_no_findings():
 
 
 def test_ping_lan_rtt_limit_is_stricter():
-    """LAN'da 60 ms muammo, internetda esa normal."""
+    """60 ms is a problem on the LAN, but normal towards the internet."""
     lan = evaluate_ping("Gateway", "192.168.1.1", True, 0, 60.0, 0, is_lan=True)
     wan = evaluate_ping("CF", "1.1.1.1", True, 0, 60.0, 0, is_lan=False)
-    assert any("kechikish" in f.title for f in lan)
+    assert any("latency is high" in f.title for f in lan)
     assert wan == []
 
 
@@ -85,7 +85,7 @@ def test_ping_custom_thresholds_respected():
 
 
 # --------------------------------------------------------------------------- #
-# interfeys
+# interface
 # --------------------------------------------------------------------------- #
 
 
@@ -110,12 +110,12 @@ def test_interface_clean_no_findings():
 
 
 def test_interface_zero_packets_no_division_error():
-    """Paket 0 bo'lsa nolga bo'linish bo'lmasligi kerak."""
+    """Zero packets must not cause a division by zero."""
     assert evaluate_interface("en0", True, "192.168.1.5", 5, 5, 0) == []
 
 
 # --------------------------------------------------------------------------- #
-# ochiq tinglayotgan xizmatlar
+# exposed listening services
 # --------------------------------------------------------------------------- #
 
 
@@ -126,7 +126,7 @@ def test_docker_api_wildcard_is_critical():
 
 
 def test_localhost_bind_is_safe():
-    """127.0.0.1 ga bog'langan xizmat tarmoqqa ochiq emas — ogohlantirmaslik kerak."""
+    """A service bound to 127.0.0.1 is not exposed to the network — do not warn."""
     assert evaluate_listeners([("127.0.0.1", 6379, "redis")]) == []
 
 
@@ -161,7 +161,7 @@ def test_ipv6_absent_is_info_only():
 
 
 def test_ipv6_link_local_only_is_medium():
-    """Eng ko'p uchraydigan real holat: SLAAC manzil bor, global marshrut yo'q."""
+    """The most common real-world case: SLAAC addresses exist, no global route."""
     f = evaluate_ipv6(46, 0)
     assert f[0].severity == SEV_MEDIUM
     assert "link-local" in f[0].title
@@ -177,7 +177,7 @@ def test_ipv6_blackhole_is_high():
 
 
 # --------------------------------------------------------------------------- #
-# LAN anomaliyalari
+# LAN anomalies
 # --------------------------------------------------------------------------- #
 
 
@@ -220,7 +220,7 @@ def test_hosts_without_mac_ignored():
 def test_http_basic_auth_admin_is_high():
     f = evaluate_web([("192.168.1.1", 80, "http", True, "high", "MikroTik")])
     assert f[0].severity == SEV_HIGH
-    assert "ochiq matnda" in f[0].title
+    assert "clear text" in f[0].title
 
 
 def test_http_form_admin_is_medium():
@@ -242,7 +242,7 @@ def test_non_admin_service_ignored():
 
 
 def test_system_dns_broken_is_critical():
-    f = evaluate_dns(False, "resolve xatosi", [])
+    f = evaluate_dns(False, "resolve error", [])
     assert f[0].severity == SEV_CRITICAL
 
 
@@ -258,18 +258,18 @@ def test_some_resolvers_dead_is_low():
 
 def test_slow_resolver_flagged():
     f = evaluate_dns(True, None, [("1.1.1.1", True, 900)])
-    assert any("sekin" in x.title for x in f)
+    assert any("slow" in x.title for x in f)
 
 
 def test_healthy_dns_no_findings():
     assert evaluate_dns(True, None, [("1.1.1.1", True, 20)]) == []
 
 
-# --- tizim resolveri vs ommaviy: jiddiylik shunga bog'liq ------------------
+# --- system resolver vs public: the severity keys on this -------------------
 
 
-def test_tizim_resolveri_olik_high():
-    """Mashina sozlangan resolver javob bermasa — har doim haqiqiy nosozlik."""
+def test_dead_system_resolver_is_high():
+    """When the machine's configured resolver does not answer, it is always real."""
     f = evaluate_dns(
         True,
         None,
@@ -280,17 +280,17 @@ def test_tizim_resolveri_olik_high():
     )
     hi = [x for x in f if x.severity == SEV_HIGH]
     assert len(hi) == 1
-    assert "Tizim DNS" in hi[0].title
+    assert "System DNS" in hi[0].title
     assert hi[0].evidence["scope"] == "system"
 
 
-def test_tashqi_dns_yopiq_muammo_emas():
-    """SOXTA POZITIV REGRESSIYASI.
+def test_blocked_public_dns_is_not_a_problem():
+    """FALSE-POSITIVE REGRESSION.
 
-    Korporativ tarmoqda tashqi 53-port ataylab yopiladi. Ilgari bu holat
-    "Barcha DNS serverlar javob bermayapti" degan HIGH va exit 2 berardi —
-    butunlay sog'lom tarmoqda. Endi INFO: is_problem False, exit kodga
-    ta'sir qilmaydi.
+    On a corporate network outbound port 53 is closed deliberately. This case
+    used to return HIGH — "All DNS servers are unresponsive" — and exit 2, on a
+    completely healthy network. It is INFO now: is_problem is False and it does
+    not affect the exit code.
     """
     f = evaluate_dns(
         True,
@@ -304,31 +304,31 @@ def test_tashqi_dns_yopiq_muammo_emas():
     assert not any(x.is_problem for x in f)
     info = [x for x in f if x.severity == SEV_INFO]
     assert len(info) == 1
-    assert "Tashqi DNS" in info[0].title
-    assert info[0].fix is None  # "firewall'ni tekshiring" NOTO'G'RI tavsiya edi
+    assert "public DNS" in info[0].title
+    assert info[0].fix is None  # "check the firewall" was the WRONG remediation
 
 
-def test_tizim_aniqlanmagan_bolsa_eski_xulosa_saqlanadi():
-    """Tizim resolveri topilmasa ehtiyotkor bo'lamiz — eski HIGH qoladi."""
+def test_unidentified_system_resolver_keeps_the_old_verdict():
+    """With no system resolver found we stay cautious — the old HIGH remains."""
     f = evaluate_dns(True, None, [("1.1.1.1", False, 0, False), ("8.8.8.8", False, 0, False)])
     hi = [x for x in f if x.severity == SEV_HIGH]
     assert len(hi) == 1
-    assert "Barcha DNS" in hi[0].title
+    assert "All DNS" in hi[0].title
 
 
-def test_uchlik_ham_qabul_qilinadi():
-    """Eski 3-lik chaqiruv yiqilmasligi kerak (is_system=False deb olinadi)."""
+def test_the_old_triple_is_still_accepted():
+    """The old 3-tuple call must not fall over (it is read as is_system=False)."""
     assert evaluate_dns(True, None, [("1.1.1.1", True, 20)]) == []
     f = evaluate_dns(True, None, [("1.1.1.1", False, 0)])
     assert any(x.severity == SEV_HIGH for x in f)
 
 
-def test_sekinlik_tizim_resolveri_boyicha_olchanadi():
-    """Ommaviy server 900 ms — normal masofa. Tizim resolveri 900 ms — muammo.
+def test_slowness_is_measured_over_the_system_resolver():
+    """900 ms to a public server is a normal distance; 900 ms to the system one is not.
 
-    Aralashtirsak, uzoqdagi OpenDNS har doim "DNS sekin" deb belgilanardi.
+    Mixing the two meant a distant OpenDNS was permanently flagged "DNS is slow".
     """
-    faqat_ommaviy_sekin = evaluate_dns(
+    only_public_is_slow = evaluate_dns(
         True,
         None,
         [
@@ -336,9 +336,9 @@ def test_sekinlik_tizim_resolveri_boyicha_olchanadi():
             ("208.67.222.222", True, 900, False),
         ],
     )
-    assert not any("sekin" in x.title for x in faqat_ommaviy_sekin)
+    assert not any("slow" in x.title for x in only_public_is_slow)
 
-    tizim_sekin = evaluate_dns(
+    system_is_slow = evaluate_dns(
         True,
         None,
         [
@@ -346,7 +346,7 @@ def test_sekinlik_tizim_resolveri_boyicha_olchanadi():
             ("8.8.8.8", True, 30, False),
         ],
     )
-    assert any("sekin" in x.title for x in tizim_sekin)
+    assert any("slow" in x.title for x in system_is_slow)
 
 
 # --------------------------------------------------------------------------- #
@@ -369,19 +369,19 @@ def test_valid_cert_no_finding():
 
 
 def test_tls_error_is_high():
-    f = evaluate_tls("example.com", None, error="ulanib bo'lmadi")
+    f = evaluate_tls("example.com", None, error="could not connect")
     assert f[0].severity == SEV_HIGH
 
 
 # --------------------------------------------------------------------------- #
-# boshqaruvchi qurilma + saralash + Report
+# management device + sorting + Report
 # --------------------------------------------------------------------------- #
 
 
 def test_management_device_kinds():
     assert is_management_device("firewall")
     assert is_management_device("router")
-    assert is_management_device("kamera/NVR")
+    assert is_management_device("camera/NVR")
     assert not is_management_device("printer")
     assert not is_management_device(None)
 
@@ -416,7 +416,7 @@ def test_report_counts():
 
 
 # --------------------------------------------------------------------------- #
-# Wi-Fi / link tezligi / MAC filtri (0.7.0)
+# Wi-Fi / link speed / MAC filter (0.7.0)
 # --------------------------------------------------------------------------- #
 
 from systop.core.diagnose import (  # noqa: E402
@@ -447,7 +447,7 @@ def _wifi(**kw):
 
 
 def test_wifi_no_hardware_returns_nothing():
-    """Wi-Fi apparati yo'q serverda ogohlantirish BO'LMASLIGI shart."""
+    """A server with no Wi-Fi hardware MUST NOT produce a warning."""
     assert _wifi(available=False) == []
 
 
@@ -466,54 +466,56 @@ def test_wifi_very_weak_signal_is_critical():
 
 def test_wifi_weak_signal_is_medium():
     f = _wifi(rssi=-75)
-    assert any(x.severity == SEV_MEDIUM and "zaif" in x.title for x in f)
+    assert any(x.severity == SEV_MEDIUM and "signal is weak" in x.title for x in f)
 
 
 def test_wifi_low_snr_is_high():
     f = _wifi(snr=10)
-    assert any(x.severity == SEV_HIGH and "shovqin" in x.title for x in f)
+    assert any(x.severity == SEV_HIGH and "noise level" in x.title for x in f)
 
 
 def test_wifi_24ghz_with_5ghz_available_flagged():
     f = _wifi(band="2.4GHz", channel=6)
-    assert any("2.4 GHz da ulangan" in x.title for x in f)
+    assert any("Connected on 2.4 GHz" in x.title for x in f)
 
 
 def test_wifi_24ghz_without_5ghz_not_flagged():
-    """5 GHz mavjud bo'lmasa 2.4 GHz da bo'lish muammo emas."""
+    """With no 5 GHz around, sitting on 2.4 GHz is not a problem."""
     f = _wifi(band="2.4GHz", channel=6, five_ghz_available=False)
-    assert not any("2.4 GHz da ulangan" in x.title for x in f)
+    assert not any("Connected on 2.4 GHz" in x.title for x in f)
 
 
 def test_wifi_channel_congestion_scales_with_count():
     med = _wifi(band="2.4GHz", channel=6, overlap_count=4)
     high = _wifi(band="2.4GHz", channel=6, overlap_count=7)
-    assert any(x.severity == SEV_MEDIUM and "tiqilinch" in x.title for x in med)
-    assert any(x.severity == SEV_HIGH and "tiqilinch" in x.title for x in high)
+    assert any(x.severity == SEV_MEDIUM and "is congested" in x.title for x in med)
+    assert any(x.severity == SEV_HIGH and "is congested" in x.title for x in high)
 
 
 def test_wifi_low_congestion_not_flagged():
-    assert not any("tiqilinch" in x.title for x in _wifi(band="2.4GHz", channel=6, overlap_count=2))
+    assert not any(
+        "is congested" in x.title for x in _wifi(band="2.4GHz", channel=6, overlap_count=2)
+    )
 
 
 def test_wifi_nonstandard_24ghz_channel():
     f = _wifi(band="2.4GHz", channel=3, five_ghz_available=False)
-    assert any("nostandart kanal" in x.title for x in f)
+    assert any("Non-standard channel" in x.title for x in f)
 
 
 def test_wifi_standard_channels_not_flagged():
     for ch in (1, 6, 11):
         f = _wifi(band="2.4GHz", channel=ch, five_ghz_available=False)
-        assert not any("nostandart" in x.title for x in f), ch
+        assert not any("Non-standard" in x.title for x in f), ch
 
 
 def test_wifi_phy_below_card_capability():
     f = _wifi(phy_gen="n", card_gen="ax")
-    assert any("karta ax" in x.title for x in f)
+    assert any("the card supports ax" in x.title for x in f)
 
 
 def test_wifi_phy_matching_card_not_flagged():
-    assert not any("karta" in x.title for x in _wifi(phy_gen="ax", card_gen="ax"))
+    assert not any("the card supports" in x.title for x in _wifi(phy_gen="ax", card_gen="ax"))
 
 
 def test_wifi_wep_is_critical():
@@ -523,15 +525,15 @@ def test_wifi_wep_is_critical():
 
 def test_wifi_open_network_is_high():
     f = _wifi(security="None")
-    assert any(x.severity == SEV_HIGH and "ochiq" in x.title for x in f)
+    assert any(x.severity == SEV_HIGH and "is open" in x.title for x in f)
 
 
 def test_wifi_narrow_5ghz_channel_flagged():
     f = _wifi(band="5GHz", width_mhz=20)
-    assert any("tor kanal" in x.title for x in f)
+    assert any("Narrow channel" in x.title for x in f)
 
 
-# --- link tezligi ---------------------------------------------------------- #
+# --- link speed ------------------------------------------------------------ #
 
 
 def test_link_speed_gigabit_not_flagged():
@@ -549,7 +551,7 @@ def test_link_speed_10mbps_is_high():
 
 
 def test_link_speed_virtual_interface_skipped():
-    """utun/awdl kabi virtual interfeyslarda 'tezlik' ma'nosiz."""
+    """On virtual interfaces such as utun/awdl, 'speed' is meaningless."""
     assert evaluate_link_speed("utun0", 100, True, is_virtual=True) == []
 
 
@@ -561,7 +563,7 @@ def test_link_speed_unknown_speed_skipped():
     assert evaluate_link_speed("en0", 0, True) == []
 
 
-# --- MAC filtri ------------------------------------------------------------ #
+# --- MAC filter ------------------------------------------------------------ #
 
 
 def test_broadcast_mac_is_not_a_device():
@@ -586,7 +588,7 @@ def test_malformed_mac_is_not_a_device():
 
 
 def test_duplicate_detection_ignores_broadcast():
-    """Broadcast MAC ko'p IP'da bo'lishi normal — dublikat deb belgilanmasin."""
+    """A broadcast MAC on many IPs is normal — do not flag it as a duplicate."""
     hosts = [
         ("192.168.1.1", "ff:ff:ff:ff:ff:ff", False),
         ("192.168.1.2", "ff:ff:ff:ff:ff:ff", False),
@@ -595,7 +597,7 @@ def test_duplicate_detection_ignores_broadcast():
 
 
 # --------------------------------------------------------------------------- #
-# Adaptiv chegaralar (0.8.0) — bitta raqam har tarmoqda to'g'ri bo'lolmaydi
+# Adaptive thresholds (0.8.0) — one number cannot be right on every network
 # --------------------------------------------------------------------------- #
 
 from systop.core.diagnose import (  # noqa: E402
@@ -610,7 +612,7 @@ from systop.core.diagnose import (  # noqa: E402
 
 
 def test_classify_wifi_by_state_not_name():
-    """macOS'da Wi-Fi ham `en0` — nomdan emas, holatdan aniqlanishi kerak."""
+    """On macOS Wi-Fi is `en0` too — it must be told from the state, not the name."""
     assert classify_link("en0", wifi_connected=True, wifi_interface="en0") == LINK_WIFI
 
 
@@ -632,7 +634,7 @@ def test_classify_unknown_interface():
 
 
 def test_wired_thresholds_are_strictest():
-    """Kabelda 50 ms falokat, Wi-Fi'da normal — chegaralar shuni aks ettirsin."""
+    """50 ms is a disaster on copper and normal on Wi-Fi — thresholds must say so."""
     wired = thresholds_for_link(LINK_WIRED)
     wifi = thresholds_for_link(LINK_WIFI)
     cell = thresholds_for_link(LINK_CELLULAR)
@@ -642,51 +644,51 @@ def test_wired_thresholds_are_strictest():
 
 
 def test_same_rtt_judged_differently_per_link():
-    """Xuddi shu 30 ms kabelda muammo, Wi-Fi'da emas."""
+    """The very same 30 ms is a problem on copper and not on Wi-Fi."""
     wired = evaluate_ping(
         "GW", "10.0.0.1", True, 0, 30.0, 0, is_lan=True, th=thresholds_for_link(LINK_WIRED)
     )
     wifi = evaluate_ping(
         "GW", "10.0.0.1", True, 0, 30.0, 0, is_lan=True, th=thresholds_for_link(LINK_WIFI)
     )
-    assert any("kechikish" in f.title for f in wired)
+    assert any("latency is high" in f.title for f in wired)
     assert wifi == []
 
 
 def test_user_config_overrides_link_profile():
-    """Qo'lda qo'yilgan qiymat avtomatik moslashuvdan USTUN turishi kerak."""
+    """A hand-set value must WIN over the automatic adaptation."""
     user = Thresholds(gateway_rtt_ms=999.0)
     assert thresholds_for_link(LINK_WIRED, user).gateway_rtt_ms == 999.0
 
 
 def test_unset_config_fields_take_profile_value():
-    user = Thresholds()  # hammasi default
+    user = Thresholds()  # everything at its default
     assert thresholds_for_link(LINK_WIRED, user).gateway_rtt_ms == 5.0
 
 
 def test_unknown_profile_is_lenient_not_strict():
-    """Noma'lum tarmoqda qattiq chegara soxta ogohlantirish beradi."""
+    """A strict threshold on an unknown network produces false warnings."""
     unk = thresholds_for_link(LINK_UNKNOWN)
     assert unk.gateway_rtt_ms > thresholds_for_link(LINK_WIRED).gateway_rtt_ms
 
 
 # --------------------------------------------------------------------------- #
-# Masofaviy vs lokal ekspozitsiya (0.9.0) — noto'g'ri ayblashning oldini olish
+# Remote vs local exposure (0.9.0) — keeping the blame off the wrong machine
 # --------------------------------------------------------------------------- #
 
 from systop.core.diagnose import evaluate_remote_exposure  # noqa: E402
 
 
 def test_remote_exposure_says_other_devices_not_yours():
-    """Qo'shni qurilmaning ochiq porti 'sizning xizmatingiz' deb aytilmasin."""
+    """A neighbour's exposed port must not be called 'your service'."""
     f = evaluate_remote_exposure([("192.168.1.50", 2375)])
     assert len(f) == 1
-    assert "BOSHQA" in f[0].detail
+    assert "OTHER" in f[0].detail
     assert "localhost" not in (f[0].fix or "")
 
 
 def test_remote_exposure_severity_is_lowered():
-    """Masofaviy topilma lokalidan bir daraja past: bu sizning hostingiz emas."""
+    """A remote finding sits one level below a local one: it is not your host."""
     local = evaluate_listeners([("0.0.0.0", 2375, "dockerd")])
     remote = evaluate_remote_exposure([("192.168.1.50", 2375)])
     assert local[0].severity == SEV_CRITICAL
@@ -703,7 +705,7 @@ def test_remote_exposure_groups_hosts_by_port():
     )
     assert len(f) == 2
     telnet = next(x for x in f if "23" in x.title)
-    assert "2 ta host" in telnet.title
+    assert "2 hosts" in telnet.title
 
 
 def test_remote_exposure_ignores_unknown_ports():

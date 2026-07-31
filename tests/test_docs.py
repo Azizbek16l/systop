@@ -1,16 +1,16 @@
-"""Hujjat–kod pariteti testlari — OFFLINE.
+"""Documentation–code parity tests — OFFLINE.
 
-Hujjatlar koddan orqada qolib ketishining oldini oladi. Yagona haqiqat manbai
-— `cli.py`dagi `_build_parser()`. Bu yerda uch narsa tekshiriladi:
+They stop the documentation from falling behind the code. The single source of
+truth is `_build_parser()` in `cli.py`. Three things are checked here:
 
-1. Har bir subbuyruq `README.md` da `systop <cmd>`
-   ko'rinishida uchraydi;
-2. `cli.py` modul docstring'idagi buyruqlar to'plami parser bilan AYNAN teng
-   (kam ham emas, ortiq ham emas — o'chirilgan buyruq ham ushlanadi);
-3. README'lar mavjud bo'lmagan lokal rasmga havola qilmaydi (`assets/demo.gif`
-   bir marta shunday sinib qolgan edi).
+1. Every subcommand appears in `README.md` in the form `systop <cmd>`;
+2. The set of commands in the `cli.py` module docstring is EXACTLY equal to the
+   parser's (neither fewer nor more — a removed command is caught as well);
+3. The READMEs do not link to a local image that does not exist
+   (`assets/demo.gif` broke exactly like that once).
 
-Tarmoqqa chiqmaydi, subprocess ochmaydi — faqat fayl o'qish va regex.
+It never touches the network and opens no subprocess — only file reads and
+regexes.
 """
 
 from __future__ import annotations
@@ -29,35 +29,36 @@ _READMES = (_README_EN,)
 
 
 def _subcommands() -> set[str]:
-    """`_build_parser()` dagi haqiqiy subbuyruq nomlari — yagona manba."""
+    """The real subcommand names in `_build_parser()` — the single source."""
     parser = cli._build_parser()
     for action in parser._actions:
         if isinstance(action, argparse._SubParsersAction):
             return set(action.choices)
-    raise AssertionError("cli._build_parser() da subparser topilmadi")
+    raise AssertionError("no subparser was found in cli._build_parser()")
 
 
-# `systop <cmd>` — chegaralar ataylab qattiq:
-#   * `[^\S\n]+` (gorizontal bo'shliq) — `cd systop\nuv sync` dagi keyingi
-#     QATOR so'zini buyruq deb o'qimasligi uchun;
-#   * `(?<![\w./-])` — `./systop-linux-x86_64` va `systop.app:SystopApp` chetda
-#     qolsin;
-#   * `[a-z]` bilan boshlanishi — `systop CLI — ...` kabi nasr mos kelmasin.
+# `systop <cmd>` — the boundaries are deliberately strict:
+#   * `[^\S\n]+` (horizontal whitespace) — so that the word on the NEXT LINE in
+#     `cd systop\nuv sync` is not read as a command;
+#   * `(?<![\w./-])` — so that `./systop-linux-x86_64` and `systop.app:SystopApp`
+#     stay out;
+#   * it has to start with `[a-z]` — so that prose like `systop CLI — ...` does
+#     not match.
 _CMD_RE = re.compile(r"(?<![\w./-])systop[^\S\n]+([a-z][a-z0-9_-]*)(?![\w-])")
 _FENCE_RE = re.compile(r"^```[^\n]*\n(.*?)^```", re.DOTALL | re.MULTILINE)
 
 
 def _documented_in(text: str) -> set[str]:
-    """Matndagi `systop <cmd>` ko'rinishlaridan buyruq nomlarini yig'adi."""
+    """Collects the command names from the `systop <cmd>` occurrences in the text."""
     return set(_CMD_RE.findall(text))
 
 
 def _documented_in_code_blocks(text: str) -> set[str]:
-    """Faqat ``` bilan o'ralgan kod bloklaridan yig'adi.
+    """Collects only from the code blocks fenced with ```.
 
-    Nasrda "systop runs on Linux" kabi jumlalar bor — ular buyruq emas.
-    Hujjatda buyruq **ishlatilishi bilan** (nusxa-ko'chirsa bo'ladigan qator)
-    ko'rsatilgan bo'lishi kerak, shuning uchun faqat kod bloklari sanaladi.
+    The prose contains sentences like "systop runs on Linux" — those are not
+    commands. In the documentation a command has to be shown **through its
+    usage** (a line you can copy and paste), so only the code blocks count.
     """
     return _documented_in("\n".join(_FENCE_RE.findall(text)))
 
@@ -68,46 +69,45 @@ def subcommands() -> set[str]:
 
 
 def test_subcommand_map_is_not_empty(subcommands: set[str]) -> None:
-    """Sanity: parser haqiqatan subbuyruqlar beradi (regex bo'sh to'plamga mos kelmasin)."""
+    """Sanity: the parser really does yield subcommands (the regex must not match an empty set)."""
     assert len(subcommands) > 10
-    # Bir nechta kotva — parser tuzilishi butunlay o'zgarsa darhol ko'rinadi.
+    # A few anchors — if the parser structure changes completely it shows at once.
     assert {"ping", "speed", "doctor", "wifi"} <= subcommands
 
 
 @pytest.mark.parametrize("readme", _READMES, ids=lambda p: p.name)
 def test_every_subcommand_appears_in_readme(readme: Path, subcommands: set[str]) -> None:
-    """Har bir subbuyruq IKKALA README'da ham hujjatlashtirilgan bo'lishi kerak."""
+    """Every subcommand must be documented in BOTH READMEs."""
     documented = _documented_in_code_blocks(readme.read_text(encoding="utf-8"))
     missing = sorted(subcommands - documented)
     assert not missing, (
-        f"{readme.name} da hujjatlashtirilmagan subbuyruq(lar): {missing}. "
-        f"`systop <buyruq>` qatorini qo'shing."
+        f"subcommand(s) not documented in {readme.name}: {missing}. Add a `systop <command>` line."
     )
 
 
 @pytest.mark.parametrize("readme", _READMES, ids=lambda p: p.name)
 def test_readme_does_not_document_unknown_subcommand(readme: Path, subcommands: set[str]) -> None:
-    """README'da parser bilmaydigan buyruq ko'rsatilmasin (o'chirilgan/nomi o'zgargan)."""
+    """The README must not show a command the parser does not know (removed/renamed)."""
     documented = _documented_in_code_blocks(readme.read_text(encoding="utf-8"))
     unknown = sorted(documented - subcommands)
-    assert not unknown, f"{readme.name} mavjud bo'lmagan subbuyruq(lar)ni ko'rsatmoqda: {unknown}."
+    assert not unknown, f"{readme.name} shows subcommand(s) that do not exist: {unknown}."
 
 
 def test_cli_docstring_matches_subparsers(subcommands: set[str]) -> None:
-    """`cli.py` modul docstring'i AYNAN parser'dagi buyruqlarni sanashi kerak."""
+    """The `cli.py` module docstring must list EXACTLY the parser's commands."""
     doc = cli.__doc__
-    assert doc, "cli.py modul docstring'i yo'q"
+    assert doc, "cli.py has no module docstring"
     listed = _documented_in(doc)
 
     missing = sorted(subcommands - listed)
     extra = sorted(listed - subcommands)
-    assert not missing, f"cli.py docstring'ida yo'q: {missing}"
-    assert not extra, f"cli.py docstring'ida ortiqcha (parser bilmaydi): {extra}"
+    assert not missing, f"missing from the cli.py docstring: {missing}"
+    assert not extra, f"superfluous in the cli.py docstring (the parser does not know it): {extra}"
 
 
 @pytest.mark.parametrize("readme", _READMES, ids=lambda p: p.name)
 def test_readme_local_images_exist(readme: Path) -> None:
-    """README'dagi lokal rasm havolalari haqiqatan mavjud bo'lsin (sinuvchi embed yo'q)."""
+    """The local image links in the README must really exist (no broken embed)."""
     text = readme.read_text(encoding="utf-8")
     broken = [
         target
@@ -115,4 +115,4 @@ def test_readme_local_images_exist(readme: Path) -> None:
         if not target.startswith(("http://", "https://", "data:"))
         and not (_REPO_ROOT / target).exists()
     ]
-    assert not broken, f"{readme.name} da mavjud bo'lmagan rasm(lar): {broken}"
+    assert not broken, f"image(s) that do not exist in {readme.name}: {broken}"

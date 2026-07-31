@@ -6,10 +6,10 @@ Ishlatish:
     python3 packaging/smoke_test.py dist/systop.exe
 
 Nega bu fayl bor:
-  `--help` argparse'dan nariga o'tmaydi — u textual'ni ham, styles.tcss'ni ham
-  umuman ushlamaydi. Bundle'da styles.tcss yo'q bo'lsa `--help` YASHIL bo'lib,
-  TUI esa foydalanuvchi qo'lida yiqiladi. Shuning uchun:
-    1) --help / --version         -> argparse va binar butunligi
+  `--help` never gets past argparse — it touches neither textual nor
+  styles.tcss. With styles.tcss missing from the bundle `--help` still comes
+  back GREEN while the TUI dies in the user's hands. Hence:
+    1) --help / --version         -> argparse and binary integrity
     2) doctor --quick --json      -> haqiqiy kod yo'li + JSON parse
     3) TUI'ni PTY'da ochish       -> textual + styles.tcss (POSIX)
     4) arxiv TOC tekshiruvi       -> styles.tcss bundle ichida (uchala OS)
@@ -48,7 +48,7 @@ def skip(name: str, why: str) -> None:
 def run(binary: Path, args: list[str], timeout: int = 90) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     # Onefile birinchi ishga tushishda o'zini tmp'ga ochadi — rangsiz, tor
-    # terminalda ham bir xil natija bo'lsin.
+    # so the result is identical in any terminal.
     env["NO_COLOR"] = "1"
     env["COLUMNS"] = "120"
     return subprocess.run(
@@ -71,7 +71,7 @@ def test_help(binary: Path) -> None:
         fail(name, f"exit={p.returncode} stderr={p.stderr[:400]!r}")
         return
     if "usage" not in p.stdout.lower():
-        fail(name, f"'usage' yo'q: {p.stdout[:200]!r}")
+        fail(name, f"no 'usage': {p.stdout[:200]!r}")
         return
     ok(name, f"{len(p.stdout)} bayt yordam matni")
 
@@ -97,7 +97,7 @@ def test_doctor_json(binary: Path) -> None:
     except subprocess.TimeoutExpired:
         fail(name, "timeout (>180s)")
         return
-    # doctor topilma darajasiga qarab 0 yoki 2 qaytaradi — ikkalasi ham normal.
+    # doctor returns 0 or 2 depending on finding severity — both are normal.
     if p.returncode not in (0, 2):
         fail(name, f"kutilmagan exit={p.returncode} stderr={p.stderr[:400]!r}")
         return
@@ -133,7 +133,7 @@ def test_bundle_contains_assets(binary: Path) -> None:
 
 
 def test_tui_starts(binary: Path) -> None:
-    """TUI'ni haqiqiy PTY'da ochib, 'q' bilan yopadi (POSIX)."""
+    """Opens the TUI in a real PTY and closes it with 'q' (POSIX)."""
     name = "TUI PTY'da ishga tushadi"
     if os.name != "posix":
         skip(name, "PTY faqat POSIX'da; Windows'da TOC tekshiruvi qoladi")
@@ -218,7 +218,7 @@ def test_tui_starts(binary: Path) -> None:
     # ANSI ekran boshqaruvi = textual haqiqatan chizdi.
     drew = "\x1b[" in text
     if not drew:
-        fail(name, f"ANSI escape yo'q — TUI chizmagan; head={text[:300]!r}")
+        fail(name, f"no ANSI escapes — the TUI never drew; head={text[:300]!r}")
         return
     ok(name, f"{len(buf)} bayt ANSI chizildi, toza chiqdi")
 
@@ -229,15 +229,15 @@ def main() -> int:
         return 1
     binary = Path(sys.argv[1]).resolve()
     if not binary.is_file():
-        print(f"XATO: binar topilmadi: {binary}")
+        print(f"ERROR: binary not found: {binary}")
         return 1
     if os.name == "posix" and not os.access(binary, os.X_OK):
-        print(f"XATO: binar ijro etiluvchi emas: {binary}")
+        print(f"ERROR: binary is not executable: {binary}")
         return 1
 
     size = binary.stat().st_size
     print(f"\nsystop smoke test: {binary}")
-    print(f"hajm: {size:,} bayt ({size / 1024 / 1024:.1f} MiB)")
+    print(f"size: {size:,} bytes ({size / 1024 / 1024:.1f} MiB)")
     print(f"platforma: {sys.platform} / {os.uname().machine if hasattr(os, 'uname') else 'win'}")
     print(f"`file`: {_file_type(binary)}\n")
 
@@ -247,7 +247,7 @@ def main() -> int:
     test_doctor_json(binary)
     test_tui_starts(binary)
 
-    print(f"\nnatija: {len(PASSES)} o'tdi, {len(FAILURES)} yiqildi")
+    print(f"\nresult: {len(PASSES)} passed, {len(FAILURES)} failed")
     for f in FAILURES:
         print(f"  - {f}")
     return 1 if FAILURES else 0
@@ -255,7 +255,7 @@ def main() -> int:
 
 def _file_type(binary: Path) -> str:
     if not shutil.which("file"):
-        return "(file yo'q)"
+        return "(no file)"
     try:
         return subprocess.run(
             ["file", "-b", str(binary)], capture_output=True, text=True, timeout=20

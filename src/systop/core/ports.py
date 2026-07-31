@@ -1,9 +1,9 @@
-"""TCP port skaner — asyncio bilan, qo'shimcha bog'liqliksiz (faqat stdlib).
+"""TCP port scanner — built on asyncio, with no extra dependencies (stdlib only).
 
-Har bir portga `asyncio.open_connection` orqali TCP connect urinishi qilinadi.
-Ulanish ochilsa — port ochiq, javob vaqti (ms) o'lchanadi. Timeout/refused
-bo'lsa — yopiq yoki filtrlangan. Hammasi parallel (semaphore bilan cheklangan),
-shuning uchun root kerak emas va tez ishlaydi.
+Every port gets a TCP connect attempt via `asyncio.open_connection`. If the
+connection opens, the port is open and the response time (ms) is measured. On a
+timeout/refusal it is closed or filtered. Everything runs in parallel (bounded by
+a semaphore), so no root is needed and it is fast.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import ssl
 import time
 from dataclasses import dataclass, field
 
-# Sysadminlar tez-tez tekshiradigan keng tarqalgan portlar -> xizmat nomi.
+# The common ports a sysadmin checks most often -> service name.
 COMMON_PORTS: dict[int, str] = {
     21: "FTP",
     22: "SSH",
@@ -58,14 +58,14 @@ COMMON_PORTS: dict[int, str] = {
     27017: "MongoDB",
 }
 
-# Holat kodlari (UI'da o'zbekcha matnga aylantiriladi).
+# State codes (turned into display text by the UI).
 STATE_OPEN = "open"
 STATE_CLOSED = "closed"
 STATE_FILTERED = "filtered"
 
-# Manzil oilasi (address family) tanlovi.
-#   auto — OS nimani birinchi qaytarsa (odatda IPv6 bo'lsa IPv6, aks holda IPv4)
-#   ipv4 / ipv6 — majburan shu oila; host o'sha oilada resolve bo'lmasa xato
+# Choosing the address family.
+#   auto — whatever the OS returns first (usually IPv6 if there is one, else IPv4)
+#   ipv4 / ipv6 — force that family; an error if the host does not resolve in it
 FAMILY_AUTO = "auto"
 FAMILY_V4 = "ipv4"
 FAMILY_V6 = "ipv6"
@@ -79,13 +79,13 @@ _FAMILY_MAP: dict[str, int] = {
 
 @dataclass(slots=True)
 class PortResult:
-    """Bitta port bo'yicha skaner natijasi."""
+    """The scan result for a single port."""
 
     port: int
     state: str = STATE_CLOSED  # open | closed | filtered
     service: str | None = None
-    rtt_ms: float = 0.0  # faqat ochiq portlar uchun mazmunli
-    banner: str | None = None  # xizmat versiyasi (--banner bilan to'ldiriladi)
+    rtt_ms: float = 0.0  # only meaningful for open ports
+    banner: str | None = None  # the service version (filled in with --banner)
 
     @property
     def is_open(self) -> bool:
@@ -94,14 +94,14 @@ class PortResult:
 
 @dataclass(slots=True)
 class ScanResult:
-    """Bitta host bo'yicha to'liq skaner natijasi."""
+    """The full scan result for a single host."""
 
     host: str
     resolved_ip: str | None = None
     error: str | None = None
     ports: list[PortResult] = field(default_factory=list)
-    family: str = FAMILY_AUTO  # so'ralgan oila
-    resolved_family: str | None = None  # amalda ishlatilgani: ipv4 | ipv6
+    family: str = FAMILY_AUTO  # the family that was requested
+    resolved_family: str | None = None  # the one actually used: ipv4 | ipv6
 
     @property
     def open_ports(self) -> list[PortResult]:
@@ -109,14 +109,14 @@ class ScanResult:
 
 
 def default_ports() -> list[int]:
-    """Standart skaner uchun keng tarqalgan portlar ro'yxati (tartiblangan)."""
+    """The list of common ports for a standard scan (sorted)."""
     return sorted(COMMON_PORTS)
 
 
 def parse_ports(spec: str) -> list[int]:
-    """`22,80,443` yoki `1-1024` yoki `22,80,8000-8100` kabi spec'ni parse qiladi.
+    """Parses a spec such as `22,80,443` or `1-1024` or `22,80,8000-8100`.
 
-    Noto'g'ri qiymatlar e'tiborsiz qoldiriladi; natija tartiblangan, takrorsiz.
+    Invalid values are ignored; the result is sorted and free of duplicates.
     """
     ports: set[int] = set()
     for part in spec.split(","):
@@ -144,9 +144,9 @@ def parse_ports(spec: str) -> list[int]:
 
 
 def family_of(address: str) -> str | None:
-    """Tayyor IP manzilning oilasini aytadi (`ipv4`/`ipv6`), nom bo'lsa None.
+    """Tells the family of a ready IP address (`ipv4`/`ipv6`); None for a name.
 
-    Sof funksiya — tarmoqqa chiqmaydi, offline sinaladi.
+    A pure function — it never touches the network and is tested offline.
     """
     try:
         return (
@@ -159,14 +159,15 @@ def family_of(address: str) -> str | None:
 
 
 async def _resolve(host: str, family: str = FAMILY_AUTO) -> tuple[str | None, str | None]:
-    """Host nomini IP'ga aylantiradi. Qaytaradi: (manzil, oila) yoki (None, None).
+    """Turns a host name into an IP. Returns: (address, family) or (None, None).
 
-    `family` — `auto` bo'lsa OS tanlovi (AF_UNSPEC), aks holda majburan IPv4
-    yoki IPv6. So'ralgan oilada manzil bo'lmasa (masalan AAAA yozuvi yo'q)
-    (None, None) qaytadi va chaqiruvchi mazmunli xato beradi.
+    `family` — with `auto` the OS chooses (AF_UNSPEC), otherwise IPv4 or IPv6 is
+    forced. If there is no address in the requested family (no AAAA record, for
+    instance) it returns (None, None) and the caller reports a meaningful error.
 
-    Eslatma: qavs (`[::1]`) faqat URL'larda kerak — `asyncio.open_connection`
-    xom IPv6 manzilni qavssiz qabul qiladi, shuning uchun bu yerda qo'shilmaydi.
+    Note: the brackets (`[::1]`) are only needed in URLs — `asyncio.
+    open_connection` accepts a raw IPv6 address without them, so none are added
+    here.
     """
     af = _FAMILY_MAP.get(family, socket.AF_UNSPEC)
     try:
@@ -178,10 +179,10 @@ async def _resolve(host: str, family: str = FAMILY_AUTO) -> tuple[str | None, st
     if not infos:
         return None, None
 
-    # IPv6 so'ralganda IPv4-mapped (`::ffff:1.2.3.4`) manzillarni RAD ETAMIZ.
-    # Ular IPv6 emas — trafik IPv4 ustidan ketadi. Ularni qabul qilish
-    # `scan -6` / `nc -6` ni jimgina IPv4'da ishlatardi, ya'ni "IPv6
-    # qo'llab-quvvatlanadi" degan da'vo yolg'on bo'lardi.
+    # When IPv6 is requested we REJECT IPv4-mapped (`::ffff:1.2.3.4`) addresses.
+    # They are not IPv6 — the traffic goes over IPv4. Accepting them would make
+    # `scan -6` / `nc -6` silently run on IPv4, which would make the claim
+    # "IPv6 is supported" a lie.
     candidates = infos
     if family == FAMILY_V6:
         candidates = [
@@ -194,10 +195,10 @@ async def _resolve(host: str, family: str = FAMILY_AUTO) -> tuple[str | None, st
     address = info[4][0]
     resolved = FAMILY_V6 if info[0] == socket.AF_INET6 else FAMILY_V4
 
-    # IPv6 zona identifikatorini (`%en0`) SAQLAB QOLAMIZ. Link-local manzil
-    # zonasiz ishlatib bo'lmaydi: `fe80::1` ga ulanish "No route to host"
-    # beradi va port YOPIQ deb ko'rsatiladi. `getaddrinfo` zonani alohida
-    # `scope_id` maydonida qaytaradi, manzil satrida emas.
+    # We KEEP the IPv6 zone identifier (`%en0`). A link-local address is
+    # unusable without its zone: connecting to `fe80::1` gives "No route to
+    # host" and the port is reported CLOSED. `getaddrinfo` returns the zone in a
+    # separate `scope_id` field, not inside the address string.
     if resolved == FAMILY_V6 and "%" not in address:
         scope_id = info[4][3] if len(info[4]) > 3 else 0
         if scope_id:
@@ -209,7 +210,7 @@ async def _resolve(host: str, family: str = FAMILY_AUTO) -> tuple[str | None, st
 
 
 async def _scan_port(host: str, port: int, timeout: float, sem: asyncio.Semaphore) -> PortResult:
-    """Bitta portga TCP connect urinib, holatini aniqlaydi."""
+    """Attempts a TCP connect to a single port and determines its state."""
     async with sem:
         start = time.perf_counter()
         writer = None
@@ -223,10 +224,10 @@ async def _scan_port(host: str, port: int, timeout: float, sem: asyncio.Semaphor
                 rtt_ms=rtt,
             )
         except TimeoutError:
-            # Javob yo'q — ko'pincha firewall tomonidan filtrlangan.
+            # No answer — most often filtered by a firewall.
             return PortResult(port=port, state=STATE_FILTERED, service=COMMON_PORTS.get(port))
         except (ConnectionRefusedError, OSError):
-            # Aktiv rad etish — port yopiq.
+            # An active refusal — the port is closed.
             return PortResult(port=port, state=STATE_CLOSED, service=COMMON_PORTS.get(port))
         finally:
             if writer is not None:
@@ -244,11 +245,12 @@ async def scan_host(
     concurrency: int = 200,
     family: str = FAMILY_AUTO,
 ) -> ScanResult:
-    """Hostdagi portlarni parallel skaner qiladi (IPv4 va IPv6).
+    """Scans the ports on a host in parallel (IPv4 and IPv6).
 
-    ports — tekshiriladigan portlar; None bo'lsa keng tarqalganlari ishlatiladi.
-    family — `auto` | `ipv4` | `ipv6` (majburan oila tanlash).
-    Natija dataclass: resolved IP, oila, xato xabari (o'zbekcha), portlar holati.
+    ports — the ports to check; when None the common ones are used.
+    family — `auto` | `ipv4` | `ipv6` (forcing the address family).
+    The result is a dataclass: the resolved IP, the family, an error message and
+    the state of each port.
     """
     port_list = sorted(set(ports)) if ports else default_ports()
 
@@ -256,14 +258,14 @@ async def scan_host(
     if resolved is None:
         if family == FAMILY_V6:
             msg = (
-                f"'{host}' uchun haqiqiy IPv6 manzil topilmadi — AAAA yozuvi "
-                "yo'q yoki OS faqat IPv4-mapped (`::ffff:`) qaytardi "
-                "(hostda global IPv6 marshruti yo'qligi belgisi)."
+                f"No real IPv6 address was found for '{host}' — either there is "
+                "no AAAA record, or the OS returned only IPv4-mapped (`::ffff:`) "
+                "results (a sign that this host has no global IPv6 route)."
             )
         elif family == FAMILY_V4:
-            msg = f"'{host}' uchun IPv4 manzil topilmadi (A yozuvi yo'q?)."
+            msg = f"No IPv4 address was found for '{host}' (no A record?)."
         else:
-            msg = f"'{host}' nomini IP manzilga aylantirib bo'lmadi (DNS yoki host xato)."
+            msg = f"Could not turn the name '{host}' into an IP address (DNS or host error)."
         return ScanResult(host=host, error=msg, family=family)
 
     sem = asyncio.Semaphore(max(concurrency, 1))
@@ -280,11 +282,11 @@ async def scan_host(
 
 
 # ===========================================================================
-# LAN bo'ylab skan (nmap -sT uslubi) + banner (nmap -sV yengil)
+# Sweeping a LAN (nmap -sT style) + banners (a lightweight nmap -sV)
 # ===========================================================================
 
-# nmap'ning "top ports" g'oyasi: eng ko'p uchraydigan portlar oldinda.
-# Tartib muhim — `--top N` shu ro'yxatning boshidan N tasini oladi.
+# nmap's "top ports" idea: the most frequently seen ports come first.
+# The order matters — `--top N` takes the first N entries of this list.
 TOP_PORTS: tuple[int, ...] = (
     80,
     443,
@@ -334,18 +336,19 @@ TOP_PORTS: tuple[int, ...] = (
     8110,
 )
 
-# Ulanishda birinchi javobni O'ZI yuboradigan xizmatlar (banner grab uchun
-# hech narsa yubormasdan kutish kifoya). Boshqalarga (HTTP) so'rov kerak.
+# Services that send the first response THEMSELVES on connect (for a banner
+# grab it is enough to wait without sending anything). The others (HTTP) need a
+# request.
 _GREETING_PORTS: frozenset[int] = frozenset(
     {21, 22, 23, 25, 110, 143, 587, 3306, 5432, 6379, 11211, 27017}
 )
 
-# TLS ustida ishlaydigan portlar. Bularga ochiq matnli HTTP yuborish ma'nosiz —
-# server "400 Bad Request" qaytaradi va banner foydasiz bo'ladi. Shuning uchun
-# avval TLS handshake qilinadi, keyin so'rov shifrlangan kanalda ketadi.
+# Ports that run over TLS. Sending plaintext HTTP to these is pointless — the
+# server answers "400 Bad Request" and the banner is useless. So a TLS handshake
+# is done first, and the request then travels over the encrypted channel.
 _TLS_PORTS: frozenset[int] = frozenset({443, 465, 993, 995, 4081, 8006, 8443, 8834, 9443, 2376})
 
-# Banner'dan mahsulot/versiyani ajratish naqshlari (sof matn ustida ishlaydi).
+# Patterns for pulling the product/version out of a banner (they work on plain text).
 _BANNER_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"^SSH-[\d.]+-(?P<v>[^\r\n]+)", "SSH"),
     (r"^220[- ](?P<v>[^\r\n]*(?:FTP|vsftpd|ProFTPD|FileZilla)[^\r\n]*)", "FTP"),
@@ -353,28 +356,28 @@ _BANNER_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"^\+OK (?P<v>[^\r\n]+)", "POP3"),
     (r"^\* OK (?P<v>[^\r\n]+)", "IMAP"),
     (r"(?P<v>\d+\.\d+\.\d+[-\w.]*)\x00.*mysql_native", "MySQL"),
-    (r"-ERR (?P<v>[^\r\n]*unauthenticated[^\r\n]*)", "Redis (parol bor)"),
+    (r"-ERR (?P<v>[^\r\n]*unauthenticated[^\r\n]*)", "Redis (password set)"),
     (r"^\$?\d*\r?\n?# Server\r?\nredis_version:(?P<v>[\d.]+)", "Redis"),
     (r"^HTTP/[\d.]+ \d+[^\r\n]*\r?\n(?:.*\r?\n)*?Server: (?P<v>[^\r\n]+)", "HTTP"),
 )
 
 
 def parse_targets(spec: str, max_hosts: int = 1024) -> list[str]:
-    """Nishon spec'ini IP ro'yxatiga aylantiradi — SOF funksiya (offline test).
+    """Turns a target spec into a list of IPs — a pure function (offline test).
 
-    Qo'llab-quvvatlanadigan shakllar (vergul bilan aralash bo'lishi mumkin):
-      * `192.168.1.10`           — bitta manzil
-      * `192.168.1.0/24`         — CIDR (tarmoq/broadcast chiqarib tashlanadi)
-      * `192.168.1.10-50`        — oxirgi oktet diapazoni
-      * `192.168.1.10-192.168.1.50` — to'liq manzil diapazoni
-      * `example.com`            — nom (o'zi qaytariladi, resolve keyin bo'ladi)
+    The supported forms (they may be mixed, separated by commas):
+      * `192.168.1.10`           — a single address
+      * `192.168.1.0/24`         — CIDR (network/broadcast are excluded)
+      * `192.168.1.10-50`        — a last-octet range
+      * `192.168.1.10-192.168.1.50` — a full address range
+      * `example.com`            — a name (returned as is; resolution happens later)
 
-    IPv6 CIDR **ataylab rad etiladi**: /64 da 2^64 manzil bor, sweep imkonsiz
-    (IPv6 uchun `topology.discover_lan6` ishlatiladi). Bitta IPv6 manzil esa
-    qabul qilinadi.
+    An IPv6 CIDR is **rejected deliberately**: a /64 holds 2^64 addresses, so a
+    sweep is impossible (`topology.discover_lan6` is used for IPv6). A single
+    IPv6 address, on the other hand, is accepted.
 
-    `max_hosts` — himoya chegarasi: /8 kabi spec bilan xotirani to'ldirmaslik.
-    Natija takrorsiz, kiritilish tartibi saqlanadi.
+    `max_hosts` — a protective threshold: it stops a spec like /8 from filling
+    up memory. The result is free of duplicates and keeps the input order.
     """
     out: list[str] = []
     seen: set[str] = set()
@@ -396,23 +399,23 @@ def parse_targets(spec: str, max_hosts: int = 1024) -> list[str]:
             except ValueError:
                 continue
             if net.version == 6:
-                continue  # IPv6 sweep imkonsiz — yuqoridagi izohga qarang
+                continue  # an IPv6 sweep is impossible — see the note above
             for ip in net.hosts():
                 if len(out) >= max_hosts:
                     break
                 add(str(ip))
             continue
 
-        # Diapazon (IPv6 manzillarda ham '-' bo'lmaydi, xavfsiz)
+        # A range (IPv6 addresses never contain '-' either, so this is safe)
         if "-" in part and ":" not in part:
             lo_s, _, hi_s = part.partition("-")
             lo_s, hi_s = lo_s.strip(), hi_s.strip()
             try:
                 lo = ipaddress.ip_address(lo_s)
             except ValueError:
-                add(part)  # nom bo'lishi mumkin ("my-host")
+                add(part)  # it may be a name ("my-host")
                 continue
-            # "10.0.0.5-50" -> oxirgi oktetni to'ldiramiz
+            # "10.0.0.5-50" -> fill in the last octet
             if "." not in hi_s:
                 prefix = lo_s.rsplit(".", 1)[0]
                 hi_s = f"{prefix}.{hi_s}"
@@ -434,15 +437,15 @@ def parse_targets(spec: str, max_hosts: int = 1024) -> list[str]:
 
 
 def top_ports(count: int = 20) -> list[int]:
-    """Eng ko'p uchraydigan `count` ta portni qaytaradi (tartiblangan)."""
+    """Returns the `count` most frequently seen ports (sorted)."""
     return sorted(TOP_PORTS[: max(count, 1)])
 
 
 def parse_banner(data: str) -> tuple[str | None, str | None]:
-    """Banner matnidan (xizmat, versiya) ajratadi — SOF funksiya.
+    """Pulls (service, version) out of the banner text — a pure function.
 
-    Topilmasa (None, None) yoki (None, qisqartirilgan_matn) qaytaradi, shunda
-    chaqiruvchi baribir xom bannerni ko'rsata oladi.
+    When nothing is found it returns (None, None) or (None, truncated_text), so
+    that the caller can still show the raw banner.
     """
     if not data:
         return None, None
@@ -452,7 +455,7 @@ def parse_banner(data: str) -> tuple[str | None, str | None]:
         if m:
             version = (m.groupdict().get("v") or "").strip()
             return service, version[:120] or None
-    # Tanilmagan — birinchi mazmunli qatorni qaytaramiz.
+    # Unrecognised — we return the first meaningful line.
     first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
     return None, first[:120] or None
 
@@ -463,20 +466,21 @@ async def grab_banner(
     timeout: float = 2.0,
     probe: bytes | None = None,
 ) -> str | None:
-    """Ochiq portdan banner o'qiydi (nmap -sV ning yengil varianti).
+    """Reads the banner from an open port (a lightweight variant of nmap -sV).
 
-    Ko'p xizmat (SSH/SMTP/FTP/MySQL) ulanishda salomlashish yuboradi — shunda
-    hech narsa yubormasdan o'qiymiz. HTTP kabi so'rov kutadigan portlarga
-    minimal probe yuboriladi.
+    Many services (SSH/SMTP/FTP/MySQL) send a greeting on connect — for those we
+    simply read without sending anything. Ports that expect a request, such as
+    HTTP, get a minimal probe.
 
-    Istisno ko'tarmaydi: xato/timeout bo'lsa None qaytadi.
+    It never raises: on an error/timeout it returns None.
     """
     writer = None
     try:
         ssl_ctx = None
         if port in _TLS_PORTS:
-            # LAN qurilmalarida self-signed sertifikat odatiy holat — tekshirmaymiz
-            # (maqsad inventarizatsiya; sertifikat sifati uchun `systop tls`).
+            # A self-signed certificate is the norm on LAN devices — we do not
+            # verify (the goal is inventory; for certificate quality use
+            # `systop tls`).
             ssl_ctx = ssl.create_default_context()
             ssl_ctx.check_hostname = False
             ssl_ctx.verify_mode = ssl.CERT_NONE
@@ -484,11 +488,12 @@ async def grab_banner(
             asyncio.open_connection(host, port, ssl=ssl_ctx), timeout=timeout
         )
         if probe is None and port not in _GREETING_PORTS:
-            # Salomlashmaydigan port — HTTP so'rovi eng keng tarqalgan holat.
-            # Host header'i uchun ASCII kifoya: bu yerda IP yoki LAN nomi keladi.
-            # `idna` kodeki ATAYLAB ishlatilmaydi — u `errors=` argumentini
-            # qo'llab-quvvatlamaydi va `UnicodeError` ko'tarib, banner'ni jimgina
-            # yo'q qilardi (aynan shu bug bo'lgan).
+            # A port that does not greet — an HTTP request is by far the most
+            # common case. ASCII is enough for the Host header: what arrives here
+            # is an IP or a LAN name. The `idna` codec is DELIBERATELY not used —
+            # it does not support the `errors=` argument and would raise
+            # `UnicodeError`, silently destroying the banner (that was the exact
+            # bug).
             host_hdr = host.encode("ascii", "replace")
             probe = b"HEAD / HTTP/1.0\r\nHost: " + host_hdr + b"\r\n\r\n"
         if probe:
@@ -509,7 +514,7 @@ async def grab_banner(
 
 @dataclass(slots=True)
 class SweepResult:
-    """Ko'p host bo'yicha skan natijasi."""
+    """The scan result across many hosts."""
 
     hosts: list[ScanResult] = field(default_factory=list)
     scanned_hosts: int = 0
@@ -517,7 +522,7 @@ class SweepResult:
 
     @property
     def responsive(self) -> list[ScanResult]:
-        """Kamida bitta ochiq porti bor hostlar."""
+        """The hosts with at least one open port."""
         return [h for h in self.hosts if h.open_ports]
 
     @property
@@ -534,14 +539,14 @@ async def scan_targets(
     banner: bool = False,
     delay: float = 0.0,
 ) -> SweepResult:
-    """Bir nechta hostni parallel skan qiladi (nmap `-sT` uslubi).
+    """Scans several hosts in parallel (nmap `-sT` style).
 
-    `concurrency` — BUTUN sweep bo'ylab umumiy chegara (host×port emas), shunda
-    /24 skan tarmoqni ko'mmaydi. IPS/anti-scan himoyasi bor tarmoqda `delay`
-    bering (har ulanishdan keyin pauza) — tez keng skan skanerlovchi IP'ni
-    bloklanishiga olib keladi.
+    `concurrency` — the overall threshold across the WHOLE sweep (not host×port),
+    so that scanning a /24 does not bury the network. On a network with
+    IPS/anti-scan protection pass a `delay` (a pause after each connection) — a
+    fast, broad scan gets the scanning IP blocked.
 
-    `banner=True` — ochiq portlardan xizmat versiyasini ham o'qiydi (sekinroq).
+    `banner=True` — the service version is read from the open ports too (slower).
     """
     port_list = sorted(set(ports)) if ports else top_ports(20)
     if not targets or not port_list:
@@ -552,7 +557,7 @@ async def scan_targets(
     async def one_host(host: str) -> ScanResult:
         resolved, resolved_family = await _resolve(host, family)
         if resolved is None:
-            return ScanResult(host=host, error="resolve bo'lmadi", family=family)
+            return ScanResult(host=host, error="did not resolve", family=family)
 
         async def one_port(port: int) -> PortResult:
             async with sem:

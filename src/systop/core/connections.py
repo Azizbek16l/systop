@@ -1,23 +1,24 @@
-"""Faol tarmoq ulanishlari ko'rinishi — `ss`/`bandwhich` connection-table o'rnida.
+"""Active network connections view — a stand-in for the `ss`/`bandwhich` connection table.
 
-`psutil.net_connections(kind='inet')` socketlarni beradi; har bir ulanishning
-PID'i bo'lsa, `psutil.Process(pid).name()` orqali jarayon nomi qo'shiladi.
-Jarayon nomlari qisqa kesh'da saqlanadi (bir chaqiruvda bir PID ko'p marta
-uchrashi mumkin). Ruxsat yetishmasa (AccessDenied) — toza yutiladi, bor
-ma'lumot qaytariladi (ba'zi tizimlarda to'liq jadval uchun root kerak).
+`psutil.net_connections(kind='inet')` returns the sockets; whenever a
+connection has a PID, the process name is added via `psutil.Process(pid).name()`.
+Process names are kept in a short-lived cache (the same PID can show up many
+times within a single call). If permissions are lacking (AccessDenied) it is
+swallowed cleanly and whatever data we have is returned (on some systems the
+full table requires root).
 
-**macOS'da `psutil.net_connections()` root'siz HAR DOIM `AccessDenied`
-ko'taradi** — bu psutil xatosi emas, `_psosx.py` barcha PID'lar bo'ylab
-yuradi va begona jarayonga yetganda to'xtaydi. Natijada `list_connections()`
-bo'sh ro'yxat qaytaradi va "ochiq xizmatlar" tekshiruvi **jimgina o'lik**
-bo'lib qoladi: Docker API (2375), Redis, telnet ochiq turgan bo'lsa ham
-"muammo topilmadi" deyiladi. Shuning uchun `scan_connections()` qo'shildi —
-u `netstat -an -p tcp` ga tushadi va **ruxsat bor-yo'qligini ochiq
-aytadi** (`ConnScan.permitted`), toki chaqiruvchi "tekshirildi" bilan
-"tekshirib bo'lmadi" ni farqlay olsin.
+**On macOS `psutil.net_connections()` ALWAYS raises `AccessDenied` when not
+running as root** — this is not a psutil bug: `_psosx.py` walks over every PID
+and stops as soon as it reaches a process owned by someone else. As a result
+`list_connections()` returns an empty list and the "exposed services" check goes
+**silently dead**: even with the Docker API (2375), Redis or telnet left open it
+would report "no problems found". That is why `scan_connections()` was added —
+it falls back to `netstat -an -p tcp` and **states openly whether it had
+permission** (`ConnScan.permitted`), so that the caller can distinguish
+"checked" from "could not check".
 
-Faqat stdlib + psutil; `_platform` faqat `scan_connections` ichida, kech
-import qilinadi (buyruq ishga tushirish uchun — kod takrorlamaslik uchun).
+Only stdlib + psutil; `_platform` is imported lazily, inside `scan_connections`
+only (for running the command — to avoid duplicating that code).
 """
 
 from __future__ import annotations
@@ -27,36 +28,36 @@ from dataclasses import dataclass, field
 
 import psutil
 
-# psutil socket statuslari Linux/macOS'da bir xil string'lar (CONN_*).
-# None status — UDP yoki tinglovsiz socket (psutil ba'zan bo'sh qaytaradi).
+# psutil socket statuses are the same strings on Linux/macOS (CONN_*).
+# A None status means UDP or a non-listening socket (psutil sometimes returns empty).
 
 
 @dataclass(slots=True)
 class ConnInfo:
-    """Bitta tarmoq ulanishi (socket) haqida ma'lumot."""
+    """Information about a single network connection (socket)."""
 
     proto: str  # "tcp" | "udp" | "tcp6" | "udp6"
-    laddr: str  # "ip:port" (lokal)
-    raddr: str  # "ip:port" (masofaviy) yoki "" agar yo'q bo'lsa
-    status: str  # ESTABLISHED, LISTEN, ... yoki "" (UDP)
+    laddr: str  # "ip:port" (local)
+    raddr: str  # "ip:port" (remote), or "" if there is none
+    status: str  # ESTABLISHED, LISTEN, ... or "" (UDP)
     pid: int | None = None
     process: str | None = None
 
 
 def _proto_name(family: int, kind: int) -> str:
-    """socket oilasi+turidan "tcp"/"udp"/"tcp6"/"udp6" nomini yasaydi."""
+    """Builds the name "tcp"/"udp"/"tcp6"/"udp6" from the socket family+type."""
     base = "tcp" if kind == socket.SOCK_STREAM else "udp"
     return base + "6" if family == socket.AF_INET6 else base
 
 
 def _fmt_addr(addr: object) -> str:
-    """psutil addr (ip, port) named-tuple'ni "ip:port" satriga aylantiradi."""
+    """Turns a psutil addr (ip, port) named tuple into an "ip:port" string."""
     if not addr:
         return ""
     ip = getattr(addr, "ip", "") or ""
     port = getattr(addr, "port", "") or ""
     if ip and ":" in ip:
-        # IPv6 — manzilni qavsga olib portdan ajratamiz.
+        # IPv6 — bracket the address to separate it from the port.
         return f"[{ip}]:{port}" if port != "" else f"[{ip}]"
     return f"{ip}:{port}" if port != "" else ip
 
@@ -65,15 +66,15 @@ def list_connections(
     kind: str = "inet",
     states: list[str] | None = None,
 ) -> list[ConnInfo]:
-    """Faol tarmoq ulanishlarini jarayon nomi bilan birga qaytaradi.
+    """Returns the active network connections together with the process name.
 
-    kind — psutil `net_connections` turi ('inet', 'tcp', 'udp', 'inet4', ...).
-    states — agar berilsa, faqat shu statuslar bilan ulanishlar qaytariladi
-    (masalan ['ESTABLISHED', 'LISTEN']); katta-kichik harf farqi e'tiborsiz.
+    kind — the psutil `net_connections` kind ('inet', 'tcp', 'udp', 'inet4', ...).
+    states — if given, only connections in those states are returned
+    (for example ['ESTABLISHED', 'LISTEN']); case is ignored.
 
-    Ruxsat yetishmasa yoki socketlarni o'qib bo'lmasa — bo'sh ro'yxat
-    (xato ko'tarilmaydi). Ayrim socketlar uchun PID/jarayon noma'lum bo'lishi
-    mumkin (ruxsat yoki socket egasi yo'qligi sababli).
+    If permissions are lacking or the sockets cannot be read — an empty list
+    (no exception is raised). For some sockets the PID/process may be unknown
+    (because of permissions, or because the socket has no owner).
     """
     wanted = {s.upper() for s in states} if states else None
     name_cache: dict[int, str | None] = {}
@@ -82,7 +83,7 @@ def list_connections(
     try:
         conns = psutil.net_connections(kind=kind)
     except (psutil.AccessDenied, psutil.Error, OSError, PermissionError):
-        # Ba'zi tizimlarda to'liq jadval root talab qiladi — toza yutamiz.
+        # On some systems the full table requires root — swallow it cleanly.
         return result
 
     for c in conns:
@@ -113,24 +114,24 @@ def list_connections(
             )
         )
 
-    # Barqaror tartib: proto, keyin lokal manzil bo'yicha.
+    # Stable ordering: by proto, then by local address.
     result.sort(key=lambda r: (r.proto, r.laddr))
     return result
 
 
 # --------------------------------------------------------------------------- #
-# netstat zaxira yo'li (macOS/BSD — psutil root'siz ishlamaydi)
+# netstat fallback path (macOS/BSD — psutil does not work without root)
 # --------------------------------------------------------------------------- #
 
 
 @dataclass(slots=True)
 class ConnScan:
-    """Ulanishlarni o'qishga urinish natijasi — MA'LUMOT + RUXSAT holati.
+    """Result of an attempt to read the connections — DATA + PERMISSION state.
 
-    `list_connections()` bo'sh ro'yxat qaytarganda ikki holat aralashib
-    ketadi: "hech narsa tinglanmayapti" va "o'qishga ruxsat yo'q". Xavfsizlik
-    tekshiruvida bu farq hal qiluvchi — birinchisi "toza", ikkinchisi
-    "bilmayman". `permitted` aynan shuni ajratadi.
+    When `list_connections()` returns an empty list two situations get mixed
+    up: "nothing is listening" and "we are not allowed to read". In a security
+    check that difference is decisive — the first means "clean", the second
+    means "don't know". `permitted` is exactly what separates them.
     """
 
     conns: list[ConnInfo] = field(default_factory=list)
@@ -140,10 +141,10 @@ class ConnScan:
 
 
 def _split_listen_addr(token: str) -> tuple[str, int] | None:
-    """`netstat` manzil ustunini `(host, port)` ga ajratadi — SOF funksiya.
+    """Splits a `netstat` address column into `(host, port)` — a pure function.
 
-    Uchala OS uchta xil ajratgich ishlatadi va ularni bitta qoida bilan
-    hal qilib bo'lmaydi:
+    The three operating systems use three different separators and they cannot
+    be handled by a single rule:
 
     ===========  ==========================  ===========================
     OS           IPv4                        IPv6
@@ -153,13 +154,14 @@ def _split_listen_addr(token: str) -> tuple[str, int] | None:
     Windows      ``127.0.0.1:7265``          ``[::]:8443``
     ===========  ==========================  ===========================
 
-    Shuning uchun avval **nuqta** bo'yicha sinaladi (BSD), o'tmasa **ikki
-    nuqta** (Linux/Windows). Tartib muhim: `0.0.0.0:6379` da nuqta bo'yicha
-    bo'lish `("0.0.0", "0:6379")` beradi — port raqam emas, demak keyingi
-    usulga tushadi. Aksincha, BSD `::1.8443` ni ikki nuqta bilan bo'lsak
-    `("::", "1.8443")` chiqadi va tinglovchi butunlay yo'qoladi.
+    Therefore the **dot** is tried first (BSD), and if that fails the **colon**
+    (Linux/Windows). The order matters: splitting `0.0.0.0:6379` on the dot
+    yields `("0.0.0", "0:6379")` — the port is not a number, so it falls
+    through to the next method. Conversely, splitting the BSD `::1.8443` on the
+    colon yields `("::", "1.8443")` and the listener disappears entirely.
 
-    Port raqam bo'lmasa (`*.*`, `*:*` — masofaviy manzil ustuni) `None`.
+    If the port is not a number (`*.*`, `*:*` — the remote address column),
+    `None`.
     """
     for sep in (".", ":"):
         host, found, port_s = token.rpartition(sep)
@@ -168,38 +170,39 @@ def _split_listen_addr(token: str) -> tuple[str, int] | None:
     return None
 
 
-# Windows "LISTENING", POSIX "LISTEN" — bitta nomga keltiriladi.
+# Windows says "LISTENING", POSIX says "LISTEN" — normalised to one name.
 _STATE_ALIASES = {"LISTENING": "LISTEN"}
 
 
 def parse_netstat_listeners(text: str, states: list[str] | None = None) -> list[ConnInfo]:
-    """`netstat -an` chiqishini `ConnInfo` ro'yxatiga aylantiradi — SOF funksiya.
+    """Turns `netstat -an` output into a list of `ConnInfo` — a pure function.
 
-    **Uchala OS bir funksiyada.** Ustun soni ham, tartibi ham har xil:
+    **All three operating systems in one function.** Both the number of columns
+    and their order differ:
 
-    * macOS/BSD — ``Proto Recv-Q Send-Q Local Foreign [(state)]`` (5-6 ustun)
-    * Linux — ``Proto Recv-Q Send-Q Local Foreign State`` (6 ustun)
-    * Windows — ``Proto Local Foreign State`` (4 ustun; UDP'da 3 ta)
+    * macOS/BSD — ``Proto Recv-Q Send-Q Local Foreign [(state)]`` (5-6 columns)
+    * Linux — ``Proto Recv-Q Send-Q Local Foreign State`` (6 columns)
+    * Windows — ``Proto Local Foreign State`` (4 columns; 3 for UDP)
 
-    Shuning uchun ustun **raqamiga** tayanilmaydi: qatordagi har bir bo'lak
-    manzil-port sifatida o'qib ko'riladi, birinchi ikkitasi lokal va
-    masofaviy manzil deb olinadi. `Recv-Q`/`Send-Q` (yalang'och `0`) tabiiy
-    ravishda o'tmaydi, chunki ularda ajratgich yo'q. Bu `routes.parse_netstat`
-    dagi bilan bir xil dars: qat'iy ustun/regex kutish qatorlarni JIMGINA
-    yo'qotadi.
+    That is why the column **number** is not relied upon: every token on the
+    line is tried as an address-port pair, and the first two are taken as the
+    local and the remote address. `Recv-Q`/`Send-Q` (a bare `0`) naturally
+    fails to parse, because they contain no separator. This is the same lesson
+    as in `routes.parse_netstat`: expecting strict columns/regexes loses lines
+    SILENTLY.
 
-    Proto `tcp4`/`tcp6`/`tcp46`/`tcp`/`TCP` ko'rinishida keladi. `tcp46` —
-    dual-stack socket: IPv4 va IPv6 dan bir vaqtda qabul qiladi, shuning uchun
-    `tcp6` deb belgilanadi (ta'sir doirasi kengroq). Windows'da oila proto'da
-    ko'rsatilmaydi — manzilning o'zidan aniqlanadi.
+    Proto arrives as `tcp4`/`tcp6`/`tcp46`/`tcp`/`TCP`. `tcp46` is a dual-stack
+    socket: it accepts over IPv4 and IPv6 at the same time, so it is marked as
+    `tcp6` (the wider blast radius). On Windows the family is not shown in the
+    proto — it is determined from the address itself.
 
-    Wildcard `*` oilaga qarab `0.0.0.0` yoki `::` ga aylantiriladi — shunda
-    `evaluate_listeners` dagi "wildcard'ga bog'langanmi" mantiq'i psutil
-    yo'lidagi bilan bir xil ishlaydi.
+    The wildcard `*` is expanded to `0.0.0.0` or `::` depending on the family —
+    that way the "is it bound to a wildcard" logic in `evaluate_listeners`
+    behaves identically to the psutil path.
 
-    PID/jarayon nomi **berilmaydi** (`netstat -an` da yo'q; `-v`/`-b` root
-    yoki admin talab qiladi). Bu ataylab: port va manzil xavfni aniqlash
-    uchun yetarli.
+    The PID/process name is **not provided** (`netstat -an` does not have it;
+    `-v`/`-b` require root or admin). This is deliberate: the port and the
+    address are enough to identify the risk.
     """
     wanted = {s.upper() for s in states} if states else None
     out: list[ConnInfo] = []
@@ -209,7 +212,7 @@ def parse_netstat_listeners(text: str, states: list[str] | None = None) -> list[
             continue
         proto_raw = parts[0].lower()
         if not proto_raw.startswith(("tcp", "udp")):
-            continue  # sarlavha va "Active Internet connections" qatorlari
+            continue  # header and "Active Internet connections" lines
 
         addrs: list[tuple[str, int]] = []
         state = ""
@@ -218,9 +221,9 @@ def parse_netstat_listeners(text: str, states: list[str] | None = None) -> list[
             if parsed is not None:
                 addrs.append(parsed)
             elif tok.isalpha():
-                # Holat ustuni (LISTEN / ESTABLISHED / LISTENING / TIME_WAIT).
-                # `isalpha()` pastki chiziqli statuslarni tashlaydi — ular
-                # bizni qiziqtirmaydi (biz LISTEN izlayapmiz).
+                # The state column (LISTEN / ESTABLISHED / LISTENING / TIME_WAIT).
+                # `isalpha()` drops statuses containing an underscore — those
+                # are of no interest to us (we are looking for LISTEN).
                 state = _STATE_ALIASES.get(tok.upper(), tok.upper())
         if not addrs:
             continue
@@ -229,7 +232,7 @@ def parse_netstat_listeners(text: str, states: list[str] | None = None) -> list[
 
         host, port = addrs[0]
         base = "tcp" if proto_raw.startswith("tcp") else "udp"
-        # Oila: proto qo'shimchasidan (tcp6/tcp46) YOKI manzil shaklidan.
+        # Family: from the proto suffix (tcp6/tcp46) OR from the address shape.
         is_v6 = "6" in proto_raw[3:] or ":" in host
         if host == "*":
             host = "::" if is_v6 else "0.0.0.0"
@@ -253,16 +256,16 @@ def parse_netstat_listeners(text: str, states: list[str] | None = None) -> list[
 
 
 async def scan_connections(states: list[str] | None = None) -> ConnScan:
-    """Ulanishlarni o'qiydi va RUXSAT holatini ham qaytaradi.
+    """Reads the connections and also reports the PERMISSION state.
 
-    Tartib: avval `psutil` (jarayon nomlari bilan — foydaliroq), u
-    `AccessDenied` bersa `netstat -an -p tcp` (jarayon nomisiz, lekin
-    portlar to'liq).
+    Order: `psutil` first (with process names — more useful), and if it raises
+    `AccessDenied`, `netstat -an -p tcp` (no process names, but the ports are
+    complete).
 
-    `lsof` ATAYLAB ishlatilmaydi: o'lchab ko'rildi — u root egaligidagi
-    tinglovchilarni (8021, 43434) ko'rsatmaydi, ya'ni aynan `RISKY_LISTENERS`
-    nishonga oladigan xizmatlarni o'tkazib yuboradi. Yarim javob bergan
-    xavfsizlik tekshiruvi javob bermaganidan yomonroq.
+    `lsof` is DELIBERATELY not used: it was measured — it does not show
+    root-owned listeners (8021, 43434), that is, it misses exactly the services
+    `RISKY_LISTENERS` targets. A security check that gives half an answer is
+    worse than one that gives none.
     """
     from systop.core import _platform
 
@@ -273,13 +276,14 @@ async def scan_connections(states: list[str] | None = None) -> ConnScan:
     except (psutil.Error, OSError) as exc:
         denied = type(exc).__name__
     else:
-        # psutil ishladi — to'liq yo'ldan qaytamiz (jarayon nomlari bilan).
+        # psutil worked — return via the full path (with process names).
         del conns
         return ConnScan(conns=list_connections(states=states), permitted=True, source="psutil")
 
-    # Windows `netstat` `-p` dan keyin protokolni KATTA harfda kutadi va
-    # `-p tcp` ni "invalid argument" deb rad etadi; `-an` esa uchala OS'da
-    # ham ishlaydi. POSIX'da `-p tcp` chiqishni ancha qisqartiradi.
+    # Windows `netstat` expects the protocol in UPPERCASE after `-p` and
+    # rejects `-p tcp` as an "invalid argument"; `-an` on the other hand works
+    # on all three operating systems. On POSIX `-p tcp` shortens the output
+    # considerably.
     cmd = ["netstat", "-an"] if _platform.IS_WINDOWS else ["netstat", "-an", "-p", "tcp"]
     text = await _platform.run_command(cmd, timeout=8.0)
     if not text:

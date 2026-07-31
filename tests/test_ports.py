@@ -1,7 +1,7 @@
-"""ports testlari — OFFLINE.
+"""ports tests — OFFLINE.
 
-``parse_ports`` (spec parsing — diapazon, ro'yxat, chekka holatlar),
-``default_ports``, ``PortResult``/``ScanResult`` xossalari. Sof mantiq, tarmoq yo'q.
+``parse_ports`` (spec parsing — ranges, lists, edge cases), ``default_ports``,
+and the ``PortResult``/``ScanResult`` properties. Pure logic, no network.
 """
 
 from __future__ import annotations
@@ -53,12 +53,12 @@ def test_parse_ports_ignores_garbage_range():
 
 
 def test_parse_ports_clamps_out_of_range():
-    # 0 va 70000 -> chegaralangan; 1 va 65535 chegaralarini saqlaydi.
+    # 0 and 70000 -> clamped; the 1 and 65535 boundaries are kept.
     assert parse_ports("0,1,65535,70000") == [1, 65535]
 
 
 def test_parse_ports_range_clamps_to_valid_window():
-    # 0-3 -> 1..3 (0 chiqarib tashlanadi).
+    # 0-3 -> 1..3 (0 is dropped).
     assert parse_ports("0-3") == [1, 2, 3]
     # 65534-70000 -> 65534, 65535.
     assert parse_ports("65534-70000") == [65534, 65535]
@@ -95,7 +95,7 @@ def test_default_ports_sorted_and_complete():
     dp = default_ports()
     assert dp == sorted(COMMON_PORTS)
     assert 22 in dp and 443 in dp
-    assert dp == sorted(set(dp))  # takrorsiz
+    assert dp == sorted(set(dp))  # no duplicates
 
 
 # --- PortResult / ScanResult ------------------------------------------------
@@ -131,7 +131,7 @@ def test_scan_result_error_defaults():
 
 
 # --------------------------------------------------------------------------- #
-# IPv6 / manzil oilasi (family) — 0.4.0 da qo'shilgan
+# IPv6 / the address family — added in 0.4.0
 # --------------------------------------------------------------------------- #
 
 from systop.core.ports import (  # noqa: E402
@@ -175,7 +175,7 @@ def test_scan_result_records_resolved_family():
 
 
 # --------------------------------------------------------------------------- #
-# LAN sweep + banner (nmap -sT / -sV yengil) — 0.5.0
+# LAN sweep + banner (a lightweight nmap -sT / -sV) — 0.5.0
 # --------------------------------------------------------------------------- #
 
 from systop.core.ports import (  # noqa: E402
@@ -228,7 +228,7 @@ def test_parse_targets_hostname_passthrough():
 
 
 def test_parse_targets_hostname_with_dash_not_treated_as_range():
-    """`my-host` diapazon emas — nom sifatida o'tishi kerak."""
+    """`my-host` is not a range — it has to pass through as a name."""
     assert parse_targets("my-host") == ["my-host"]
 
 
@@ -237,7 +237,7 @@ def test_parse_targets_ipv6_single_accepted():
 
 
 def test_parse_targets_ipv6_cidr_rejected():
-    """/64 da 2^64 manzil — sweep imkonsiz, ataylab rad etiladi."""
+    """A /64 holds 2^64 addresses — a sweep is impossible, so it is rejected deliberately."""
     assert parse_targets("2001:db8::/64") == []
 
 
@@ -343,7 +343,7 @@ def test_sweep_result_counts_open_across_hosts():
         host="b",
         ports=[PortResult(port=22, state=STATE_OPEN), PortResult(port=443, state=STATE_OPEN)],
     )
-    h3 = ScanResult(host="c", ports=[PortResult(port=80)])  # yopiq
+    h3 = ScanResult(host="c", ports=[PortResult(port=80)])  # closed
     s = SweepResult(hosts=[h1, h2, h3], scanned_hosts=3, scanned_ports=3)
     assert len(s.responsive) == 2
     assert s.total_open == 3
@@ -356,7 +356,8 @@ def test_port_result_banner_defaults_none():
 
 
 # --------------------------------------------------------------------------- #
-# IPv6 zona + IPv4-mapped rad etish (0.9.0) — "IPv6 support" da'vosining asosi
+# The IPv6 zone + rejecting IPv4-mapped (0.9.0) — the basis of the
+# "IPv6 support" claim
 # --------------------------------------------------------------------------- #
 
 import asyncio  # noqa: E402
@@ -366,23 +367,23 @@ from systop.core.ports import _resolve  # noqa: E402
 
 
 def test_resolve_preserves_ipv6_zone_id():
-    """`fe80::1%en0` dagi zona SAQLANISHI shart.
+    """The zone in `fe80::1%en0` MUST be preserved.
 
-    Zonasiz link-local manzilga ulanib bo'lmaydi — natijada har bir
-    link-local port "YOPIQ" deb ko'rsatilardi.
+    A link-local address cannot be connected to without its zone — the result
+    was that every link-local port got reported as "CLOSED".
     """
     addr, fam = asyncio.run(_resolve("fe80::1%lo0", "ipv6"))
-    if addr is None:  # ba'zi CI muhitida link-local resolve bo'lmaydi
+    if addr is None:  # in some CI environments link-local does not resolve
         return
     assert "%" in addr, addr
     assert fam == "ipv6"
 
 
 def test_resolve_rejects_ipv4_mapped_when_ipv6_requested():
-    """`-6` bilan `::ffff:1.2.3.4` QABUL QILINMASLIGI kerak.
+    """With `-6`, `::ffff:1.2.3.4` MUST NOT BE ACCEPTED.
 
-    IPv4-mapped manzil IPv6 emas — trafik IPv4 ustidan ketadi. Uni qabul
-    qilish `scan -6` ni jimgina IPv4'da ishlatardi.
+    An IPv4-mapped address is not IPv6 — the traffic goes over IPv4. Accepting
+    it would make `scan -6` silently run on IPv4.
     """
 
     async def fake_getaddrinfo(*_a, **_kw):
@@ -399,7 +400,7 @@ def test_resolve_rejects_ipv4_mapped_when_ipv6_requested():
 
 
 def test_resolve_accepts_ipv4_mapped_in_auto_mode():
-    """`auto` rejimida OS tanlovi hurmat qilinadi — faqat `-6` qat'iy."""
+    """In `auto` mode the OS's choice is respected — only `-6` is strict."""
 
     async def fake_getaddrinfo(*_a, **_kw):
         return [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::ffff:1.2.3.4", 0, 0, 0))]

@@ -1,9 +1,9 @@
-"""bandwidth testlari — OFFLINE.
+"""bandwidth tests — OFFLINE.
 
-``_compute_rates`` delta matematikasi (bytes->bps, packets->pps) to'g'ridan-to'g'ri,
-``sample_bandwidth`` esa ``psutil.net_io_counters`` ni monkeypatch qilib ikki
-snapshot bilan sinaladi. ``asyncio.sleep`` 0 ga aylantiriladi — test tez va
-deterministik (haqiqiy vaqt kutilmaydi). Tarmoq yo'q.
+The delta arithmetic of ``_compute_rates`` (bytes->bps, packets->pps) is
+exercised directly, and ``sample_bandwidth`` is exercised with two snapshots by
+monkeypatching ``psutil.net_io_counters``. ``asyncio.sleep`` is turned into a
+no-op — the test is fast and deterministic (no real time is waited). No network.
 """
 
 from __future__ import annotations
@@ -39,8 +39,8 @@ def test_compute_rates_basic_math():
     curr = {
         "en0": FakeIOCounters(bytes_recv=2000, bytes_sent=1500, packets_recv=20, packets_sent=15)
     }
-    # 1.0 soniyada: rx 1000 bayt -> 8000 bps; tx 1000 bayt -> 8000 bps;
-    # rx 10 paket -> 10 pps; tx 10 paket -> 10 pps.
+    # Over 1.0 second: rx 1000 bytes -> 8000 bps; tx 1000 bytes -> 8000 bps;
+    # rx 10 packets -> 10 pps; tx 10 packets -> 10 pps.
     rates = _compute_rates(prev, curr, elapsed=1.0)
     assert len(rates) == 1
     r = rates[0]
@@ -55,13 +55,13 @@ def test_compute_rates_basic_math():
 def test_compute_rates_elapsed_scales_inversely():
     prev = {"en0": FakeIOCounters(bytes_recv=0, bytes_sent=0)}
     curr = {"en0": FakeIOCounters(bytes_recv=1000, bytes_sent=0)}
-    # 0.5 soniyada 1000 bayt -> 1000*8/0.5 = 16000 bps.
+    # 1000 bytes over 0.5 second -> 1000*8/0.5 = 16000 bps.
     rates = _compute_rates(prev, curr, elapsed=0.5)
     assert rates[0].rx_bps == pytest.approx(16000.0)
 
 
 def test_compute_rates_counter_reset_clamps_to_zero():
-    """Hisoblagich qayta yuklansa (curr < prev) -> manfiy delta 0 deb olinadi."""
+    """If a counter is reset (curr < prev) -> the negative delta is taken as 0."""
     prev = {
         "en0": FakeIOCounters(bytes_recv=9_000, bytes_sent=9_000, packets_recv=90, packets_sent=90)
     }
@@ -75,7 +75,7 @@ def test_compute_rates_counter_reset_clamps_to_zero():
 
 
 def test_compute_rates_new_interface_has_zero_rate():
-    """``curr`` da bor, ``prev`` da yo'q interfeys -> 0 tezlik (taqqoslash nuqtasi yo'q)."""
+    """An interface present in ``curr`` but not in ``prev`` -> rate 0 (nothing to compare)."""
     prev: dict = {}
     curr = {"en1": FakeIOCounters(bytes_recv=5000, bytes_sent=5000)}
     rates = _compute_rates(prev, curr, elapsed=1.0)
@@ -86,7 +86,7 @@ def test_compute_rates_new_interface_has_zero_rate():
 
 
 def test_compute_rates_disappeared_interface_dropped():
-    """``prev`` da bor, ``curr`` da yo'q interfeys natijaga kirmaydi."""
+    """An interface present in ``prev`` but not in ``curr`` does not enter the result."""
     prev = {"en0": FakeIOCounters(), "lo0": FakeIOCounters()}
     curr = {"en0": FakeIOCounters(bytes_recv=8)}
     rates = _compute_rates(prev, curr, elapsed=1.0)
@@ -101,11 +101,11 @@ def test_compute_rates_sorted_by_name():
 
 
 def test_compute_rates_zero_elapsed_no_zero_division():
-    """elapsed=0 -> 1e-9 ga almashtiriladi (ZeroDivisionError bo'lmasligi kerak)."""
+    """elapsed=0 -> it is replaced with 1e-9 (there must be no ZeroDivisionError)."""
     prev = {"en0": FakeIOCounters(bytes_recv=0)}
     curr = {"en0": FakeIOCounters(bytes_recv=1)}
     rates = _compute_rates(prev, curr, elapsed=0.0)
-    # Juda katta, lekin chekli son (inf emas, xato emas).
+    # A very large but finite number (not inf, not an error).
     assert rates[0].rx_bps > 0.0
     assert rates[0].rx_bps != float("inf")
 
@@ -114,7 +114,7 @@ def test_compute_rates_zero_elapsed_no_zero_division():
 
 
 async def test_sample_bandwidth_two_snapshots(monkeypatch):
-    """``sample_bandwidth`` ketma-ket ikki o'qishni delta'ga aylantirsin."""
+    """``sample_bandwidth`` must turn two consecutive readings into a delta."""
     snaps = [
         {"en0": FakeIOCounters(bytes_recv=0, bytes_sent=0, packets_recv=0, packets_sent=0)},
         {"en0": FakeIOCounters(bytes_recv=1000, bytes_sent=2000, packets_recv=4, packets_sent=8)},
@@ -128,8 +128,8 @@ async def test_sample_bandwidth_two_snapshots(monkeypatch):
 
     monkeypatch.setattr(bandwidth, "_read_counters", fake_read)
 
-    # Haqiqiy kutishni o'chiramiz; monotonic'ni 1.0s farq beradigan qilamiz.
-    # (1-chi chaqiruv 100.0, keyingilari 101.0 -> elapsed aniq 1.0s.)
+    # We switch off the real waiting; we make monotonic produce a 1.0s difference.
+    # (The 1st call returns 100.0, the later ones 101.0 -> elapsed is exactly 1.0s.)
     async def no_sleep(_):
         return None
 
@@ -146,15 +146,15 @@ async def test_sample_bandwidth_two_snapshots(monkeypatch):
     assert len(rates) == 1
     r = rates[0]
     assert r.name == "en0"
-    assert r.rx_bps == pytest.approx(8000.0)  # 1000 bayt * 8 / 1s
-    assert r.tx_bps == pytest.approx(16000.0)  # 2000 bayt * 8 / 1s
+    assert r.rx_bps == pytest.approx(8000.0)  # 1000 bytes * 8 / 1s
+    assert r.tx_bps == pytest.approx(16000.0)  # 2000 bytes * 8 / 1s
     assert r.rx_pps == pytest.approx(4.0)
     assert r.tx_pps == pytest.approx(8.0)
-    assert calls["n"] == 2  # aniq ikki marta o'qildi
+    assert calls["n"] == 2  # read exactly twice
 
 
 async def test_sample_bandwidth_calls_read_twice(monkeypatch):
-    """interval kutilsa ham, o'lchov uchun aniq 2 ta hisoblagich nuqtasi olinadi."""
+    """Even when the interval is waited, exactly 2 counter points are taken for the measurement."""
     calls = {"n": 0}
 
     def fake_read():

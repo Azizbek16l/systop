@@ -1,5 +1,5 @@
-"""Topologiya/diagnostika paneli — LAN, traceroute, port skan, DNS, bandwidth,
-ulanishlar (6 tab)."""
+"""The topology/diagnostics panel — LAN, traceroute, port scan, DNS, bandwidth,
+connections (6 tabs)."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ from systop.widgets._glyphs import dash, data_cell, ellipsis, glyph
 
 
 def _fmt_bps(bps: float) -> str:
-    """bit/sekundni inson o'qiy oladigan birlikka aylantiradi (bps/Kbps/Mbps/Gbps)."""
+    """Turns bits per second into a human-readable unit (bps/Kbps/Mbps/Gbps)."""
     if bps >= 1e9:
         return f"{bps / 1e9:.2f} Gbps"
     if bps >= 1e6:
@@ -40,84 +40,83 @@ def _fmt_bps(bps: float) -> str:
 
 
 class TopologyPanel(Vertical):
-    """LAN hostlar, global yo'l (traceroute), port skan va DNS diagnostika.
+    """LAN hosts, the global path (traceroute), a port scan and DNS diagnostics.
 
-    Har bir tab o'z LoadingIndicator'iga ega; ish davomida tugma disable
-    bo'ladi. Bo'sh holatda o'zbekcha placeholder, xatoda qizil xabar.
+    Every tab has its own LoadingIndicator; while work is running the button is
+    disabled. In the empty state there is a placeholder, on an error a red
+    message.
     """
 
-    BORDER_TITLE = "Tarmoq diagnostikasi"
-    BORDER_SUBTITLE = "l LAN skan"
+    BORDER_TITLE = "Network diagnostics"
+    BORDER_SUBTITLE = "l LAN scan"
 
     def compose(self) -> ComposeResult:
         with TabbedContent():
-            with TabPane("LAN hostlar", id="tab-lan"):
+            with TabPane("LAN hosts", id="tab-lan"):
                 with Horizontal(id="lan-controls"):
-                    yield Button("LAN ni skanerlash", id="scan-lan", variant="primary")
+                    yield Button("Scan the LAN", id="scan-lan", variant="primary")
                     yield LoadingIndicator(id="lan-loading")
                 yield Static(
                     f"[dim]{glyph('empty')}[/]\n\n"
-                    "[dim]LAN hali skanerlanmagan[/]\n"
-                    f"[$secondary]l[/][dim] — /24 ping sweep + ARP {glyph('sep')} "
+                    "[dim]The LAN has not been scanned yet[/]\n"
+                    f"[$secondary]l[/][dim] — a /24 ping sweep + ARP {glyph('sep')} "
                     "IP, MAC, vendor, hostname[/]",
                     id="lan-empty",
                     classes="empty-state",
                 )
                 yield DataTable(id="lan-table", zebra_stripes=True, cursor_type="row")
-            with TabPane("Yo'l (traceroute)", id="tab-trace"):
+            with TabPane("Path (traceroute)", id="tab-trace"):
                 with Horizontal(id="trace-controls"):
-                    yield Input(value="8.8.8.8", placeholder="manzil yoki domen", id="trace-target")
-                    yield Checkbox("jonli (mtr)", id="trace-live")
+                    yield Input(value="8.8.8.8", placeholder="address or domain", id="trace-target")
+                    yield Checkbox("live (mtr)", id="trace-live")
                     yield Button("Traceroute", id="run-trace", variant="primary")
                     yield LoadingIndicator(id="trace-loading")
                 yield Static(
-                    "[dim]Manzil kiriting va [b]Enter[/] bosing — yo'l ko'rsatiladi.[/]",
+                    "[dim]Enter an address and press [b]Enter[/] — the path will be shown.[/]",
                     id="trace-empty",
                     classes="empty-state",
                 )
                 yield DataTable(id="trace-table", zebra_stripes=True, cursor_type="row")
-            with TabPane("Port skan", id="tab-scan"):
+            with TabPane("Port scan", id="tab-scan"):
                 with Horizontal(id="scan-controls"):
-                    yield Input(placeholder="host / CIDR / diapazon: 10.0.0.0/24", id="scan-host")
-                    yield Input(placeholder="portlar: 22,80 (ixtiyoriy)", id="scan-ports")
-                    yield Button("Skan", id="run-scan", variant="primary")
+                    yield Input(placeholder="host / CIDR / range: 10.0.0.0/24", id="scan-host")
+                    yield Input(placeholder="ports: 22,80 (optional)", id="scan-ports")
+                    yield Button("Scan", id="run-scan", variant="primary")
                     yield LoadingIndicator(id="scan-loading")
                 yield Static(
-                    "[dim]Host, CIDR (10.0.0.0/24) yoki diapazon (10.0.0.1-50) kiriting — "
-                    "[b]Enter[/] bosing.[/]",
+                    "[dim]Enter a host, a CIDR (10.0.0.0/24) or a range (10.0.0.1-50) — "
+                    "then press [b]Enter[/].[/]",
                     id="scan-empty",
                     classes="empty-state",
                 )
                 yield DataTable(id="scan-table", zebra_stripes=True, cursor_type="row")
             with TabPane("DNS", id="tab-dns"):
                 with Horizontal(id="dns-controls"):
-                    yield Input(placeholder="domen (masalan google.com)", id="dns-name")
+                    yield Input(placeholder="domain (google.com, for example)", id="dns-name")
                     yield Button("DNS", id="run-dns", variant="primary")
                     yield LoadingIndicator(id="dns-loading")
                 yield Static(
-                    "[dim]Domen kiriting va [b]Enter[/] bosing — serverlar taqqoslanadi.[/]",
+                    "[dim]Enter a domain and press [b]Enter[/] — the servers will be compared.[/]",
                     id="dns-empty",
                     classes="empty-state",
                 )
                 yield DataTable(id="dns-table", zebra_stripes=True, cursor_type="row")
             with TabPane("Bandwidth", id="tab-bw"):
                 with Horizontal(id="bw-controls"):
-                    yield Button("Boshlash", id="run-bw", variant="primary")
+                    yield Button("Start", id="run-bw", variant="primary")
                     yield LoadingIndicator(id="bw-loading")
                 yield Static(
-                    "[dim]Interfeyslar bo'yicha jonli RX/TX uchun "
-                    "[b]Boshlash[/] tugmasini bosing.[/]",
+                    "[dim]For live RX/TX per interface press the [b]Start[/] button.[/]",
                     id="bw-empty",
                     classes="empty-state",
                 )
                 yield DataTable(id="bw-table", zebra_stripes=True, cursor_type="row")
-            with TabPane("Ulanishlar", id="tab-conn"):
+            with TabPane("Connections", id="tab-conn"):
                 with Horizontal(id="conn-controls"):
-                    yield Button("Yangilash", id="run-conn", variant="primary")
+                    yield Button("Refresh", id="run-conn", variant="primary")
                     yield LoadingIndicator(id="conn-loading")
                 yield Static(
-                    "[dim]Faol tarmoq ulanishlarini ko'rish uchun "
-                    "[b]Yangilash[/] tugmasini bosing.[/]",
+                    "[dim]To see the active network connections press the [b]Refresh[/] button.[/]",
                     id="conn-empty",
                     classes="empty-state",
                 )
@@ -125,25 +124,26 @@ class TopologyPanel(Vertical):
 
     def on_mount(self) -> None:
         self.query_one("#lan-table", DataTable).add_columns(
-            "IP", "MAC", "Vendor", "Hostname", "RTT ms", "Rol"
+            "IP", "MAC", "Vendor", "Hostname", "RTT ms", "Role"
         )
         self.query_one("#trace-table", DataTable).add_columns("#", "IP", "Hostname", "RTT ms")
-        self.query_one("#scan-table", DataTable).add_columns("Port", "Xizmat", "Holat", "RTT ms")
+        self.query_one("#scan-table", DataTable).add_columns("Port", "Service", "State", "RTT ms")
         self.query_one("#dns-table", DataTable).add_columns(
-            "Server", "Holat", "RTT ms", "Manzillar"
+            "Server", "State", "RTT ms", "Addresses"
         )
         self.query_one("#bw-table", DataTable).add_columns(
-            "Interfeys",
+            "Interface",
             f"{glyph('download')} RX",
             f"{glyph('upload')} TX",
-            "Jami",
+            "Total",
             "RX pps",
             "TX pps",
         )
         self.query_one("#conn-table", DataTable).add_columns(
-            "Proto", "Lokal", "Masofaviy", "Holat", "PID", "Jarayon"
+            "Proto", "Local", "Remote", "State", "PID", "Process"
         )
-        # Boshlang'ich holat: indikatorlar va jadvallar yashirin, placeholder ko'rinadi.
+        # The initial state: the indicators and the tables are hidden, the
+        # placeholder is visible.
         for loader in (
             "#lan-loading",
             "#trace-loading",
@@ -188,7 +188,7 @@ class TopologyPanel(Vertical):
             action()
 
     def focus_trace(self) -> None:
-        """Traceroute tab'iga o'tib, manzil maydoniga fokus beradi."""
+        """Switches to the traceroute tab and focuses the address field."""
         self.query_one(TabbedContent).active = "tab-trace"
         self.query_one("#trace-target", Input).focus()
 
@@ -200,7 +200,7 @@ class TopologyPanel(Vertical):
         empty = self.query_one("#lan-empty", Static)
 
         btn.disabled = True
-        btn.label = f"Skanerlanmoqda{ellipsis()}"
+        btn.label = f"Scanning{ellipsis()}"
         loading.display = True
         empty.display = False
         table.display = False
@@ -210,9 +210,9 @@ class TopologyPanel(Vertical):
         try:
             hosts = await discover_lan(resolve=True)
             if not hosts:
-                empty.update("[dim]Tirik host topilmadi.[/]")
+                empty.update("[dim]No alive host was found.[/]")
                 empty.display = True
-                btn.label = "Qayta skanerlash"
+                btn.label = "Scan again"
                 return
             for h in hosts:
                 role = f"[cyan]{glyph('gateway')} gateway[/]" if h.is_gateway else "[dim]host[/]"
@@ -226,11 +226,11 @@ class TopologyPanel(Vertical):
                     role,
                 )
             table.display = True
-            btn.label = f"Qayta skanerlash ({len(hosts)} ta)"
+            btn.label = f"Scan again ({len(hosts)} found)"
         except Exception as exc:
-            empty.update(f"[red]{glyph('cross')} Xato:[/] {exc}")
+            empty.update(f"[red]{glyph('cross')} Error:[/] {exc}")
             empty.display = True
-            btn.label = "LAN ni skanerlash"
+            btn.label = "Scan the LAN"
         finally:
             loading.display = False
             btn.disabled = False
@@ -241,7 +241,7 @@ class TopologyPanel(Vertical):
         if not target:
             return
         live = self.query_one("#trace-live", Checkbox).value
-        # Jonli (mtr) rejimda ustunlar boshqacha — sarlavhalarni moslaymiz.
+        # In live (mtr) mode the columns are different — we adapt the headers.
         self._set_trace_columns(live)
         if live:
             await self._run_trace_live(target)
@@ -249,7 +249,7 @@ class TopologyPanel(Vertical):
             await self._run_trace_once(target)
 
     def _set_trace_columns(self, live: bool) -> None:
-        """Traceroute jadval ustunlarini rejimga moslaydi (oddiy yoki mtr)."""
+        """Adapts the traceroute table columns to the mode (plain or mtr)."""
         table = self.query_one("#trace-table", DataTable)
         table.clear(columns=True)
         if live:
@@ -258,14 +258,14 @@ class TopologyPanel(Vertical):
             table.add_columns("#", "IP", "Hostname", "RTT ms")
 
     async def _run_trace_once(self, target: str) -> None:
-        """Bir martalik traceroute — yo'lni bir marta o'lchaydi."""
+        """A one-shot traceroute — it measures the path once."""
         btn = self.query_one("#run-trace", Button)
         table = self.query_one("#trace-table", DataTable)
         loading = self.query_one("#trace-loading", LoadingIndicator)
         empty = self.query_one("#trace-empty", Static)
 
         btn.disabled = True
-        btn.label = f"Kuzatilmoqda{ellipsis()}"
+        btn.label = f"Tracing{ellipsis()}"
         loading.display = True
         empty.display = False
         table.display = False
@@ -274,7 +274,7 @@ class TopologyPanel(Vertical):
         try:
             hops = await traceroute(target)
             if not hops:
-                empty.update("[dim]Yo'l aniqlanmadi.[/]")
+                empty.update("[dim]The path could not be determined.[/]")
                 empty.display = True
                 return
             for hop in hops:
@@ -292,7 +292,7 @@ class TopologyPanel(Vertical):
                 )
             table.display = True
         except Exception as exc:
-            empty.update(f"[red]{glyph('cross')} Xato:[/] {exc}")
+            empty.update(f"[red]{glyph('cross')} Error:[/] {exc}")
             empty.display = True
         finally:
             loading.display = False
@@ -300,11 +300,11 @@ class TopologyPanel(Vertical):
             btn.label = "Traceroute"
 
     async def _run_trace_live(self, target: str) -> None:
-        """Jonli (mtr) traceroute — yo'lni qayta-qayta o'lchab jadvalni yangilaydi.
+        """A live (mtr) traceroute — it measures the path repeatedly and refreshes the table.
 
-        Har siklda butun jadval qayta chiziladi (hop'lar to'planib boradi). Worker
-        `exclusive=True` bo'lgani uchun yangi ishga tushirish yoki tab almashish
-        oqimni xavfsiz to'xtatadi (CancelledError yutiladi).
+        On every cycle the whole table is redrawn (the hops accumulate). Because
+        the worker is `exclusive=True`, starting it again or switching tabs stops
+        the stream safely (the CancelledError is swallowed).
         """
         btn = self.query_one("#run-trace", Button)
         table = self.query_one("#trace-table", DataTable)
@@ -312,7 +312,7 @@ class TopologyPanel(Vertical):
         empty = self.query_one("#trace-empty", Static)
 
         btn.disabled = True
-        btn.label = f"Jonli kuzatilmoqda{ellipsis()}"
+        btn.label = f"Tracing live{ellipsis()}"
         loading.display = True
         empty.display = False
         table.display = False
@@ -340,7 +340,7 @@ class TopologyPanel(Vertical):
                     )
                 table.display = True
         except Exception as exc:
-            empty.update(f"[red]{glyph('cross')} Xato:[/] {exc}")
+            empty.update(f"[red]{glyph('cross')} Error:[/] {exc}")
             empty.display = True
         finally:
             loading.display = False
@@ -348,16 +348,14 @@ class TopologyPanel(Vertical):
             btn.label = "Traceroute"
 
     def _set_scan_columns(self, table: DataTable, sweep: bool) -> None:
-        """Port skan jadvali ustunlarini rejimga qarab qayta yaratadi.
+        """Rebuilds the port scan table columns according to the mode.
 
-        Bitta host -> port-bo'yicha ko'rinish; subnet -> host-bo'yicha xulosa.
-        Textual DataTable ustunlari statik, shuning uchun `clear(columns=True)`
-        bilan qayta qurilади.
+        A single host -> a per-port view; a subnet -> a per-host summary.
+        Textual DataTable columns are static, so they are rebuilt with
+        `clear(columns=True)`.
         """
         wanted = (
-            ("Host", "Ochiq portlar", "Xizmatlar")
-            if sweep
-            else ("Port", "Xizmat", "Holat", "RTT ms")
+            ("Host", "Open ports", "Services") if sweep else ("Port", "Service", "State", "RTT ms")
         )
         current = tuple(str(c.label) for c in table.columns.values())
         if current == wanted:
@@ -374,20 +372,20 @@ class TopologyPanel(Vertical):
         empty: Static,
         btn: Button,
     ) -> None:
-        """Subnet/diapazon skani — har host bir qator (CLI `scan CIDR` bilan bir xil)."""
+        """A subnet/range scan — one row per host (the same as the CLI `scan CIDR`)."""
         from systop.core.ports import scan_targets, top_ports
 
         port_list = ports or top_ports(20)
         self._set_scan_columns(table, sweep=True)
-        btn.label = f"Skanerlanmoqda ({len(targets)} host){ellipsis()}"
+        btn.label = f"Scanning ({len(targets)} hosts){ellipsis()}"
         sweep = await scan_targets(targets, ports=port_list, timeout=1.5, concurrency=64)
         if not sweep.responsive:
             empty.update(
-                f"[dim]{sweep.scanned_hosts} host x {sweep.scanned_ports} port "
-                "tekshirildi — ochiq port topilmadi.[/]"
+                f"[dim]{sweep.scanned_hosts} hosts x {sweep.scanned_ports} ports "
+                "were checked — no open port was found.[/]"
             )
             empty.display = True
-            btn.label = "Qayta skan"
+            btn.label = "Scan again"
             return
         for h in sweep.responsive:
             table.add_row(
@@ -397,8 +395,8 @@ class TopologyPanel(Vertical):
             )
         table.display = True
         btn.label = (
-            f"Qayta skan ({len(sweep.responsive)}/{sweep.scanned_hosts} host, "
-            f"{sweep.total_open} port)"
+            f"Scan again ({len(sweep.responsive)}/{sweep.scanned_hosts} hosts, "
+            f"{sweep.total_open} ports)"
         )
 
     @work(exclusive=True, group="scan")
@@ -414,22 +412,23 @@ class TopologyPanel(Vertical):
 
         ports = parse_ports(ports_spec) if ports_spec else None
         if ports_spec and not ports:
-            empty.update(f"[red]{glyph('cross')} Portlar ro'yxati noto'g'ri.[/]")
+            empty.update(f"[red]{glyph('cross')} The list of ports is invalid.[/]")
             empty.display = True
             table.display = False
             return
 
         btn.disabled = True
-        btn.label = f"Skanerlanmoqda{ellipsis()}"
+        btn.label = f"Scanning{ellipsis()}"
         loading.display = True
         empty.display = False
         table.display = False
         table.clear()
 
         try:
-            # Nishon CIDR/diapazon bo'lishi mumkin ("10.0.0.0/24", "10.0.0.1-50").
-            # Ko'p hostga kengaysa sweep rejimiga o'tamiz — jadval ustunlari
-            # ham almashadi (DataTable ustunlari dinamik qayta yaratiladi).
+            # The target may be a CIDR/range ("10.0.0.0/24", "10.0.0.1-50").
+            # If it expands to many hosts we switch to sweep mode — the table
+            # columns change with it (the DataTable columns are rebuilt
+            # dynamically).
             targets = parse_targets(host, max_hosts=512)
             if len(targets) > 1:
                 await self._scan_sweep_rows(targets, ports, table, empty, btn)
@@ -440,30 +439,30 @@ class TopologyPanel(Vertical):
             if result.error:
                 empty.update(f"[red]{glyph('cross')} {result.error}[/]")
                 empty.display = True
-                btn.label = "Skan"
+                btn.label = "Scan"
                 return
             open_ports = result.open_ports
             if not open_ports:
                 empty.update(
-                    f"[dim]{result.resolved_ip}: ochiq port yo'q "
-                    f"({len(result.ports)} ta tekshirildi).[/]"
+                    f"[dim]{result.resolved_ip}: no open port "
+                    f"({len(result.ports)} were checked).[/]"
                 )
                 empty.display = True
-                btn.label = "Qayta skan"
+                btn.label = "Scan again"
                 return
             for p in open_ports:
                 table.add_row(
                     str(p.port),
                     data_cell(p.service, dash()),
-                    "[green]ochiq[/]",
+                    "[green]open[/]",
                     self._rtt_cell(p.rtt_ms),
                 )
             table.display = True
-            btn.label = f"Qayta skan ({len(open_ports)}/{len(result.ports)} ochiq)"
+            btn.label = f"Scan again ({len(open_ports)}/{len(result.ports)} open)"
         except Exception as exc:
-            empty.update(f"[red]{glyph('cross')} Xato:[/] {exc}")
+            empty.update(f"[red]{glyph('cross')} Error:[/] {exc}")
             empty.display = True
-            btn.label = "Skan"
+            btn.label = "Scan"
         finally:
             loading.display = False
             btn.disabled = False
@@ -479,7 +478,7 @@ class TopologyPanel(Vertical):
         empty = self.query_one("#dns-empty", Static)
 
         btn.disabled = True
-        btn.label = f"So'ralmoqda{ellipsis()}"
+        btn.label = f"Querying{ellipsis()}"
         loading.display = True
         empty.display = False
         table.display = False
@@ -488,13 +487,13 @@ class TopologyPanel(Vertical):
         d = dash()
         try:
             result = await diagnose_dns(name)
-            # Tizim resolveri natijasi — birinchi qator.
+            # The system resolver's result — the first row.
             if result.system_error:
-                table.add_row("Tizim", "[red]xato[/]", f"[dim]{d}[/]", result.system_error)
+                table.add_row("System", "[red]error[/]", f"[dim]{d}[/]", result.system_error)
             else:
                 joined = ", ".join(result.system_addresses[:3])
                 table.add_row(
-                    "Tizim resolver", "[green]ok[/]", f"[dim]{d}[/]", data_cell(joined, d)
+                    "System resolver", "[green]ok[/]", f"[dim]{d}[/]", data_cell(joined, d)
                 )
 
             ok_resolvers = [r for r in result.resolvers if r.ok]
@@ -510,15 +509,15 @@ class TopologyPanel(Vertical):
                         data_cell(addrs, d),
                     )
                 else:
-                    table.add_row(r.name, f"[red]{d}[/]", f"[dim]{d}[/]", r.error or "xato")
+                    table.add_row(r.name, f"[red]{d}[/]", f"[dim]{d}[/]", r.error or "error")
 
             if not result.tool:
-                empty.update("[dim]Eslatma: dig/nslookup topilmadi — faqat tizim resolveri.[/]")
+                empty.update("[dim]Note: dig/nslookup was not found — the system resolver only.[/]")
                 empty.display = True
             table.display = True
-            btn.label = "Qayta so'rash"
+            btn.label = "Query again"
         except Exception as exc:
-            empty.update(f"[red]{glyph('cross')} Xato:[/] {exc}")
+            empty.update(f"[red]{glyph('cross')} Error:[/] {exc}")
             empty.display = True
             btn.label = "DNS"
         finally:
@@ -526,14 +525,15 @@ class TopologyPanel(Vertical):
             btn.disabled = False
 
     def toggle_bandwidth(self) -> None:
-        """Bandwidth oqimini boshlaydi yoki to'xtatadi (tugma — toggle)."""
-        # Worker faolligini tugma yorlig'idan bilmaymiz — Textual worker holatini
-        # tekshiramiz: agar "bw" guruhida ishlayotgan worker bo'lsa, to'xtatamiz.
+        """Starts or stops the bandwidth stream (the button is a toggle)."""
+        # We do not learn whether the worker is active from the button label —
+        # we check the Textual worker state: if a worker is running in the "bw"
+        # group, we stop it.
         running = [w for w in self.workers if w.group == "bw" and w.is_running]
         if running:
             self.workers.cancel_group(self, "bw")
             btn = self.query_one("#run-bw", Button)
-            btn.label = "Boshlash"
+            btn.label = "Start"
             btn.variant = "primary"
             self.query_one("#bw-loading", LoadingIndicator).display = False
             return
@@ -541,21 +541,21 @@ class TopologyPanel(Vertical):
 
     @work(exclusive=True, group="bw")
     async def stream_bandwidth(self) -> None:
-        """Per-interfeys jonli RX/TX oqimi (bandwidth_stream)."""
+        """The live per-interface RX/TX stream (bandwidth_stream)."""
         btn = self.query_one("#run-bw", Button)
         table = self.query_one("#bw-table", DataTable)
         loading = self.query_one("#bw-loading", LoadingIndicator)
         empty = self.query_one("#bw-empty", Static)
 
-        btn.label = "To'xtatish"
+        btn.label = "Stop"
         btn.variant = "warning"
         loading.display = True
         empty.display = False
 
         try:
             async for rates in bandwidth_stream(interval=1.0):
-                # Faqat trafik bo'lgan yoki nomli interfeyslarni ko'rsatamiz;
-                # tartib core'da nom bo'yicha barqaror.
+                # We only show the interfaces that carried traffic or have a
+                # name; the order is stable by name in the core.
                 active = [r for r in rates if r.total_bps > 0] or rates
                 table.clear()
                 for r in active:
@@ -571,11 +571,11 @@ class TopologyPanel(Vertical):
                     table.display = True
                     empty.display = False
                 else:
-                    empty.update("[dim]Faol interfeys topilmadi.[/]")
+                    empty.update("[dim]No active interface was found.[/]")
                     empty.display = True
                     table.display = False
         except Exception as exc:
-            empty.update(f"[red]{glyph('cross')} Xato:[/] {exc}")
+            empty.update(f"[red]{glyph('cross')} Error:[/] {exc}")
             empty.display = True
             table.display = False
         finally:
@@ -583,14 +583,14 @@ class TopologyPanel(Vertical):
 
     @work(exclusive=True, group="conn")
     async def load_connections(self) -> None:
-        """Faol tarmoq ulanishlarini jadvalga yuklaydi (list_connections)."""
+        """Loads the active network connections into the table (list_connections)."""
         btn = self.query_one("#run-conn", Button)
         table = self.query_one("#conn-table", DataTable)
         loading = self.query_one("#conn-loading", LoadingIndicator)
         empty = self.query_one("#conn-empty", Static)
 
         btn.disabled = True
-        btn.label = f"Yuklanmoqda{ellipsis()}"
+        btn.label = f"Loading{ellipsis()}"
         loading.display = True
         empty.display = False
         table.display = False
@@ -598,16 +598,16 @@ class TopologyPanel(Vertical):
 
         d = dash()
         try:
-            # list_connections sinxron va psutil'da sekin bo'lishi mumkin —
-            # event loop bloklanmasligi uchun thread'da chaqiramiz.
+            # list_connections is synchronous and can be slow in psutil — we call
+            # it in a thread so that the event loop is not blocked.
             conns = await asyncio.to_thread(list_connections, "inet")
             if not conns:
                 empty.update(
-                    "[dim]Ulanishlar ko'rinmadi — macOS'da to'liq ro'yxat uchun "
-                    "[b]sudo[/] kerak bo'lishi mumkin.[/]"
+                    "[dim]No connection was visible — on macOS the full list may "
+                    "require [b]sudo[/].[/]"
                 )
                 empty.display = True
-                btn.label = "Yangilash"
+                btn.label = "Refresh"
                 return
             for c in conns:
                 table.add_row(
@@ -619,18 +619,18 @@ class TopologyPanel(Vertical):
                     data_cell(c.process, d),
                 )
             table.display = True
-            btn.label = f"Yangilash ({len(conns)} ta)"
+            btn.label = f"Refresh ({len(conns)} found)"
         except Exception as exc:
-            empty.update(f"[red]{glyph('cross')} Xato:[/] {exc}")
+            empty.update(f"[red]{glyph('cross')} Error:[/] {exc}")
             empty.display = True
-            btn.label = "Yangilash"
+            btn.label = "Refresh"
         finally:
             loading.display = False
             btn.disabled = False
 
     @staticmethod
     def _status_cell(status: str) -> str:
-        """Ulanish holatini ranglaydi (DataTable Rich markup)."""
+        """Colours the connection state (DataTable Rich markup)."""
         if not status:
             return f"[dim]{dash()}[/]"
         up = status.upper()
@@ -644,7 +644,7 @@ class TopologyPanel(Vertical):
 
     @staticmethod
     def _loss_cell(pct: float) -> str:
-        """Paket yo'qotish foizini ranglaydi (DataTable Rich markup)."""
+        """Colours the packet loss percentage (DataTable Rich markup)."""
         if pct <= 0:
             return "[green]0[/]"
         if pct < 50:
@@ -653,7 +653,7 @@ class TopologyPanel(Vertical):
 
     @staticmethod
     def _rtt_cell(ms: float) -> str:
-        """RTT qiymatini ranglaydi (DataTable Rich markup)."""
+        """Colours the RTT value (DataTable Rich markup)."""
         if ms < 30:
             return f"[green]{ms:.1f}[/]"
         if ms < 100:

@@ -93,7 +93,7 @@ systop targets **Python 3.11+** and runs on **Linux, Windows and macOS**.
 ### Standalone binary (no Python required)
 
 Every tagged release ships a self-contained executable for each platform on the
-[Releases](https://github.com/azizbek/systop/releases) page — download, mark
+[Releases](https://github.com/Azizbek16l/systop/releases) page — download, mark
 executable, run:
 
 | Platform | Asset |
@@ -127,7 +127,7 @@ pipx install systop         # via pipx
 ### From source
 
 ```bash
-git clone https://github.com/azizbek/systop
+git clone https://github.com/Azizbek16l/systop
 cd systop
 uv sync                                   # create venv + install deps
 uv run systop                             # run the dashboard

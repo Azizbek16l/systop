@@ -1,10 +1,10 @@
-"""tls testlari — OFFLINE.
+"""tls tests — OFFLINE.
 
-``check_http`` ``httpx.MockTransport`` orqali (status/redirect/elapsed) sinaladi:
-``httpx.AsyncClient`` ni transport bilan o'rab beruvchi factory monkeypatch
-qilinadi — haqiqiy tarmoq YO'Q. ``check_tls`` ning bloklovchi ``_fetch_cert``
-qismi mock bilan almashtiriladi; sertifikat parsing yordamchilari
-(``_parse_not_after``/``_flatten_name``) to'g'ridan-to'g'ri sinaladi.
+``check_http`` is exercised (status/redirect/elapsed) through
+``httpx.MockTransport``: the factory that wraps ``httpx.AsyncClient`` with a
+transport is monkeypatched — there is NO real network. The blocking
+``_fetch_cert`` part of ``check_tls`` is replaced with a mock; the certificate
+parsing helpers (``_parse_not_after``/``_flatten_name``) are exercised directly.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from systop.core.tls import (
 
 
 def _install_mock_transport(monkeypatch, handler) -> None:
-    """``check_http`` ichidagi ``httpx.AsyncClient`` ni mock transport bilan o'raydi."""
+    """Wraps the ``httpx.AsyncClient`` used inside ``check_http`` with a mock transport."""
     real_client = httpx.AsyncClient
 
     def factory(*args, **kwargs):
@@ -63,12 +63,12 @@ async def test_check_http_follows_redirects(monkeypatch):
     result = await check_http("https://example.test/old")
     assert result.status == 200
     assert str(result.final_url).endswith("/new")
-    # Oraliq (redirect bergan) URL tarixda bo'lishi kerak.
+    # The intermediate URL (the one that redirected) must be in the history.
     assert any(r.endswith("/old") for r in result.redirects)
 
 
 async def test_check_http_4xx_is_not_error(monkeypatch):
-    """4xx/5xx — bu HTTP xatosi emas (transport ishladi); status qaytadi."""
+    """4xx/5xx — this is not an HTTP error (the transport worked); the status comes back."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(404, content=b"nope")
@@ -87,7 +87,7 @@ async def test_check_http_connect_error(monkeypatch):
     result = await check_http("https://unreachable.test/")
     assert result.status is None
     assert result.error is not None
-    assert "HTTP so'rov xatosi" in result.error
+    assert "HTTP request error" in result.error
     assert result.elapsed_ms >= 0.0
 
 
@@ -114,7 +114,7 @@ async def test_check_tls_delegates_to_fetch(monkeypatch):
 
 async def test_check_tls_error_result(monkeypatch):
     def fake_fetch(host, port, timeout):
-        return TlsResult(host=host, port=port, error="TLS ulanish xatosi: timeout")
+        return TlsResult(host=host, port=port, error="TLS connection error: timeout")
 
     monkeypatch.setattr(tls, "_fetch_cert", fake_fetch)
     result = await check_tls("bad.test", port=8443)
@@ -123,7 +123,7 @@ async def test_check_tls_error_result(monkeypatch):
     assert result.error is not None
 
 
-# --- _parse_not_after: sana -> ISO + kunlar ---------------------------------
+# --- _parse_not_after: date -> ISO + days -----------------------------------
 
 
 def test_parse_not_after_future_positive_days():
@@ -132,7 +132,7 @@ def test_parse_not_after_future_positive_days():
     iso, days = _parse_not_after(raw)
     assert iso is not None
     assert iso.startswith(str(future.year))
-    # Kunlar ~45 (yaxlitlash sababli 44 yoki 45).
+    # The days are ~45 (44 or 45, because of rounding).
     assert days in (44, 45)
 
 
@@ -156,7 +156,7 @@ def test_parse_not_after_known_format():
     assert days is not None and days > 0
 
 
-# --- _flatten_name: issuer/subject struktura --------------------------------
+# --- _flatten_name: the issuer/subject structure ----------------------------
 
 
 def test_flatten_name_builds_kv_string():
@@ -173,7 +173,7 @@ def test_flatten_name_empty_returns_none():
     assert _flatten_name(None) is None
 
 
-# --- dataclass defaultlari --------------------------------------------------
+# --- dataclass defaults -----------------------------------------------------
 
 
 def test_tls_result_defaults():

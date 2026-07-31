@@ -1,7 +1,7 @@
-"""systop dashboard — panellarni birlashtiruvchi Textual ilovasi.
+"""The systop dashboard — the Textual application that ties the panels together.
 
-Tepada tarmoq holatini ko'rsatuvchi status-bar, ostida muvozanatli grid:
-chap ustun — tezlik + ping, o'ng ustun — topologiya (LAN + traceroute).
+At the top a status bar showing the network state, and below it a balanced grid:
+the left column — speed + ping, the right column — topology (LAN + traceroute).
 """
 
 from __future__ import annotations
@@ -16,19 +16,19 @@ from textual.widgets import Footer, Header
 from systop.core import _platform
 from systop.widgets import HelpScreen, PingPanel, SpeedPanel, StatusBar, TopologyPanel
 
-# systop uchun maxsus tema — sovuq "terminal" palitrasi (oklch'ga yaqin tonlar).
+# A theme made for systop — a cool "terminal" palette (tones close to oklch).
 SYSTOP_THEME = Theme(
     name="systop",
-    primary="#3b82f6",  # asosiy aksent — ko'k (ramkalar, sarlavhalar)
-    secondary="#22d3ee",  # ikkilamchi — turkuaz
-    accent="#a78bfa",  # fokus aksenti — siyohrang
+    primary="#3b82f6",  # the main accent — blue (frames, titles)
+    secondary="#22d3ee",  # the secondary one — turquoise
+    accent="#a78bfa",  # the focus accent — violet
     foreground="#e2e8f0",
     background="#0b1120",
     surface="#131c2e",
     panel="#1b2740",
-    success="#34d399",  # tirik / yaxshi
-    warning="#fbbf24",  # o'rtacha / ogohlantirish
-    error="#f87171",  # o'lik / xato
+    success="#34d399",  # alive / good
+    warning="#fbbf24",  # middling / warning
+    error="#f87171",  # dead / error
     dark=True,
     variables={
         "block-cursor-text-style": "none",
@@ -54,29 +54,30 @@ SYSTOP_LIGHT = Theme(
 
 
 class SystopApp(App):
-    """Tarmoq monitoringi dashboard'i: holat-paneli + tezlik + ping + topologiya."""
+    """The network monitoring dashboard: status bar + speed + ping + topology."""
 
     CSS_PATH = Path(__file__).parent / "styles.tcss"
     TITLE = "systop"
-    SUB_TITLE = "tarmoq monitoringi"
+    SUB_TITLE = "network monitoring"
 
     BINDINGS = [
-        ("s", "run_speed", "Tezlik"),
-        ("r", "refresh_ping", "Ping yangilash"),
-        ("l", "scan_lan", "LAN skan"),
+        ("s", "run_speed", "Speed"),
+        ("r", "refresh_ping", "Refresh ping"),
+        ("l", "scan_lan", "LAN scan"),
         ("t", "focus_trace", "Traceroute"),
-        ("d", "cycle_theme", "Tema"),
-        ("question_mark", "help", "Yordam"),
-        ("q", "quit", "Chiqish"),
+        ("d", "cycle_theme", "Theme"),
+        ("question_mark", "help", "Help"),
+        ("q", "quit", "Quit"),
     ]
 
     def on_mount(self) -> None:
         self.register_theme(SYSTOP_THEME)
         self.register_theme(SYSTOP_LIGHT)
         self.theme = "systop"
-        # Legacy konsol (Unicode'siz) — ekran'ga `-ascii` klassi qo'shamiz;
-        # styles.tcss ramkalarni ASCII'ga tushiradi va sparkline'larni yashiradi
-        # (block belgilar mojibake bo'lmasligi uchun). macOS/Linux: hech narsa.
+        # A legacy console (no Unicode) — we add the `-ascii` class to the
+        # screen; styles.tcss drops the frames down to ASCII and hides the
+        # sparklines (so that the block characters do not turn into mojibake).
+        # On macOS/Linux: nothing happens.
         if not _platform.unicode_ok():
             self.screen.add_class("-ascii")
 
@@ -90,7 +91,7 @@ class SystopApp(App):
             yield TopologyPanel(id="topology")
         yield Footer()
 
-    # --- Action'lar (widget worker metodlariga mos nomlanadi) ---
+    # --- Actions (named to match the widgets' worker methods) ---
 
     def action_refresh_ping(self) -> None:
         self.query_one(PingPanel).update_pings()
@@ -112,11 +113,12 @@ class SystopApp(App):
 
 
 def run() -> None:
-    """Dashboard'ni ishga tushiradi.
+    """Starts the dashboard.
 
-    Avval konsolni tayyorlaymiz (`init_console`): Windows'da UTF-8 + VT rejimi —
-    Textual sparkline/braille/box belgilari legacy cmd.exe'da ham to'g'ri
-    ko'rinadi. Boshqa OS'da bu no-op. Shundan keyingina ilova ishga tushadi.
+    First we prepare the console (`init_console`): on Windows, UTF-8 + VT mode —
+    so that Textual's sparkline/braille/box characters render correctly even in
+    the legacy cmd.exe. On other operating systems this is a no-op. Only then
+    does the application start.
     """
     _platform.init_console()
     SystopApp().run()

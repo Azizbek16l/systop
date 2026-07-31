@@ -1,13 +1,14 @@
-"""`core/netcat.py` uchun offline testlar.
+"""Offline tests for `core/netcat.py`.
 
-`unescape`, `to_hexdump` va `NcResult` xossalari sof — tarmoqsiz sinaladi.
-`connect()` tarmoqqa chiqadi, shuning uchun sinalmaydi (loyiha qoidasi).
+`unescape`, `to_hexdump` and the `NcResult` properties are pure — they are
+tested without a network. `connect()` does go to the network, so it is not
+tested (a project rule).
 """
 
 from systop.core.netcat import NcResult, to_hexdump, unescape
 
 # --------------------------------------------------------------------------- #
-# unescape — shell'dan kelgan `\r\n` ni haqiqiy baytga aylantirish
+# unescape — turning the `\r\n` that came from the shell into real bytes
 # --------------------------------------------------------------------------- #
 
 
@@ -32,7 +33,7 @@ def test_unescape_double_backslash():
 
 
 def test_unescape_unknown_sequence_left_alone():
-    """`\\q` tanilmagan — o'z holida qolishi kerak (jim yo'qotmaslik)."""
+    """`\\q` is unrecognised — it has to stay as it is (nothing is dropped silently)."""
     assert unescape(r"no\qescape") == b"no\\qescape"
 
 
@@ -45,7 +46,7 @@ def test_unescape_empty():
 
 
 def test_unescape_non_ascii_encoded_utf8():
-    assert unescape("salom") == b"salom"
+    assert unescape("hello") == b"hello"
 
 
 # --------------------------------------------------------------------------- #
@@ -76,16 +77,16 @@ def test_hexdump_empty_is_empty_string():
 
 
 # --------------------------------------------------------------------------- #
-# NcResult xossalari
+# NcResult properties
 # --------------------------------------------------------------------------- #
 
 
 def test_received_text_decodes_utf8():
-    assert NcResult(host="h", port=1, received=b"salom").received_text == "salom"
+    assert NcResult(host="h", port=1, received=b"hello").received_text == "hello"
 
 
 def test_received_text_replaces_invalid_bytes():
-    """Ikkilik javob ham yiqilmasdan matnga aylanishi kerak."""
+    """A binary answer must turn into text as well, without falling over."""
     assert "�" in NcResult(host="h", port=1, received=b"\xff\xfe").received_text
 
 

@@ -1,7 +1,7 @@
-"""Umumiy test yordamchilari — barchasi OFFLINE.
+"""Shared test helpers — all OFFLINE.
 
-Bu fayl tarmoqqa CHIQMAYDI. Bu yerda faqat soxta (fake) obyektlar va
-``httpx.MockTransport`` yordamchilari bor — core mantiqni tarmoqsiz sinash uchun.
+This file NEVER touches the network. It holds only fakes and
+``httpx.MockTransport`` helpers, so the core logic can be exercised without one.
 """
 
 from __future__ import annotations
@@ -11,10 +11,10 @@ from dataclasses import dataclass, field
 
 @dataclass
 class FakeHost:
-    """``icmplib`` Host obyektining duck-typed o'rnini bosuvchi soxta obyekt.
+    """Duck-typed stand-in for an ``icmplib`` Host object.
 
-    ``ping._to_result`` va ``topology.discover_lan`` faqat shu atributlarni
-    o'qiydi — shuning uchun haqiqiy ICMP soketi shart emas.
+    ``ping._to_result`` and ``topology.discover_lan`` read only these
+    attributes, so no real ICMP socket is needed.
     """
 
     address: str
@@ -29,7 +29,7 @@ class FakeHost:
 
 @dataclass
 class FakeRawHop:
-    """``icmplib.traceroute`` qaytaradigan hop obyektining soxtasi."""
+    """Fake of the hop object returned by ``icmplib.traceroute``."""
 
     distance: int
     address: str | None
@@ -39,7 +39,7 @@ class FakeRawHop:
 
 @dataclass
 class FakeCompletedProcess:
-    """``subprocess.run`` natijasining minimal o'rnini bosuvchisi."""
+    """Minimal stand-in for a ``subprocess.run`` result."""
 
     stdout: str = ""
     returncode: int = 0
@@ -48,7 +48,7 @@ class FakeCompletedProcess:
 
 @dataclass
 class FakeSnicaddr:
-    """``psutil`` snicaddr (manzil) yozuvi."""
+    """A ``psutil`` snicaddr (address) record."""
 
     family: int
     address: str | None = None
@@ -59,7 +59,7 @@ class FakeSnicaddr:
 
 @dataclass
 class FakeSnicstats:
-    """``psutil`` snicstats (interfeys holati) yozuvi."""
+    """A ``psutil`` snicstats (interface state) record."""
 
     isup: bool = True
     duplex: int = 0
@@ -70,10 +70,10 @@ class FakeSnicstats:
 
 @dataclass
 class FakeIOCounters:
-    """``psutil.net_io_counters`` snetio named-tuple o'rnini bosuvchi.
+    """Stand-in for the ``psutil.net_io_counters`` snetio named tuple.
 
-    ``bandwidth._compute_rates`` faqat ``bytes_recv``/``bytes_sent`` va
-    ``packets_recv``/``packets_sent`` ni o'qiydi — qolgan maydonlar ixtiyoriy.
+    ``bandwidth._compute_rates`` reads only ``bytes_recv``/``bytes_sent`` and
+    ``packets_recv``/``packets_sent``; the remaining fields are optional.
     """
 
     bytes_recv: int = 0
@@ -88,7 +88,7 @@ class FakeIOCounters:
 
 @dataclass
 class FakeAddr:
-    """``psutil`` ulanish manzili (ip, port) named-tuple o'rnini bosuvchi."""
+    """Stand-in for the ``psutil`` connection address (ip, port) named tuple."""
 
     ip: str = ""
     port: int = 0
@@ -96,10 +96,10 @@ class FakeAddr:
 
 @dataclass
 class FakeConn:
-    """``psutil.net_connections`` sconn yozuvining soxtasi (duck-typed).
+    """Duck-typed fake of a ``psutil.net_connections`` sconn record.
 
-    ``connections.list_connections`` faqat ``family``/``type``/``laddr``/
-    ``raddr``/``status``/``pid`` ni o'qiydi.
+    ``connections.list_connections`` reads only ``family``/``type``/``laddr``/
+    ``raddr``/``status``/``pid``.
     """
 
     family: int
@@ -112,7 +112,7 @@ class FakeConn:
 
 
 class FakeProcess:
-    """``psutil.Process(pid)`` o'rnini bosuvchi — faqat ``.name()`` beradi."""
+    """Stand-in for ``psutil.Process(pid)`` — provides ``.name()`` only."""
 
     def __init__(self, pid: int, name: str = "proc") -> None:
         self._pid = pid

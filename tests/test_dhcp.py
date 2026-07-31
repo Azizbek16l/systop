@@ -1,11 +1,11 @@
-"""`core/dhcp.py` uchun offline testlar — lease parse va rogue-server aniqlash.
+"""Offline tests for `core/dhcp.py` — lease parsing and rogue-server detection.
 
-Barcha parserlar sof: OS chiqishini yoki xom paketni oladi, `DhcpOffer` beradi.
-`discover_servers` sinalmaydi — u UDP broadcast yuboradi.
+Every parser is pure: it takes OS output or a raw packet and returns a
+`DhcpOffer`. `discover_servers` is not tested — it sends a UDP broadcast.
 
-Uchala OS ham qamrab olinadi: macOS `ipconfig getpacket`, Linux
-`dhclient.leases`, va xom DHCP paketi (Windows yo'li `netsh` orqali boradi,
-lekin ma'lumot shakli bir xil `DhcpOffer`).
+All three operating systems are covered: macOS `ipconfig getpacket`, Linux
+`dhclient.leases`, and a raw DHCP packet (the Windows route goes through
+`netsh`, but the shape of the data is the same `DhcpOffer`).
 """
 
 import struct
@@ -20,38 +20,38 @@ from systop.core.dhcp import (
 )
 
 # --------------------------------------------------------------------------- #
-# DISCOVER paketi
+# The DISCOVER packet
 # --------------------------------------------------------------------------- #
 
 
-def test_discover_paketi_asosiy_maydonlari():
+def test_discover_packet_core_fields():
     packet, xid = build_discover()
     assert len(packet) >= 240
     assert packet[0] == 1  # op = BOOTREQUEST
-    # Magic cookie 99.130.83.99 — 236-baytdan boshlanadi (RFC 2131).
+    # The magic cookie 99.130.83.99 starts at byte 236 (RFC 2131).
     assert packet[236:240] == bytes([99, 130, 83, 99])
-    # xid paketning 4:8 baytida bo'lishi kerak.
+    # The xid must sit in bytes 4:8 of the packet.
     assert struct.unpack("!I", packet[4:8])[0] == xid
 
 
-def test_discover_xid_har_safar_boshqacha():
-    """xid — javobni so'rovga bog'lovchi yagona narsa; qat'iy bo'lsa ma'nosiz."""
+def test_discover_xid_differs_every_time():
+    """The xid is the only thing tying a reply to a request; a fixed one is pointless."""
     xids = {build_discover()[1] for _ in range(20)}
     assert len(xids) > 15
 
 
-def test_berilgan_xid_ishlatiladi():
+def test_a_supplied_xid_is_used():
     _, xid = build_discover(xid=0xDEADBEEF)
     assert xid == 0xDEADBEEF
 
 
 # --------------------------------------------------------------------------- #
-# Xom javob paketi — xid tekshiruvi
+# A raw reply packet — the xid check
 # --------------------------------------------------------------------------- #
 
 
 def _reply(xid: int, server_id: str = "192.168.1.1") -> bytes:
-    """Minimal DHCPOFFER paketi."""
+    """A minimal DHCPOFFER packet."""
     p = bytearray(240)
     p[0] = 2  # BOOTREPLY
     p[4:8] = struct.pack("!I", xid)
@@ -64,20 +64,20 @@ def _reply(xid: int, server_id: str = "192.168.1.1") -> bytes:
     return bytes(p + opts)
 
 
-def test_boshqa_xid_li_javob_rad_etiladi():
-    """Boshqa so'rovga (yoki soxta) javob qabul qilinmasligi kerak."""
+def test_reply_with_a_different_xid_is_rejected():
+    """A reply to some other request (or a forged one) must not be accepted."""
     assert parse_offer(_reply(0x1111), "192.168.1.1", expect_xid=0x2222) is None
 
 
-def test_togri_xid_li_javob_qabul_qilinadi():
+def test_reply_with_the_matching_xid_is_accepted():
     o = parse_offer(_reply(0x1234), "192.168.1.1", expect_xid=0x1234)
     assert o is not None
     assert o.server_id == "192.168.1.1"
     assert o.offered_ip == "192.168.1.50"
 
 
-def test_xid_tekshiruvi_ixtiyoriy():
-    """expect_xid=None bo'lsa tekshirilmaydi (passiv tinglash rejimi)."""
+def test_xid_check_is_optional():
+    """With expect_xid=None nothing is checked (passive listening mode)."""
     assert parse_offer(_reply(0x1234), "192.168.1.1") is not None
 
 
@@ -99,7 +99,7 @@ lease_time (uint32): 0x15180
 """
 
 
-def test_getpacket_asosiy_maydonlar():
+def test_getpacket_core_fields():
     o = parse_ipconfig_getpacket(GETPACKET)
     assert o is not None
     assert o.server_id == "192.168.11.1"
@@ -110,19 +110,19 @@ def test_getpacket_asosiy_maydonlar():
     assert o.domain == "example.local"
 
 
-def test_getpacket_lease_16lik_sanoqda():
-    """macOS lease_time'ni `0x15180` ko'rinishida beradi — 86400 soniya."""
+def test_getpacket_lease_is_hexadecimal():
+    """macOS gives lease_time as `0x15180` — that is 86400 seconds."""
     o = parse_ipconfig_getpacket(GETPACKET)
     assert o.lease_seconds == 86400
 
 
-def test_getpacket_server_identifier_siz_none():
-    """Server ID bo'lmasa taklif ma'nosiz — None qaytishi kerak, bo'sh obyekt emas."""
+def test_getpacket_without_server_identifier_is_none():
+    """Without a server ID the offer is meaningless — None, not an empty object."""
     assert parse_ipconfig_getpacket("yiaddr = 1.2.3.4\n") is None
 
 
 # --------------------------------------------------------------------------- #
-# Linux `dhclient.leases` — ENG OXIRGI blok
+# Linux `dhclient.leases` — the MOST RECENT block
 # --------------------------------------------------------------------------- #
 
 LEASES = """
@@ -150,11 +150,11 @@ lease {
 """
 
 
-def test_eng_oxirgi_lease_olinadi():
-    """Fayl bloklarni KETMA-KET yozadi — joriy lease OXIRGISI.
+def test_the_most_recent_lease_is_taken():
+    """The file appends blocks ONE AFTER ANOTHER — the current lease is the LAST.
 
-    Birinchisini olish eski (allaqachon tugagan) tarmoqni ko'rsatardi va
-    "DHCP serveringiz 10.0.0.254" degan mutlaqo noto'g'ri javob berardi.
+    Taking the first one showed an old (already expired) network and gave the
+    completely wrong answer "your DHCP server is 10.0.0.254".
     """
     o = parse_dhclient_lease(LEASES)
     assert o is not None
@@ -163,44 +163,44 @@ def test_eng_oxirgi_lease_olinadi():
     assert o.lease_seconds == 43200
 
 
-def test_lease_royxatli_maydonlar():
+def test_lease_list_fields():
     o = parse_dhclient_lease(LEASES)
     assert o.dns == ["192.168.5.1", "1.1.1.1"]
     assert o.routers == ["192.168.5.1"]
 
 
-def test_lease_domen_qoshtirnoqsiz():
+def test_lease_domain_is_unquoted():
     o = parse_dhclient_lease(LEASES)
     assert o.domain == "corp.local"
 
 
-def test_bosh_lease_fayli_none():
+def test_empty_lease_file_is_none():
     assert parse_dhclient_lease("") is None
-    assert parse_dhclient_lease("# izoh\n") is None
+    assert parse_dhclient_lease("# comment\n") is None
 
 
-def test_server_identifiersiz_lease_none():
+def test_lease_without_server_identifier_is_none():
     assert parse_dhclient_lease("lease {\n  fixed-address 1.2.3.4;\n}\n") is None
 
 
 # --------------------------------------------------------------------------- #
-# Rogue DHCP aniqlash
+# Rogue DHCP detection
 # --------------------------------------------------------------------------- #
 
 
-def test_bitta_server_rogue_emas():
+def test_a_single_server_is_not_rogue():
     r = DhcpReport(
         offers=[
             DhcpOffer(server_ip="192.168.1.1", server_id="192.168.1.1"),
-            DhcpOffer(server_ip="192.168.1.1", server_id="192.168.1.1"),  # takror javob
+            DhcpOffer(server_ip="192.168.1.1", server_id="192.168.1.1"),  # a repeated reply
         ]
     )
     assert r.servers == ["192.168.1.1"]
     assert r.is_rogue_suspected is False
 
 
-def test_ikki_xil_server_rogue_shubhasi():
-    """Ikki DHCP server — klassik "internet uzilib-uzilib ketadi" sababi."""
+def test_two_different_servers_raise_a_rogue_suspicion():
+    """Two DHCP servers — the classic cause of "the internet keeps cutting out"."""
     r = DhcpReport(
         offers=[
             DhcpOffer(server_ip="192.168.1.1", server_id="192.168.1.1"),
@@ -211,11 +211,11 @@ def test_ikki_xil_server_rogue_shubhasi():
     assert r.is_rogue_suspected is True
 
 
-def test_identity_server_id_ni_afzal_koradi():
-    """Relay orqali kelgan paketda manba IP relay'niki bo'ladi, server ID esa asl.
+def test_identity_prefers_the_server_id():
+    """In a packet via a relay the source IP is the relay's, the server ID the original.
 
-    Manba IP bo'yicha ajratsak, bitta server relay ortidan ikki xil ko'rinib
-    soxta "rogue DHCP" ogohlantirishini berardi.
+    Distinguishing by source IP made a single server behind a relay look like
+    two and produced a false "rogue DHCP" warning.
     """
     o = DhcpOffer(server_ip="10.0.0.254", server_id="192.168.1.1")
     assert o.identity == "192.168.1.1"
@@ -228,11 +228,12 @@ def test_identity_server_id_ni_afzal_koradi():
     assert r.is_rogue_suspected is False
 
 
-def test_javob_kelmasligi_server_yoq_degani_emas():
-    """`partial` — "tinglash tugadi, javob kelmadi". Bu "server yo'q" EMAS.
+def test_no_reply_does_not_mean_no_server():
+    """`partial` means "listening finished, no reply arrived". That is NOT "no server".
 
-    DHCP javobi ko'p tarmoqda mijoz portiga (68) keladi va uni band qilib
-    bo'lmaydi. Shuni "DHCP server topilmadi" deb ko'rsatish soxta signal.
+    On many networks the DHCP reply goes to the client port (68), which cannot
+    be bound without root. Presenting that as "no DHCP server found" would be a
+    false signal.
     """
     r = DhcpReport(offers=[], partial=True)
     assert r.servers == []

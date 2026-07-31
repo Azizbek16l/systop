@@ -1,4 +1,4 @@
-"""Internet tezligi paneli — download/upload o'lchovi, jonli grafik va statistika."""
+"""The internet speed panel — download/upload measurement, a live graph and statistics."""
 
 from __future__ import annotations
 
@@ -12,26 +12,28 @@ from systop.widgets._glyphs import ellipsis, glyph, unicode_ok
 
 
 class SpeedPanel(Vertical):
-    """Tugma bosilganda tezlik testini ishga tushiradi, natijani ko'rsatadi.
+    """Runs the speed test when the button is pressed and shows the result.
 
-    Holatlar: bo'sh (placeholder) → yuklanmoqda (LoadingIndicator + jonli
-    qiymatlar) → natija yoki xato. Grafik ostida joriy/min/o'rt/maks Mbps.
+    The states: empty (a placeholder) -> loading (a LoadingIndicator + live
+    values) -> a result or an error. Below the graph: the current/min/avg/max
+    Mbps.
     """
 
-    BORDER_TITLE = "Internet tezligi"
-    BORDER_SUBTITLE = "s boshlash"
+    BORDER_TITLE = "Internet speed"
+    BORDER_SUBTITLE = "s start"
 
     def compose(self) -> ComposeResult:
         yield Static(self._placeholder(), id="speed-readout")
         yield LoadingIndicator(id="speed-loading")
         yield Sparkline([0], summary_function=max, id="speed-spark")
         yield Static(self._stats_caption(None), id="speed-stats", classes="spark-caption")
-        yield Button("Tezlikni o'lchash", id="run-speed", variant="primary")
+        yield Button("Measure the speed", id="run-speed", variant="primary")
 
     def on_mount(self) -> None:
         self._history: list[float] = []
         self.query_one("#speed-loading", LoadingIndicator).display = False
-        # Grafik ma'lumotsiz yashirin — idle holatda "soxta" to'liq bar ko'rinmasin.
+        # The graph is hidden while there is no data — so that no "fake" full
+        # bar shows up in the idle state.
         self.query_one("#speed-spark", Sparkline).display = False
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -48,11 +50,11 @@ class SpeedPanel(Vertical):
 
         ell = ellipsis()
         btn.disabled = True
-        btn.label = f"O'lchanmoqda{ell}"
+        btn.label = f"Measuring{ell}"
         loading.display = True
-        readout.update(f"[dim]Latency o'lchanmoqda{ell}[/]")
+        readout.update(f"[dim]Measuring the latency{ell}[/]")
         self._history = []
-        spark.display = False  # yangi test — ma'lumot kelguncha grafik yashirin
+        spark.display = False  # a new test — the graph stays hidden until data arrives
 
         def on_download(mbps: float) -> None:
             self._progress(readout, spark, stats, glyph("download"), "Download", "$success", mbps)
@@ -64,12 +66,12 @@ class SpeedPanel(Vertical):
             result = await run_speedtest(on_download=on_download, on_upload=on_upload)
             readout.update(self._format(result))
             stats.update(self._stats_caption(self._history))
-        except Exception as exc:  # tarmoq xatosi — UI yiqilmasin
-            readout.update(f"[$error]{glyph('cross')} Xato:[/] {exc}")
+        except Exception as exc:  # a network error — the UI must not crash
+            readout.update(f"[$error]{glyph('cross')} Error:[/] {exc}")
         finally:
             loading.display = False
             btn.disabled = False
-            btn.label = "Qayta o'lchash"
+            btn.label = "Measure again"
 
     def _progress(
         self,
@@ -81,29 +83,30 @@ class SpeedPanel(Vertical):
         color: str,
         mbps: float,
     ) -> None:
-        """Bosqich (download/upload) jonli holatini ko'rsatadi.
+        """Shows the live state of a phase (download/upload).
 
-        Warmup paytida core `mbps=0.0` yuboradi (TCP slow-start baytlari o'lchovga
-        kirmaydi). Bunday paytda "0.0 jarayonda" osilgandek ko'rinadi — shuning
-        o'rniga "isinmoqda…" deb ko'rsatamiz va grafikka 0 qo'shmaymiz (statistika
-        buzilmasin). Haqiqiy o'lchov boshlangach (mbps>0) odatdagi ko'rinish.
+        During the warmup the core sends `mbps=0.0` (the TCP slow-start bytes do
+        not enter the measurement). At such a moment "0.0 in progress" looks
+        stuck — instead of that we show "warming up…" and add no 0 to the graph
+        (so that the statistics are not spoiled). Once the real measurement
+        begins (mbps>0) it goes back to the usual display.
         """
         ell = ellipsis()
         if mbps <= 0.0:
             readout.update(
-                f"{icon} {label:<10}[dim]isinmoqda{ell}[/]   [dim]ulanish tayyorlanmoqda[/]"
+                f"{icon} {label:<10}[dim]warming up{ell}[/]   [dim]preparing the connection[/]"
             )
             return
         self._push(spark, stats, mbps)
         readout.update(
-            f"{icon} {label:<10}[b {color}]{mbps:6.1f}[/] [dim]Mbps[/]   [dim]jarayonda{ell}[/]"
+            f"{icon} {label:<10}[b {color}]{mbps:6.1f}[/] [dim]Mbps[/]   [dim]in progress{ell}[/]"
         )
 
     def _push(self, spark: Sparkline, stats: Static, mbps: float) -> None:
         self._history.append(round(mbps, 1))
         spark.data = self._history[-80:]
-        # Ma'lumot bor — grafikni ko'rsatamiz (ASCII rejimda block belgilar
-        # ko'rinmaydi, shu sababli unicode_ok() bilan shartlaymiz).
+        # There is data — we show the graph (in ASCII mode the block characters
+        # do not render, which is why it is conditioned on unicode_ok()).
         spark.display = unicode_ok()
         stats.update(self._stats_caption(self._history))
 
@@ -114,26 +117,24 @@ class SpeedPanel(Vertical):
             f"{glyph('download')} Download    [dim]{d}[/] [dim]Mbps[/]\n"
             f"{glyph('upload')} Upload      [dim]{d}[/] [dim]Mbps[/]\n"
             f"{glyph('latency')} Latency     [dim]{d}[/] [dim]ms[/]\n\n"
-            "[dim]Boshlash uchun [b]s[/] yoki tugmani bosing.[/]"
+            "[dim]Press [b]s[/] or the button to start.[/]"
         )
 
     @staticmethod
     def _stats_caption(history: list[float] | None) -> str:
-        """Grafik ostidagi izoh: joriy / min / o'rt / maks (Mbps)."""
+        """The caption below the graph: current / min / avg / max (Mbps)."""
         if not history:
             d = glyph("dash")
-            return (
-                f"[dim]joriy {d}   min {d}   o'rt {d}   maks {d}   Mbps   ·   test boshlanmagan[/]"
-            )
+            return f"[dim]cur {d}   min {d}   avg {d}   max {d}   Mbps   ·   test not started[/]"
         cur = history[-1]
         lo = min(history)
         avg = sum(history) / len(history)
         hi = max(history)
         return (
-            f"[dim]joriy[/] [b]{cur:.1f}[/]   "
+            f"[dim]cur[/] [b]{cur:.1f}[/]   "
             f"[dim]min[/] {lo:.1f}   "
-            f"[dim]o'rt[/] {avg:.1f}   "
-            f"[dim]maks[/] [b $success]{hi:.1f}[/]   [dim]Mbps[/]"
+            f"[dim]avg[/] {avg:.1f}   "
+            f"[dim]max[/] [b $success]{hi:.1f}[/]   [dim]Mbps[/]"
         )
 
     @staticmethod

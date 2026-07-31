@@ -1,8 +1,8 @@
-"""ping testlari — OFFLINE.
+"""ping tests — OFFLINE.
 
-``build_targets`` barcha shoxlari, ``PingResult.loss_pct``, ``_to_result``
-(soxta host obyekti bilan), ``ping_once``/``ping_many`` (icmplib mock bilan).
-Hech qanday ICMP soketi ochilmaydi.
+Every branch of ``build_targets``, ``PingResult.loss_pct``, ``_to_result`` (with
+a fake host object), and ``ping_once``/``ping_many`` (with icmplib mocked). No
+ICMP socket is ever opened.
 """
 
 from __future__ import annotations
@@ -26,21 +26,21 @@ from systop.core.ping import (
 
 def test_build_targets_gateway_plus_global():
     targets = build_targets("192.168.1.1")
-    assert targets["Gateway (lokal)"] == "192.168.1.1"
+    assert targets["Gateway (local)"] == "192.168.1.1"
     assert "Cloudflare" in targets
     assert len(targets) == len(DEFAULT_GLOBAL_TARGETS) + 1
 
 
 def test_build_targets_gateway_only():
     targets = build_targets("192.168.1.1", include_global=False)
-    assert targets == {"Gateway (lokal)": "192.168.1.1"}
+    assert targets == {"Gateway (local)": "192.168.1.1"}
 
 
 def test_build_targets_global_only():
     targets = build_targets(None, include_global=True)
-    assert "Gateway (lokal)" not in targets
+    assert "Gateway (local)" not in targets
     assert targets == DEFAULT_GLOBAL_TARGETS
-    # Asl konstanta o'zgarmasligi kerak (nusxa qaytarish).
+    # The original constant must not change (a copy is returned).
     assert targets is not DEFAULT_GLOBAL_TARGETS
 
 
@@ -49,10 +49,10 @@ def test_build_targets_empty():
 
 
 def test_build_targets_does_not_mutate_default_constant():
-    """build_targets DEFAULT_GLOBAL_TARGETS'ni o'zgartirmasligini tasdiqlash."""
+    """Asserting that build_targets does not modify DEFAULT_GLOBAL_TARGETS."""
     before = dict(DEFAULT_GLOBAL_TARGETS)
     t = build_targets("10.0.0.1")
-    t["yangi"] = "1.2.3.4"
+    t["new"] = "1.2.3.4"
     assert DEFAULT_GLOBAL_TARGETS == before
 
 
@@ -101,22 +101,22 @@ def test_to_result_maps_host_fields():
 
 
 def test_to_result_copies_rtts_list():
-    """_to_result host.rtts'ni nusxalashi kerak (alias bo'lmasligi uchun)."""
+    """_to_result has to copy host.rtts (so it is not an alias)."""
     original = [1.0, 2.0]
     host = FakeHost(address="1.1.1.1", is_alive=True, rtts=original)
     r = _to_result(host, "x")
     r.rtts.append(99.0)
-    assert original == [1.0, 2.0]  # asl ro'yxat o'zgarmadi
+    assert original == [1.0, 2.0]  # the original list did not change
 
 
 def test_to_result_dead_host():
     host = FakeHost(address="10.0.0.99", is_alive=False, packet_loss=1.0)
-    r = _to_result(host, "o'lik")
+    r = _to_result(host, "dead")
     assert r.alive is False
     assert r.loss_pct == 100.0
 
 
-# --- ping_once / ping_many (icmplib mock) -----------------------------------
+# --- ping_once / ping_many (icmplib mocked) ---------------------------------
 
 
 async def test_ping_once_uses_label(monkeypatch):
@@ -141,7 +141,7 @@ async def test_ping_once_label_defaults_to_address(monkeypatch):
 
 
 async def test_ping_once_passes_privileged_false(monkeypatch):
-    """privileged=False uzatilishini tasdiqlash (root talab qilmaslik uchun)."""
+    """Asserting that privileged=False is passed through (so root is not required)."""
     captured = {}
 
     async def fake_async_ping(address, **kwargs):
@@ -157,7 +157,7 @@ async def test_ping_many_preserves_label_order(monkeypatch):
     targets = {"Gateway": "192.168.1.1", "Google": "8.8.8.8", "CF": "1.1.1.1"}
 
     async def fake_multiping(addresses, **kwargs):
-        # icmplib kirish tartibida qaytaradi -> zip(strict) bilan moslanadi.
+        # icmplib returns them in input order -> zip(strict) lines them up.
         return [FakeHost(address=a, is_alive=True, avg_rtt=1.0) for a in addresses]
 
     monkeypatch.setattr(ping, "async_multiping", fake_multiping)
@@ -179,9 +179,9 @@ async def test_ping_many_empty_targets(monkeypatch):
     assert captured["addresses"] == []
 
 
-# --- Windows shoxi: _win_ping / _win_result / platforma branching -----------
+# --- The Windows branch: _win_ping / _win_result / platform branching -------
 
-# Real `ping -n 4 8.8.8.8` chiqishi (en-US).
+# Real `ping -n 4 8.8.8.8` output (en-US).
 _WIN_PING_OUT = (
     "Pinging 8.8.8.8 with 32 bytes of data:\n"
     "Reply from 8.8.8.8: bytes=32 time=12ms TTL=117\n"
@@ -204,16 +204,17 @@ _WIN_PING_DEAD_OUT = (
 
 
 def _force_windows(monkeypatch, ping_output: str):
-    """Platformani Windows qilib, ping.exe PARSE yo'lini sinash uchun sozlaydi.
+    """Sets the platform to Windows so the ping.exe PARSE path can be tested.
 
-    IcmpSendEcho'ni o'chiramiz (None) — shunda bu testlar deterministik ravishda
-    `ping.exe` + parse zaxira yo'lini sinaydi (real Windows'da ham, macOS'da ham).
+    IcmpSendEcho is switched off (None) — so these tests deterministically
+    exercise the `ping.exe` + parse fallback path (on a real Windows and on
+    macOS alike).
     """
     monkeypatch.setattr(ping._platform, "IS_WINDOWS", True)
     monkeypatch.setattr(ping._platform, "win_icmp_ping", lambda *a, **k: None)
 
     async def fake_run_command(cmd, timeout):
-        # Buyruq haqiqatan tizim `ping` ekanini tasdiqlaymiz.
+        # Assert that the command really is the system `ping`.
         assert cmd[0] == "ping"
         return ping_output
 
@@ -278,11 +279,11 @@ async def test_win_result_no_rtts_keeps_loss():
 
 
 async def test_ping_once_windows_branch(monkeypatch):
-    """ping_once Windows'da icmplib EMAS, _win_ping ishlatishini tasdiqlash."""
+    """Asserting that on Windows ping_once uses _win_ping, NOT icmplib."""
     _force_windows(monkeypatch, _WIN_PING_OUT)
 
     async def boom(*a, **k):
-        raise AssertionError("icmplib async_ping Windows'da chaqirilmasligi kerak")
+        raise AssertionError("icmplib async_ping must not be called on Windows")
 
     monkeypatch.setattr(ping, "async_ping", boom)
     r = await ping_once("8.8.8.8", label="Google")
@@ -292,18 +293,19 @@ async def test_ping_once_windows_branch(monkeypatch):
 
 
 async def test_ping_many_windows_parallel(monkeypatch):
-    """ping_many Windows'da har nishonni alohida `ping` bilan parallel ishlaydi."""
+    """On Windows ping_many handles each target in parallel with its own `ping`."""
     monkeypatch.setattr(ping._platform, "IS_WINDOWS", True)
-    # ping.exe parse yo'lini deterministik sinash uchun IcmpSendEcho'ni o'chiramiz.
+    # Switch IcmpSendEcho off so the ping.exe parse path is tested deterministically.
     monkeypatch.setattr(ping._platform, "win_icmp_ping", lambda *a, **k: None)
 
     async def boom(*a, **k):
-        raise AssertionError("icmplib async_multiping Windows'da chaqirilmasligi kerak")
+        raise AssertionError("icmplib async_multiping must not be called on Windows")
 
     monkeypatch.setattr(ping, "async_multiping", boom)
 
     async def fake_run_command(cmd, timeout):
-        # Manzil cmd oxirida; uni chiqishga joylab, har nishon alive bo'lsin.
+        # The address is at the end of cmd; put it into the output so every
+        # target comes back alive.
         addr = cmd[-1]
         return _WIN_PING_OUT.replace("8.8.8.8", addr)
 
@@ -311,7 +313,7 @@ async def test_ping_many_windows_parallel(monkeypatch):
 
     targets = {"Gateway": "192.168.1.1", "Google": "8.8.8.8", "CF": "1.1.1.1"}
     results = await ping_many(targets)
-    # Label tartibi saqlanishi kerak.
+    # The label order has to be preserved.
     assert [r.label for r in results] == ["Gateway", "Google", "CF"]
     assert [r.address for r in results] == ["192.168.1.1", "8.8.8.8", "1.1.1.1"]
     assert all(r.alive for r in results)
@@ -323,14 +325,14 @@ async def test_ping_many_windows_empty(monkeypatch):
     assert results == []
 
 
-# --- Windows ILDIZ yo'l: IcmpSendEcho (_platform.win_icmp_ping) --------------
+# --- The PRIMARY Windows path: IcmpSendEcho (_platform.win_icmp_ping) -------
 
 
 async def test_win_ping_uses_icmpsendecho_when_available(monkeypatch):
-    """IPv4 nishon uchun _win_ping IcmpSendEcho'ni (run_command EMAS) ishlatadi."""
+    """For an IPv4 target _win_ping uses IcmpSendEcho, NOT run_command."""
     monkeypatch.setattr(ping._platform, "IS_WINDOWS", True)
 
-    # win_icmp_ping mavjud natija qaytaradi -> ping.exe chaqirilmasligi kerak.
+    # win_icmp_ping returns a result -> ping.exe must not be called.
     def fake_icmp(address, count, timeout):
         assert address == "8.8.8.8"
         assert count == 4
@@ -339,7 +341,7 @@ async def test_win_ping_uses_icmpsendecho_when_available(monkeypatch):
     monkeypatch.setattr(ping._platform, "win_icmp_ping", fake_icmp)
 
     async def boom(cmd, timeout):
-        raise AssertionError("IcmpSendEcho mavjud bo'lsa ping.exe chaqirilmasligi kerak")
+        raise AssertionError("when IcmpSendEcho is available ping.exe must not be called")
 
     monkeypatch.setattr(ping._platform, "run_command", boom)
 
@@ -350,7 +352,7 @@ async def test_win_ping_uses_icmpsendecho_when_available(monkeypatch):
 
 
 async def test_win_ping_falls_back_to_parse_when_icmp_none(monkeypatch):
-    """IcmpSendEcho None (DLL yo'q/resolve yo'q) -> ping.exe parse zaxirasi."""
+    """IcmpSendEcho None (no DLL / no resolution) -> the ping.exe parse fallback."""
     monkeypatch.setattr(ping._platform, "IS_WINDOWS", True)
     monkeypatch.setattr(ping._platform, "win_icmp_ping", lambda *a, **k: None)
 
@@ -366,11 +368,11 @@ async def test_win_ping_falls_back_to_parse_when_icmp_none(monkeypatch):
 
 
 async def test_win_ping_ipv6_skips_icmpsendecho(monkeypatch):
-    """IPv6 nishon IcmpSendEcho (IPv4-only) ni o'tkazib, ping.exe -6 ga tushadi."""
+    """An IPv6 target skips IcmpSendEcho (IPv4-only) and drops to ping.exe -6."""
     monkeypatch.setattr(ping._platform, "IS_WINDOWS", True)
 
     def boom(*a, **k):
-        raise AssertionError("IPv6 uchun win_icmp_ping (IPv4) chaqirilmasligi kerak")
+        raise AssertionError("win_icmp_ping (IPv4) must not be called for IPv6")
 
     monkeypatch.setattr(ping._platform, "win_icmp_ping", boom)
 
@@ -386,14 +388,14 @@ async def test_win_ping_ipv6_skips_icmpsendecho(monkeypatch):
 
 
 async def test_ping_once_windows_icmpsendecho_branch(monkeypatch):
-    """ping_once Windows'da IcmpSendEcho natijasidan PingResult yig'adi."""
+    """On Windows ping_once builds a PingResult out of the IcmpSendEcho result."""
     monkeypatch.setattr(ping._platform, "IS_WINDOWS", True)
     monkeypatch.setattr(
         ping._platform, "win_icmp_ping", lambda *a, **k: (True, [10.0, 20.0, 30.0], 0.0)
     )
 
     async def boom(*a, **k):
-        raise AssertionError("icmplib async_ping Windows'da chaqirilmasligi kerak")
+        raise AssertionError("icmplib async_ping must not be called on Windows")
 
     monkeypatch.setattr(ping, "async_ping", boom)
     r = await ping_once("8.8.8.8", label="Google")
@@ -404,14 +406,14 @@ async def test_ping_once_windows_icmpsendecho_branch(monkeypatch):
     assert r.max_rtt == 30.0
 
 
-# --- konstantalar -----------------------------------------------------------
+# --- constants --------------------------------------------------------------
 
 
 def test_default_targets_are_valid_ipv4():
     import ipaddress
 
     for addr in DEFAULT_GLOBAL_TARGETS.values():
-        ipaddress.IPv4Address(addr)  # noto'g'ri bo'lsa ValueError
+        ipaddress.IPv4Address(addr)  # raises ValueError if it is invalid
 
 
 def test_default_targets_v6_are_valid_ipv6():

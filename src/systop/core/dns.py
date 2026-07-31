@@ -1,11 +1,11 @@
-"""DNS diagnostika — nom resolve qilish + DNS serverlar latency'sini taqqoslash.
+"""DNS diagnostics — name resolution + comparing the latency of DNS servers.
 
-Qo'shimcha bog'liqliksiz: stdlib `socket` bilan tizim resolverdan A/AAAA
-yozuvlarini olamiz, `subprocess` orqali `dig` (yoki `nslookup`) bilan aniq DNS
-serverlarga (8.8.8.8, 1.1.1.1, ...) so'rov yuborib javob vaqtini o'lchaymiz.
+No extra dependencies: the A/AAAA records come from the system resolver via the
+stdlib `socket`, while `subprocess` runs `dig` (or `nslookup`) against specific
+DNS servers (8.8.8.8, 1.1.1.1, ...) so their response time can be measured.
 
-`dig` mavjud bo'lmasa, har bir server uchun latency'ni o'lchab bo'lmaydi,
-ammo tizim resolveri orqali asosiy resolve baribir ishlaydi.
+If `dig` is unavailable the per-server latency cannot be measured, but the basic
+resolution through the system resolver still works.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from pathlib import Path
 
 from systop.core import _platform
 
-# Taqqoslanadigan ommaviy DNS serverlar.
+# The public DNS servers we compare against.
 PUBLIC_RESOLVERS: dict[str, str] = {
     "Google": "8.8.8.8",
     "Cloudflare": "1.1.1.1",
@@ -34,34 +34,34 @@ _NSLOOKUP_ADDR_RE = re.compile(r"^Address:\s*([0-9a-fA-F.:]+)", re.MULTILINE)
 
 # macOS `scutil --dns`: "  nameserver[0] : 192.168.10.1"
 _SCUTIL_NS_RE = re.compile(r"^\s*nameserver\[\d+\]\s*:\s*(\S+)", re.MULTILINE)
-# Windows `ipconfig /all` — yorliq TILGA BOG'LIQ:
-#   inglizcha: "   DNS Servers . . . . . . . . . . . : 192.168.1.1"
-#   ruscha:    "   DNS-серверы. . . . . . . . . . . : 192.168.1.1"
-#   nemischa:  "   DNS-Server  . . . . . . . . . . . : 192.168.1.1"
+# Windows `ipconfig /all` — THE LABEL DEPENDS ON THE LANGUAGE:
+#   English: "   DNS Servers . . . . . . . . . . . : 192.168.1.1"
+#   Russian: "   DNS-серверы. . . . . . . . . . . : 192.168.1.1"
+#   German:  "   DNS-Server  . . . . . . . . . . . : 192.168.1.1"
 #
-# Shuning uchun "DNS Servers" ni QIDIRMAYMIZ. Yorliqda `DNS` bo'lsa kifoya,
-# qolganini QIYMAT SHAKLI hal qiladi (IP bo'lsa oladi). `DNS-суффикс` /
-# `DNS Suffix` qatorlari tabiiy ravishda tushib qoladi — ularning qiymati
-# IP emas.
+# That is why we DO NOT SEARCH for "DNS Servers". It is enough for the label to
+# contain `DNS`; the rest is decided by THE SHAPE OF THE VALUE (it is taken when
+# it is an IP). `DNS-суффикс` / `DNS Suffix` lines drop out naturally — their
+# value is not an IP.
 _IPCONFIG_DNS_RE = re.compile(r"^\s*[^:]*DNS[^:]*:\s*(\S*)\s*$", re.IGNORECASE)
 
 
 # --------------------------------------------------------------------------- #
-# Tizim resolverlarini aniqlash — SOF parserlar + yupqa async qobiq
+# Detecting the system resolvers — pure parsers + a thin async shell
 # --------------------------------------------------------------------------- #
 #
-# Nima uchun kerak: `doctor` ilgari faqat OMMAVIY serverlarni (8.8.8.8,
-# 1.1.1.1...) sinardi. Korporativ tarmoqda tashqi 53-port ko'pincha ataylab
-# yopiq bo'ladi — natijada sog'lom tarmoqda "Barcha DNS serverlar javob
-# bermayapti / Firewall UDP/53 ni tekshiring" degan YOLG'ON xulosa va exit 2
-# chiqardi. Aslida mashina o'zining ichki resolveridan bemalol foydalanadi.
+# Why it is needed: `doctor` used to test only the PUBLIC servers (8.8.8.8,
+# 1.1.1.1...). On a corporate network outbound port 53 is often closed
+# deliberately — so on a healthy network it produced the FALSE verdict "No DNS
+# server is responding / check UDP/53 on the firewall" and exit 2. In reality
+# the machine uses its own internal resolver perfectly happily.
 #
-# Endi avval mashina HAQIQATDA ishlatayotgan resolver so'raladi; ommaviylar
-# faqat TAQQOSLASH guruhi bo'lib qoladi.
+# Now the resolver the machine ACTUALLY uses is asked first; the public ones are
+# left as nothing more than a COMPARISON group.
 
 
 def _is_ip(value: str) -> bool:
-    """Satr IP manzilmi (zona qo'shimchasi bilan ham) — SOF funksiya."""
+    """True when the string is an IP address (a zone suffix is fine) — a pure function."""
     try:
         ipaddress.ip_address(value.strip().split("%")[0])
     except ValueError:
@@ -70,7 +70,7 @@ def _is_ip(value: str) -> bool:
 
 
 def _dedupe_ips(values: list[str]) -> list[str]:
-    """Takrorlarni olib tashlaydi, tartibni saqlaydi, IP bo'lmaganini tashlaydi."""
+    """Removes duplicates, preserves the order, drops anything that is not an IP."""
     out: list[str] = []
     for v in values:
         bare = v.strip().strip(",").split("%")[0]
@@ -86,15 +86,14 @@ def _dedupe_ips(values: list[str]) -> list[str]:
 
 
 def parse_resolv_conf(text: str) -> list[str]:
-    """`/etc/resolv.conf` dan `nameserver` qatorlarini oladi — SOF funksiya.
+    """Takes the `nameserver` lines out of `/etc/resolv.conf` — a pure function.
 
-    Linux uchun asosiy manba. **macOS'da bu fayl aldamchi** — u yerda
-    "This file is not consulted for DNS hostname resolution" deb yozilgan
-    va odatda `127.0.0.1` yoki umuman hech nima turadi. Shuning uchun
-    macOS'da `parse_scutil_dns` ustun keladi.
+    The primary source on Linux. **On macOS this file is misleading** — it says
+    "This file is not consulted for DNS hostname resolution" and usually holds
+    `127.0.0.1`, or nothing at all. That is why `parse_scutil_dns` wins on macOS.
 
-    `systemd-resolved` ishlatilgan Linux'da bu yerda `127.0.0.53` turadi —
-    bu ham to'g'ri javob: mashina haqiqatda o'sha stub'ga murojaat qiladi.
+    On a Linux box running `systemd-resolved` this holds `127.0.0.53` — which is
+    also the right answer: the machine really does talk to that stub.
     """
     out: list[str] = []
     for line in text.splitlines():
@@ -108,43 +107,42 @@ def parse_resolv_conf(text: str) -> list[str]:
 
 
 def parse_scutil_dns(text: str) -> list[str]:
-    """macOS `scutil --dns` dan nameserver'larni oladi — SOF funksiya.
+    """Takes the nameservers out of macOS `scutil --dns` — a pure function.
 
-    Chiqishda `resolver #1`, `resolver #2`... bloklari bo'ladi; bizni faqat
-    `nameserver[N] : IP` qatorlari qiziqtiradi. mDNS (`domain: local`) va
-    teskari-qidiruv bloklarida nameserver bo'lmaydi, shuning uchun ular
-    tabiiy ravishda tushib qoladi.
+    The output holds `resolver #1`, `resolver #2`... blocks; only the
+    `nameserver[N] : IP` lines interest us. The mDNS (`domain: local`) and
+    reverse-lookup blocks carry no nameserver, so they drop out naturally.
 
-    Chiqish ikki marta takrorlanadi ("DNS configuration" va "(for scoped
-    queries)") — takrorlar olib tashlanadi, tartib saqlanadi: birinchi
-    resolver — asosiysi.
+    The output is repeated twice ("DNS configuration" and "(for scoped
+    queries)") — the duplicates are removed and the order is preserved: the
+    first resolver is the primary one.
     """
     return _dedupe_ips(_SCUTIL_NS_RE.findall(text))
 
 
 def parse_ipconfig_all_dns(text: str) -> list[str]:
-    """Windows `ipconfig /all` dan DNS serverlarni oladi — SOF funksiya.
+    """Takes the DNS servers out of Windows `ipconfig /all` — a pure function.
 
-    Format tuzoqli: ikkinchi va keyingi serverlar **yorliqsiz**, faqat
-    bo'shliq bilan surilgan davomiy qatorlarda keladi ::
+    The format is a trap: the second and later servers arrive **without a
+    label**, on continuation lines indented with nothing but whitespace ::
 
         DNS Servers . . . . . . . . . . . : 192.168.1.1
                                             8.8.8.8
                                             fe80::1%12
 
-    Shuning uchun "davomiy qator" ni yorliq yo'qligi bo'yicha emas, satrning
-    o'zi IP manzil ekanligi bo'yicha aniqlaymiz — IPv6 tarkibida ikki nuqta
-    borligi yorliq qidirishni ishonchsiz qiladi.
+    So we identify a "continuation line" not by the absence of a label but by
+    the line itself being an IP address — the colons inside an IPv6 address make
+    looking for a label unreliable.
     """
     out: list[str] = []
     in_dns = False
     for line in text.splitlines():
         m = _IPCONFIG_DNS_RE.match(line)
         if m:
-            # Yorliqda `DNS` bor — lekin bu `DNS-суффикс` ham bo'lishi mumkin.
-            # Faqat qiymati IP bo'lgan qatorni ro'yxat boshi deb olamiz;
-            # aks holda `DNS Suffix` qatoridan keyingi har qanday IP
-            # (masalan `Default Gateway`) noto'g'ri yig'ilib ketardi.
+            # The label contains `DNS` — but this could also be `DNS-суффикс`.
+            # Only a line whose value is an IP is treated as the start of the
+            # list; otherwise every IP following a `DNS Suffix` line (a `Default
+            # Gateway`, say) would be collected by mistake.
             if _is_ip(m.group(1)):
                 in_dns = True
                 out.append(m.group(1))
@@ -155,14 +153,14 @@ def parse_ipconfig_all_dns(text: str) -> list[str]:
             continue
         stripped = line.strip()
         if not _is_ip(stripped):
-            in_dns = False  # yorliqli yangi qator — ro'yxat tugadi
+            in_dns = False  # a new labelled line — the list is over
             continue
         out.append(stripped)
     return _dedupe_ips(out)
 
 
 def _read_resolv_conf() -> str:
-    """`/etc/resolv.conf` ni o'qiydi; yo'q/ruxsatsiz bo'lsa bo'sh satr."""
+    """Reads `/etc/resolv.conf`; an empty string if it is missing/not permitted."""
     try:
         return Path("/etc/resolv.conf").read_text(encoding="utf-8", errors="ignore")
     except OSError:
@@ -170,31 +168,32 @@ def _read_resolv_conf() -> str:
 
 
 async def system_resolvers() -> list[str]:
-    """Mashina HAQIQATDA ishlatayotgan DNS serverlarni qaytaradi.
+    """Returns the DNS servers the machine ACTUALLY uses.
 
-    Har OS uchun eng ishonchli manba:
+    The most reliable source for each OS:
 
-    * **macOS** — `scutil --dns` (yagona to'g'ri manba; resolv.conf aldaydi)
+    * **macOS** — `scutil --dns` (the only correct source; resolv.conf lies)
     * **Windows** — `ipconfig /all`
-    * **Linux** — `/etc/resolv.conf`, u bo'sh bo'lsa `resolvectl status`
+    * **Linux** — `/etc/resolv.conf`, and `resolvectl status` when that is empty
 
-    Hech narsa topilmasa bo'sh ro'yxat — istisno ko'tarilmaydi (config.py
-    bilan bir xil "jim default" qoidasi).
+    If nothing is found, an empty list — no exception is raised (the same
+    "silent default" rule as config.py).
 
-    `dhcp.py` dan OLINMAYDI: DHCP e'lon qilgan server bilan tizim sozlangani
-    boshqa narsa (foydalanuvchi qo'lda o'zgartirgan bo'lishi mumkin), ustiga
-    Windows yo'li `dns` ro'yxatini umuman qaytarmaydi.
+    It is NOT TAKEN from `dhcp.py`: what DHCP announced and what the system is
+    configured with are two different things (the user may have changed it by
+    hand), and on top of that the Windows path does not return a `dns` list at
+    all.
     """
     if _platform.IS_MACOS:
         out = await _platform.run_command(["scutil", "--dns"], timeout=5.0)
         return parse_scutil_dns(out) if out else []
 
     if _platform.IS_WINDOWS:
-        # Avval PowerShell: `Get-DnsClientServerAddress` STRUKTURALI javob
-        # beradi va tilga umuman bog'liq emas. `ipconfig` yorlig'i esa
-        # lokalizatsiya qilinadi (`DNS-серверы`, `DNS-Server`) — v0.3.2 da
-        # ping'da xuddi shu sabab RUS Windows'da hamma nishon "o'lik"
-        # ko'rinardi. Bir xil xatoni ikkinchi marta qilmaymiz.
+        # PowerShell first: `Get-DnsClientServerAddress` gives a STRUCTURED
+        # answer and does not depend on the language at all. The `ipconfig`
+        # label, by contrast, is localised (`DNS-серверы`, `DNS-Server`) — in
+        # v0.3.2 exactly the same cause made every target look "dead" in ping on
+        # a RUSSIAN Windows. We do not make the same mistake a second time.
         out = await _platform.run_command(
             [
                 "powershell",
@@ -209,12 +208,12 @@ async def system_resolvers() -> list[str]:
         found = _dedupe_ips(out.splitlines()) if out else []
         if found:
             return found
-        # PowerShell yo'q/cheklangan bo'lsa — matn yo'li (tildan mustaqil parse).
+        # PowerShell missing/restricted — the text path (a language-independent parse).
         out = await _platform.run_command(["ipconfig", "/all"], timeout=8.0)
         return parse_ipconfig_all_dns(out) if out else []
 
-    # Fayl o'qish alohida oqimda: event loop'ni bloklamaslik uchun (NFS/autofs
-    # ustidagi /etc sekin javob berishi mumkin).
+    # The file is read on a separate thread so the event loop is never blocked
+    # (an /etc sitting on NFS/autofs can be slow to answer).
     found = parse_resolv_conf(await asyncio.to_thread(_read_resolv_conf))
     if found:
         return found
@@ -232,7 +231,7 @@ async def system_resolvers() -> list[str]:
 
 @dataclass(slots=True)
 class ResolverResult:
-    """Bitta DNS server bo'yicha so'rov natijasi."""
+    """The result of querying a single DNS server."""
 
     name: str
     server: str
@@ -241,42 +240,43 @@ class ResolverResult:
     addresses: list[str] = field(default_factory=list)
     error: str | None = None
     is_system: bool = False
-    """Bu server mashinaning O'ZI ishlatayotgan resolvermi.
+    """Whether this server is the resolver the machine itself uses.
 
-    Baholashda hal qiluvchi farq: ommaviy serverga yetib bo'lmasligi ko'p
-    tarmoqda **ataylab** (tashqi 53-port yopiq), tizim resolveriga yetib
-    bo'lmasligi esa har doim haqiqiy nosozlik.
+    A decisive difference when judging: on many networks a public server being
+    unreachable is **deliberate** (outbound port 53 is closed), whereas the
+    system resolver being unreachable is always a genuine fault.
     """
 
 
 @dataclass(slots=True)
 class DnsResult:
-    """Nom uchun to'liq DNS diagnostika natijasi."""
+    """The full DNS diagnostic result for a name."""
 
     name: str
     system_addresses: list[str] = field(default_factory=list)
     aaaa_addresses: list[str] = field(default_factory=list)
     system_error: str | None = None
     resolvers: list[ResolverResult] = field(default_factory=list)
-    tool: str | None = None  # ishlatilgan tashqi vosita: "dig" | "nslookup" | None
+    tool: str | None = None  # the external tool used: "dig" | "nslookup" | None
 
 
 async def _system_resolve(name: str) -> tuple[list[str], str | None]:
-    """Tizim resolveri orqali A/AAAA manzillarni oladi (xato o'zbekcha)."""
+    """Gets the A/AAAA addresses through the system resolver (error text on failure)."""
     loop = asyncio.get_running_loop()
     try:
         infos = await loop.getaddrinfo(name, None, proto=socket.IPPROTO_TCP)
     except socket.gaierror:
-        return [], f"'{name}' nomi resolve bo'lmadi (NXDOMAIN yoki DNS yo'q)."
+        return [], f"The name '{name}' did not resolve (NXDOMAIN, or no DNS)."
     except OSError as exc:
-        return [], f"Resolve xatosi: {exc}"
+        return [], f"Resolution error: {exc}"
     seen: list[str] = []
     for info in infos:
         addr = info[4][0]
-        # `::ffff:1.2.3.4` — IPv4-mapped IPv6. Bu HAQIQIY AAAA yozuvi EMAS:
-        # tarmoqda global IPv6 bo'lmasa macOS AAAA'ni filtrlab, o'rniga shu
-        # shaklni beradi. Diagnostikada uni IPv6 deb ko'rsatish chalg'ituvchi,
-        # shuning uchun tashlanadi — haqiqiy AAAA `aaaa_addresses`da (dig orqali).
+        # `::ffff:1.2.3.4` — an IPv4-mapped IPv6 address. This is NOT a REAL
+        # AAAA record: when the network has no global IPv6, macOS filters the
+        # AAAA out and hands back this shape instead. Presenting it as IPv6 in a
+        # diagnostic is misleading, so it is dropped — the real AAAA lives in
+        # `aaaa_addresses` (fetched via dig).
         if addr.startswith("::ffff:"):
             continue
         if addr not in seen:
@@ -285,14 +285,13 @@ async def _system_resolve(name: str) -> tuple[list[str], str | None]:
 
 
 async def _query_aaaa(name: str, tool: str | None, timeout: float = 3.0) -> list[str]:
-    """Haqiqiy AAAA yozuvlarini DNS'dan bevosita oladi (dig/nslookup orqali).
+    """Fetches the real AAAA records straight from DNS (via dig/nslookup).
 
-    Nima uchun `getaddrinfo` emas: OS'da global IPv6 marshruti bo'lmasa
-    `getaddrinfo` AAAA'ni butunlay yashiradi (RFC 6724 manzil tanlash). Ammo
-    diagnostika tooli DNS **nima deyotganini** ko'rsatishi kerak, OS nimani
-    ishlatishga qaror qilganini emas.
+    Why not `getaddrinfo`: when the OS has no global IPv6 route, `getaddrinfo`
+    hides the AAAA entirely (RFC 6724 address selection). But a diagnostic tool
+    has to show **what DNS says**, not what the OS decided to use.
 
-    Tool topilmasa yoki xato bo'lsa bo'sh ro'yxat (istisno yo'q).
+    If the tool is missing, or on any error, an empty list (no exception).
     """
     if not tool:
         return []
@@ -329,7 +328,7 @@ def _parse_dig(out: str) -> list[str]:
 
 
 def _parse_nslookup(out: str) -> list[str]:
-    # Birinchi "Address:" qatori odatda serverning o'zi; qolganlari javob.
+    # The first "Address:" line is usually the server itself; the rest are the answer.
     addrs = _NSLOOKUP_ADDR_RE.findall(out)
     return addrs[1:] if len(addrs) > 1 else []
 
@@ -337,7 +336,7 @@ def _parse_nslookup(out: str) -> list[str]:
 async def _query_resolver(
     name: str, server: str, tool: str, timeout: float, label: str | None = None
 ) -> ResolverResult:
-    """Aniq DNS serverga so'rov yuborib, javob vaqtini o'lchaydi."""
+    """Queries a specific DNS server and measures the response time."""
     label = label or next((k for k, v in PUBLIC_RESOLVERS.items() if v == server), server)
     if tool == "dig":
         cmd = [
@@ -361,23 +360,23 @@ async def _query_resolver(
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout + 1.0)
     except TimeoutError:
-        return ResolverResult(name=label, server=server, error="vaqt tugadi (timeout)")
+        return ResolverResult(name=label, server=server, error="timed out")
     except (OSError, ValueError) as exc:
         return ResolverResult(name=label, server=server, error=str(exc))
 
     rtt = (time.perf_counter() - start) * 1000.0
-    # Windows nslookup OEM codepage'da yozadi (RUS = cp866) -> decode_console.
+    # Windows nslookup writes in the OEM codepage (RU = cp866) -> decode_console.
     out = _platform.decode_console(stdout)
     addrs = _parse_dig(out) if tool == "dig" else _parse_nslookup(out)
     if not addrs:
         return ResolverResult(
-            name=label, server=server, rtt_ms=rtt, error="javob bo'sh (yozuv topilmadi)"
+            name=label, server=server, rtt_ms=rtt, error="empty answer (no record found)"
         )
     return ResolverResult(name=label, server=server, ok=True, rtt_ms=rtt, addresses=addrs)
 
 
 def _pick_tool() -> str | None:
-    """Mavjud DNS so'rov vositasini tanlaydi: dig > nslookup > yo'q."""
+    """Picks an available DNS query tool: dig > nslookup > none."""
     if shutil.which("dig"):
         return "dig"
     if shutil.which("nslookup"):
@@ -391,39 +390,39 @@ async def diagnose_dns(
     timeout: float = 3.0,
     include_system: bool = True,
 ) -> DnsResult:
-    """Nomni tizim resolveri bilan resolve qiladi va DNS serverlarni taqqoslaydi.
+    """Resolves the name with the system resolver and compares the DNS servers.
 
-    Argumentlar:
-        name — resolve qilinadigan domen nomi.
-        resolvers — {nom: server_ip} ko'rinishidagi taqqoslanadigan DNS serverlar
-            lug'ati. None bo'lsa standart :data:`PUBLIC_RESOLVERS` ishlatiladi.
-            Foydalanuvchi o'z serverlarini berishi mumkin (masalan config fayldan
-            yoki korporativ ichki resolverlar) — funksiya tayyor lug'atni qabul
-            qiladi; faylni o'qish Layer 2 (CLI/TUI) zimmasida.
-        timeout — har bir server so'rovi uchun maksimal kutish (soniya).
+    Arguments:
+        name — the domain name to resolve.
+        resolvers — the DNS servers to compare, as a `{name: server_ip}` dict.
+            When None the standard :data:`PUBLIC_RESOLVERS` is used. The user may
+            supply their own servers (from a config file, say, or corporate
+            internal resolvers) — the function accepts a ready-made dict; reading
+            the file is Layer 2's (CLI/TUI) job.
+        timeout — the maximum wait for each server query (seconds).
 
-    Agar `dig`/`nslookup` topilmasa, faqat tizim resolve qaytariladi
-    (`resolvers` ro'yxati bo'sh bo'ladi, `tool` esa None).
+    If `dig`/`nslookup` cannot be found, only the system resolution is returned
+    (the `resolvers` list is empty and `tool` is None).
     """
     servers = dict(resolvers) if resolvers else dict(PUBLIC_RESOLVERS)
     sys_addrs, sys_err = await _system_resolve(name)
 
-    # Tizim resolverlarini ro'yxat BOSHIGA qo'shamiz. Ular bo'lmasa `doctor`
-    # faqat ommaviy serverlarni ko'radi va tashqi 53-porti yopiq (mutlaqo
-    # normal) korporativ tarmoqni "DNS butunlay o'lik" deb e'lon qiladi.
+    # The system resolvers go at the HEAD of the list. Without them `doctor`
+    # only sees the public servers and declares a corporate network whose
+    # outbound port 53 is closed (entirely normal) to be "DNS completely dead".
     system_ips: set[str] = set()
     if include_system:
         try:
             found = await system_resolvers()
-        except Exception:  # noqa: BLE001 — aniqlash yiqilsa ommaviylar bilan davom
+        except Exception:  # noqa: BLE001 — if detection fails, carry on with the public ones
             found = []
         already = set(servers.values())
         ordered: dict[str, str] = {}
         for ip in found:
             system_ips.add(ip)
             if ip in already:
-                continue  # foydalanuvchi ro'yxatida allaqachon bor — ikki marta so'ramaymiz
-            ordered[f"Tizim ({ip})"] = ip
+                continue  # already in the user's list — we do not ask twice
+            ordered[f"System ({ip})"] = ip
         servers = {**ordered, **servers}
 
     tool = _pick_tool()
@@ -433,7 +432,7 @@ async def diagnose_dns(
         tasks = [
             _query_resolver(name, srv, tool, timeout, label=lbl) for lbl, srv in servers.items()
         ]
-        # AAAA so'rovi resolverlar bilan parallel ketadi — qo'shimcha vaqt olmaydi.
+        # The AAAA query runs in parallel with the resolvers — it costs no extra time.
         resolver_results_and_aaaa = await asyncio.gather(
             asyncio.gather(*tasks), _query_aaaa(name, tool, timeout)
         )

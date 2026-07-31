@@ -1,18 +1,19 @@
-"""SNTP mijoz — soat siljishini (clock skew) aniqlash. Root kerak emas.
+"""SNTP client — detecting clock skew. No root required.
 
-Nima uchun sysadmin uchun muhim: soat siljishi juda ko'p narsani jimgina
-buzadi va sababi hech qayerda "vaqt" deb yozilmaydi —
+Why this matters for a sysadmin: clock skew silently breaks a great many
+things and the cause is never written down anywhere as "time" —
 
-  * **Kerberos/AD** 5 daqiqadan katta siljishda autentifikatsiyani rad etadi
-    ("clock skew too great") — domenga kirish ishlamaydi;
-  * **TLS** sertifikat "hali kuchga kirmagan" yoki "muddati tugagan" deb
-    ko'rinadi, brauzer ogohlantiradi;
-  * **loglar** turli serverlarda mos kelmaydi — incident tekshirish imkonsiz;
-  * **TOTP/2FA** kodlari rad etiladi.
+  * **Kerberos/AD** rejects authentication once the skew exceeds 5 minutes
+    ("clock skew too great") — domain logon stops working;
+  * **TLS** certificates look "not yet valid" or "expired", and the browser
+    warns about them;
+  * **logs** on different servers no longer line up — incident investigation
+    becomes impossible;
+  * **TOTP/2FA** codes are rejected.
 
-Faqat stdlib: UDP/123 ga 48-baytli SNTP so'rovi yuboriladi (mijoz tomoni
-privileged port talab qilmaydi). Server javobidan RFC 4330 formulasi bilan
-offset va round-trip delay hisoblanadi.
+Stdlib only: a 48-byte SNTP request is sent to UDP/123 (the client side does
+not need a privileged port). Offset and round-trip delay are computed from the
+server's reply with the RFC 4330 formula.
 """
 
 from __future__ import annotations
@@ -24,18 +25,18 @@ import struct
 import time
 from dataclasses import dataclass, field
 
-# NTP epoch (1900-01-01) va Unix epoch (1970-01-01) orasidagi soniyalar.
+# Seconds between the NTP epoch (1900-01-01) and the Unix epoch (1970-01-01).
 NTP_UNIX_DELTA = 2_208_988_800
 
-# Standart tekshiriladigan serverlar. Lokal domen serverlari config bilan
-# beriladi (AD muhitida domen kontrolleri NTP manbasi bo'ladi).
+# Servers checked by default. Local domain servers are supplied through the
+# config (in an AD environment the domain controller is the NTP source).
 DEFAULT_NTP_SERVERS: dict[str, str] = {
     "Cloudflare": "time.cloudflare.com",
     "Google": "time.google.com",
     "pool.ntp.org": "pool.ntp.org",
 }
 
-# Amaliy chegaralar (Kerberos 300s da yiqiladi, shuning uchun ancha oldin ogohlantiramiz).
+# Practical thresholds (Kerberos falls over at 300s, so we warn well before).
 SKEW_WARN_S = 1.0
 SKEW_HIGH_S = 30.0
 SKEW_CRITICAL_S = 300.0
@@ -43,12 +44,12 @@ SKEW_CRITICAL_S = 300.0
 
 @dataclass(slots=True)
 class NtpResult:
-    """Bitta NTP serveridan olingan natija."""
+    """The result obtained from a single NTP server."""
 
     server: str
     label: str = ""
     ok: bool = False
-    offset_s: float = 0.0  # mahalliy soat serverdan qancha farq qiladi (+ = oldinda)
+    offset_s: float = 0.0  # how far the local clock differs from the server (+ = ahead)
     delay_ms: float = 0.0  # round-trip
     stratum: int = 0
     error: str | None = None
@@ -59,7 +60,7 @@ class NtpResult:
 
     @property
     def severity(self) -> str:
-        """`ok` | `warn` | `high` | `critical` — siljish darajasi."""
+        """`ok` | `warn` | `high` | `critical` — the degree of skew."""
         a = abs(self.offset_s)
         if not self.ok:
             return "warn"
@@ -74,7 +75,7 @@ class NtpResult:
 
 @dataclass(slots=True)
 class NtpReport:
-    """Barcha serverlar bo'yicha jamlanma."""
+    """Summary across all servers."""
 
     results: list[NtpResult] = field(default_factory=list)
 
@@ -84,10 +85,10 @@ class NtpReport:
 
     @property
     def median_offset_s(self) -> float | None:
-        """Javob berganlar bo'yicha mediana siljish.
+        """The median offset over the servers that responded.
 
-        Mediana ataylab: bitta server yolg'on vaqt bersa o'rtacha buziladi,
-        mediana esa bardosh beradi.
+        The median is deliberate: if a single server reports a bogus time the
+        mean is ruined, whereas the median withstands it.
         """
         vals = sorted(r.offset_s for r in self.responded)
         if not vals:
@@ -106,17 +107,17 @@ class NtpReport:
 
 
 def build_request() -> tuple[bytes, bytes]:
-    """48-baytli SNTP client so'rovi — `(paket, nonce)` qaytaradi.
+    """A 48-byte SNTP client request — returns `(packet, nonce)`.
 
-    Nonce — Transmit Timestamp maydoniga (40:48) yoziladigan 8 tasodifiy bayt.
-    Server uni javobning **Originate Timestamp** maydonida (24:32) aynan
-    qaytaradi (RFC 4330). Bu bizga javobning HAQIQATAN shu so'rovga tegishli
-    ekanini tekshirish imkonini beradi.
+    The nonce is 8 random bytes written into the Transmit Timestamp field
+    (40:48). The server echoes them back verbatim in the **Originate
+    Timestamp** field (24:32) of its reply (RFC 4330). That lets us verify the
+    reply REALLY does belong to this request.
 
-    Ilgali bu maydon nol edi — ya'ni tekshirish uchun hech narsa yo'q edi va
-    ephemeral portga tushgan har qanday begona UDP datagrammasi "server
-    javobi" deb qabul qilinardi (o'lchovda `offset=-400s`, `severity=critical`
-    berardi).
+    This field used to be zero — meaning there was nothing to check against,
+    and any stray UDP datagram that landed on the ephemeral port was accepted
+    as "the server's reply" (a measurement reported `offset=-400s`,
+    `severity=critical`).
     """
     packet = bytearray(48)
     packet[0] = 0x23  # 00 100 011 -> LI=0, VN=4, Mode=3 (client)
@@ -125,32 +126,32 @@ def build_request() -> tuple[bytes, bytes]:
     return bytes(packet), nonce
 
 
-# stratum=0 bo'lganda Reference Identifier "kiss code" bo'ladi (RFC 4330 §8).
+# When stratum=0 the Reference Identifier holds a "kiss code" (RFC 4330 §8).
 KISS_CODES: dict[str, str] = {
-    "DENY": "server xizmat ko'rsatishni rad etdi (DENY)",
-    "RSTR": "kirish cheklangan (RSTR)",
-    "RATE": "so'rovlar juda tez-tez (RATE) — intervalni oshiring",
+    "DENY": "the server refused to serve us (DENY)",
+    "RSTR": "access restricted (RSTR)",
+    "RATE": "requests are too frequent (RATE) — increase the interval",
     "ACST": "anycast server",
-    "AUTH": "autentifikatsiya xatosi (AUTH)",
-    "INIT": "server hali sinxronlanmagan (INIT)",
-    "STEP": "server soatini sakrash bilan to'g'rilamoqda (STEP)",
+    "AUTH": "authentication failure (AUTH)",
+    "INIT": "the server is not synchronised yet (INIT)",
+    "STEP": "the server is stepping its clock (STEP)",
 }
 
-# Delay konverti uchun bo'shashish: soat granularligi va planlashtirish
-# kechikishi tufayli kichik manfiy qiymat normal.
+# Slack for the delay envelope: a small negative value is normal because of
+# clock granularity and scheduling latency.
 _DELAY_SLACK_S = 0.05
 
 
 def _ntp_to_unix(seconds: int, fraction: int) -> float:
-    """NTP 32.32 fixed-point timestamp'ni Unix vaqtiga o'giradi — SOF funksiya.
+    """Convert an NTP 32.32 fixed-point timestamp to Unix time — pure function.
 
-    RFC 4330 §3 "era" qoidasi: agar 0-bit (eng katta bit) o'rnatilgan bo'lsa
-    vaqt 1968-2036 oralig'ida va 1900-yildan sanaladi; o'rnatilmagan bo'lsa
-    2036-2104 oralig'ida va 2036-yil 7-fevraldan sanaladi.
+    The RFC 4330 §3 "era" rule: if bit 0 (the most significant bit) is set the
+    time lies between 1968 and 2036 and is counted from 1900; if it is not set
+    the time lies between 2036 and 2104 and is counted from 7 February 2036.
 
-    Bu shartsiz ayirish bilan aralashtirilsa, 2036-dan keyingi (yoki buzuq)
-    timestamp **manfiy** Unix vaqtiga aylanib, `offset` ni ±2e9 soniyaga
-    olib chiqadi.
+    Mixing this up with an unconditional subtraction turns a post-2036 (or
+    corrupt) timestamp into a **negative** Unix time, which throws `offset`
+    off by ±2e9 seconds.
     """
     if seconds >= 0x8000_0000:
         base = seconds - NTP_UNIX_DELTA
@@ -165,112 +166,118 @@ def parse_response(
     t4: float,
     nonce: bytes | None = None,
 ) -> tuple[float, float, int]:
-    """SNTP javobidan (offset_s, delay_s, stratum) hisoblaydi — SOF funksiya.
+    """Compute (offset_s, delay_s, stratum) from an SNTP reply — pure function.
 
     RFC 4330:
         offset = ((T2 - T1) + (T3 - T4)) / 2
         delay  = (T4 - T1) - (T3 - T2)
-    Bu yerda T1/T4 — lokal jo'natish/qabul vaqti, T2/T3 — server vaqtlari.
-    Qaytarilgan `offset` **serverga nisbatan lokal soat xatosi**.
+    Here T1/T4 are the local send/receive times and T2/T3 are the server's
+    times. The returned `offset` is **the local clock error relative to the
+    server**.
 
-    **Validatsiya ataylab qat'iy.** Bu modul "soat to'g'ri" degan xulosani
-    beradi — noto'g'ri xulosa soat noto'g'riligidan xavfliroq (sysadmin
-    tekshirishni to'xtatadi). Shuning uchun quyidagilar rad etiladi:
+    **Validation is deliberately strict.** This module produces the conclusion
+    "the clock is correct" — and a wrong conclusion is more dangerous than a
+    wrong clock (the sysadmin stops looking). The following are therefore
+    rejected:
 
-    * uzunlik < 48;
-    * `Mode != 4` (server javobi emas — mijoz yoki broadcast paketi);
-    * `LI == 3` (alarm — server o'zi sinxronlanmagan);
-    * `stratum == 0` (Kiss-of-Death; sabab kiss kodidan o'qiladi);
-    * `stratum > 15` (16 = sinxronlanmagan, undan yuqorisi yaroqsiz);
-    * nonce mos kelmasa (javob boshqa so'rovga tegishli yoki soxta);
-    * T2 **yoki** T3 nol (yarim bo'sh paket — ilgari faqat IKKALASI nol
-      bo'lganda rad etilardi);
-    * `delay` sababiyat konvertidan chiqsa (0 dan kichik yoki lokal o'lchangan
-      to'liq round-trip'dan katta) — bu paket boshqa vaqtga tegishli degani.
+    * length < 48;
+    * `Mode != 4` (not a server reply — a client or broadcast packet);
+    * `LI == 3` (alarm — the server itself is unsynchronised);
+    * `stratum == 0` (Kiss-of-Death; the reason is read from the kiss code);
+    * `stratum > 15` (16 = unsynchronised, anything above that is invalid);
+    * a nonce mismatch (the reply belongs to another request, or is forged);
+    * T2 **or** T3 zero (a half-empty packet — this used to be rejected only
+      when BOTH were zero);
+    * a `delay` outside the causality envelope (below 0, or greater than the
+      full round-trip measured locally) — that means the packet belongs to a
+      different point in time.
 
-    Xato paket bo'lsa `ValueError` (chaqiruvchi uni `error` matniga aylantiradi).
+    A bad packet raises `ValueError` (the caller turns it into `error` text).
     """
     if len(data) < 48:
-        raise ValueError(f"SNTP javobi qisqa: {len(data)} bayt (48 kerak)")
+        raise ValueError(f"SNTP reply too short: {len(data)} bytes (48 required)")
 
     li = (data[0] >> 6) & 0x3
     mode = data[0] & 0x7
     stratum = data[1]
 
     if mode != 4:
-        raise ValueError(f"SNTP: server javobi emas (Mode={mode}, 4 kutilgan)")
+        raise ValueError(f"SNTP: not a server reply (Mode={mode}, 4 expected)")
     if li == 3:
-        raise ValueError("SNTP: server sinxronlanmagan (LI=3, alarm)")
+        raise ValueError("SNTP: the server is not synchronised (LI=3, alarm)")
     if stratum == 0:
         kiss = data[12:16].decode("ascii", "replace").strip("\x00 ")
-        raise ValueError(f"SNTP Kiss-of-Death: {KISS_CODES.get(kiss, kiss or 'noma`lum')}")
+        raise ValueError(f"SNTP Kiss-of-Death: {KISS_CODES.get(kiss, kiss or 'unknown')}")
     if stratum > 15:
-        raise ValueError(f"SNTP: yaroqsiz stratum {stratum} (1-15 kutilgan)")
+        raise ValueError(f"SNTP: invalid stratum {stratum} (1-15 expected)")
 
     if nonce is not None and data[24:32] != nonce:
-        raise ValueError("SNTP: javob so'rovga mos kelmadi (originate timestamp boshqa)")
+        raise ValueError(
+            "SNTP: the reply does not match the request (different originate timestamp)"
+        )
 
-    # Receive (T2) va Transmit (T3) timestamp'lar: 32.32 fixed point.
+    # Receive (T2) and Transmit (T3) timestamps: 32.32 fixed point.
     t2_int, t2_frac, t3_int, t3_frac = struct.unpack("!IIII", data[32:48])
-    # `or` — ATAYLAB. `and` bo'lganda yarim to'ldirilgan paket o'tib ketardi va
-    # nol timestamp 1900-yilga aylanib ±2e9 soniyalik "siljish" berardi.
+    # `or` is DELIBERATE. With `and`, a half-filled packet slipped through and
+    # the zero timestamp turned into the year 1900, producing a "skew" of
+    # ±2e9 seconds.
     if t2_int == 0 or t3_int == 0:
-        raise ValueError("SNTP javobida timestamp yo'q (bo'sh yoki buzuq paket)")
+        raise ValueError("no timestamp in the SNTP reply (empty or corrupt packet)")
 
     t2 = _ntp_to_unix(t2_int, t2_frac)
     t3 = _ntp_to_unix(t3_int, t3_frac)
     offset = ((t2 - t1) + (t3 - t4)) / 2.0
     delay = (t4 - t1) - (t3 - t2)
 
-    # Sababiyat konverti — XOM `delay` bo'yicha, `max(delay, 0)` dan OLDIN.
-    # Aks holda manfiy delay jimgina nolga aylanib, buzuq paket "mukammal
-    # o'lchov" bo'lib ko'rinardi.
+    # The causality envelope is applied to the RAW `delay`, BEFORE
+    # `max(delay, 0)`. Otherwise a negative delay silently became zero and a
+    # corrupt packet looked like a "perfect measurement".
     elapsed = t4 - t1
     if delay < -_DELAY_SLACK_S or delay > elapsed + _DELAY_SLACK_S:
         raise ValueError(
-            f"SNTP: javob vaqtlari mantiqsiz (delay {delay:.3f}s, "
-            f"lokal round-trip {elapsed:.3f}s) — paket shu so'rovga tegishli emas"
+            f"SNTP: the reply timings are implausible (delay {delay:.3f}s, "
+            f"local round-trip {elapsed:.3f}s) — the packet does not belong to this request"
         )
     return offset, max(delay, 0.0), stratum
 
 
 async def query_server(server: str, timeout: float = 3.0, label: str = "") -> NtpResult:
-    """Bitta NTP serverdan vaqt so'raydi. Istisno ko'tarmaydi."""
+    """Ask a single NTP server for the time. Never raises."""
     res = NtpResult(server=server, label=label or server)
     loop = asyncio.get_running_loop()
     sock = None
     try:
         infos = await loop.getaddrinfo(server, 123, type=socket.SOCK_DGRAM)
         if not infos:
-            res.error = "resolve bo'lmadi"
+            res.error = "could not resolve"
             return res
         family, socktype, proto, _, addr = infos[0]
         sock = socket.socket(family, socktype, proto)
         sock.setblocking(False)
-        # `connect()` SHART: usiz `sock_recv` istalgan manbadan kelgan
-        # datagrammani qabul qiladi va biz uning kimdan kelganini ko'rmaymiz.
-        # Ulangandan keyin yadro boshqa peer'lardan kelganini o'zi tashlaydi.
-        # UDP'da bu paket yubormaydi — faqat socketga peer biriktiradi.
+        # `connect()` is REQUIRED: without it `sock_recv` accepts a datagram
+        # from any source and we cannot see who sent it. Once connected, the
+        # kernel discards anything arriving from other peers on its own.
+        # For UDP this sends no packet — it merely binds a peer to the socket.
         sock.connect(addr)
         packet, nonce = build_request()
 
         t1 = time.time()
-        # `sock_sendto` EMAS: ulangan UDP socketda u `EISCONN` bilan yiqiladi.
+        # NOT `sock_sendto`: on a connected UDP socket that fails with `EISCONN`.
         await loop.sock_sendall(sock, packet)
         data = await asyncio.wait_for(loop.sock_recv(sock, 512), timeout=timeout)
         t4 = time.time()
 
         offset, delay, stratum = parse_response(data, t1, t4, nonce=nonce)
-        # Belgini foydalanuvchi tushunadigan yo'nalishga o'giramiz:
-        # musbat => LOKAL soat serverdan oldinda.
+        # Flip the sign into the direction a user understands:
+        # positive => the LOCAL clock is ahead of the server.
         res.offset_s = -offset
         res.delay_ms = delay * 1000.0
         res.stratum = stratum
         res.ok = True
     except TimeoutError:
-        res.error = f"javob kelmadi ({timeout:.0f}s)"
+        res.error = f"no reply ({timeout:.0f}s)"
     except (OSError, socket.gaierror) as exc:
-        res.error = f"tarmoq xatosi: {exc.strerror or exc}"
+        res.error = f"network error: {exc.strerror or exc}"
     except ValueError as exc:
         res.error = str(exc)
     finally:
@@ -283,10 +290,10 @@ async def check_time(
     servers: dict[str, str] | None = None,
     timeout: float = 3.0,
 ) -> NtpReport:
-    """Bir nechta NTP serverni parallel so'rab, jamlanma qaytaradi.
+    """Query several NTP servers in parallel and return a summary.
 
-    Bir nechta server so'raladi — bitta server yolg'on vaqt bersa mediana
-    uni yutib yuboradi (bitta manbaga ishonib qolmaslik uchun).
+    Several servers are queried — if one of them reports a bogus time the
+    median absorbs it (so we never depend on a single source).
     """
     srv = servers or DEFAULT_NTP_SERVERS
     tasks = [query_server(host, timeout, label) for label, host in srv.items()]

@@ -1,10 +1,11 @@
-"""Foydalanuvchi konfiguratsiyasi — `~/.config/systop/config.toml` (stdlib tomllib).
+"""User configuration — `~/.config/systop/config.toml` (stdlib tomllib).
 
-Konfiguratsiya ixtiyoriy: fayl bo'lmasa yoki buzuq bo'lsa, oqilona default
-qiymatlar bilan `SystopConfig` qaytariladi (istisno ko'tarilmaydi, jim).
-`SYSTOP_CONFIG` atrof-muhit o'zgaruvchisi orqali boshqa yo'l ko'rsatish mumkin.
+The configuration is optional: if the file is missing or corrupt, a
+`SystopConfig` with sensible default values is returned (silently, with no
+exception raised). A different path can be pointed at through the
+`SYSTOP_CONFIG` environment variable.
 
-config.toml namunasi:
+An example config.toml:
 
     ping_targets = ["1.1.1.1", "8.8.8.8"]
     dns_resolvers = ["1.1.1.1", "9.9.9.9"]
@@ -13,7 +14,7 @@ config.toml namunasi:
     theme = "dark"
     scan_ports = "1-1024"
 
-Faqat stdlib (tomllib, os, pathlib); boshqa core modullarni import qilmaydi.
+Only stdlib (tomllib, os, pathlib); it imports no other core module.
 """
 
 from __future__ import annotations
@@ -23,28 +24,28 @@ import tomllib
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 
-# Default qiymatlar — boshqa core modullaridagi tanlovlar bilan mos.
+# The default values — consistent with the choices made in the other core modules.
 DEFAULT_PING_TARGETS: list[str] = ["1.1.1.1", "8.8.8.8"]
 DEFAULT_DNS_RESOLVERS: list[str] = ["1.1.1.1", "8.8.8.8", "9.9.9.9"]
 DEFAULT_SPEED_DURATION: float = 10.0
 DEFAULT_SPEED_PARALLEL: int = 4
 DEFAULT_THEME: str = "dark"
-# Lokal (IX) tezlik endpointlari — ATAYLAB BO'SH.
-# Har mamlakatda o'zinikini config'da berish kerak (O'zbekistonda TAS-IX
-# mirrorlari, boshqa yurtda o'sha yurt IX'i). Kodga yozib qo'yish tool'ni
-# bitta mamlakatga bog'lab qo'yardi va boshqa joyda noto'g'ri ishlardi.
+# The local (IX) speed endpoints — DELIBERATELY EMPTY.
+# Every country has to supply its own in the config (TAS-IX mirrors in
+# Uzbekistan, that country's own IX elsewhere). Hard-coding them would tie the
+# tool to a single country and make it give wrong answers anywhere else.
 DEFAULT_SPEED_LOCAL_URLS: list[str] = []
 
-DEFAULT_SCAN_PORTS: str = ""  # bo'sh => keng tarqalgan portlar (ports.default_ports)
+DEFAULT_SCAN_PORTS: str = ""  # empty => the common ports (ports.default_ports)
 
-# Atrof-muhit override va standart joylashuv.
+# The environment override and the standard location.
 ENV_VAR: str = "SYSTOP_CONFIG"
 DEFAULT_CONFIG_PATH: Path = Path.home() / ".config" / "systop" / "config.toml"
 
 
 @dataclass(slots=True)
 class SystopConfig:
-    """Foydalanuvchi sozlamalari (barchasi default qiymatli — fayl ixtiyoriy)."""
+    """The user settings (all of them have defaults — the file is optional)."""
 
     ping_targets: list[str] = field(default_factory=lambda: list(DEFAULT_PING_TARGETS))
     dns_resolvers: list[str] = field(default_factory=lambda: list(DEFAULT_DNS_RESOLVERS))
@@ -56,7 +57,7 @@ class SystopConfig:
 
 
 def _resolve_path(path: str | Path | None) -> Path:
-    """Konfiguratsiya yo'lini aniqlaydi: argument > SYSTOP_CONFIG > standart joy."""
+    """Determines the config path: the argument > SYSTOP_CONFIG > the standard location."""
     if path is not None:
         return Path(path).expanduser()
     env = os.environ.get(ENV_VAR)
@@ -66,14 +67,14 @@ def _resolve_path(path: str | Path | None) -> Path:
 
 
 def _as_str_list(value: object) -> list[str] | None:
-    """TOML qiymatini string ro'yxatiga aylantiradi (noto'g'ri tur => None)."""
+    """Turns a TOML value into a list of strings (a wrong type => None)."""
     if isinstance(value, list) and all(isinstance(x, str) for x in value):
         return list(value)
     return None
 
 
 def _coerce(cfg: SystopConfig, data: dict[str, object]) -> None:
-    """TOML lug'atidagi mos kalitlarni `cfg` ustiga qo'yadi (xato qiymat e'tiborsiz)."""
+    """Applies the matching keys of the TOML dict onto `cfg` (a bad value is ignored)."""
     if (v := _as_str_list(data.get("ping_targets"))) is not None:
         cfg.ping_targets = v
     if (v := _as_str_list(data.get("dns_resolvers"))) is not None:
@@ -95,19 +96,19 @@ def _coerce(cfg: SystopConfig, data: dict[str, object]) -> None:
     if isinstance(ports, str):
         cfg.scan_ports = ports
 
-    # Lokal (IX) tezlik endpointlari — faqat http(s) URL qabul qilinadi.
+    # The local (IX) speed endpoints — only http(s) URLs are accepted.
     if (v := _as_str_list(data.get("speed_local_urls"))) is not None:
         cfg.speed_local_urls = [u for u in v if u.startswith(("http://", "https://"))]
 
 
 def load_config(path: str | Path | None = None) -> SystopConfig:
-    """Konfiguratsiyani o'qiydi; fayl yo'q yoki buzuq bo'lsa default qaytaradi.
+    """Reads the configuration; returns the defaults if the file is missing or corrupt.
 
-    Yo'l aniqlash tartibi: `path` argumenti > `SYSTOP_CONFIG` env > standart
-    `~/.config/systop/config.toml`. Hech qanday xato (yo'q fayl, buzuq TOML,
-    ruxsat yo'qligi) ko'tarilmaydi — bunday holda to'liq default `SystopConfig`
-    qaytadi. Faqat tanilgan kalitlar qabul qilinadi; noto'g'ri turdagi
-    qiymatlar jim e'tiborsiz qoldiriladi.
+    The path resolution order: the `path` argument > the `SYSTOP_CONFIG` env >
+    the standard `~/.config/systop/config.toml`. No error is ever raised (a
+    missing file, corrupt TOML, a lack of permission) — in such a case a full
+    default `SystopConfig` comes back. Only known keys are accepted; values of
+    the wrong type are silently ignored.
     """
     cfg = SystopConfig()
     target = _resolve_path(path)
@@ -127,5 +128,5 @@ def load_config(path: str | Path | None = None) -> SystopConfig:
 
 
 def config_fields() -> tuple[str, ...]:
-    """Sozlama maydonlari nomlarini qaytaradi (CLI yordami / introspeksiya uchun)."""
+    """Returns the names of the setting fields (for CLI help / introspection)."""
     return tuple(f.name for f in fields(SystopConfig))

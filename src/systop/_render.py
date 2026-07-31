@@ -1,20 +1,20 @@
-"""CLI (Rich) chiqishini TUI bilan bitta dizayn tiliga keltiruvchi yordamchilar.
+"""Helpers that bring the CLI (Rich) output into the same design language as the TUI.
 
-Bu modul FAQAT inson-o'qiydigan "table" rejimi uchun: yengil jadval chrome,
-monoxrom glyphlar (`_glyphs` orqali) va RTT/loss gradatsiyasi. JSON/CSV rejimi
-bunga umuman bog'liq emas (cli.py'da alohida yo'l).
+This module is ONLY for the human-readable "table" mode: light table chrome,
+monochrome glyphs (through `_glyphs`) and the RTT/loss gradation. The JSON/CSV
+mode has nothing to do with it (a separate path in cli.py).
 
-Nega alohida modul: `styled_table` + gradatsiya `cli.py`'da o'nlab marta
-ishlatiladi; TUI'dagi `ping_panel._rtt_cell`/`_loss_cell` mantig'i bilan bir xil
-chegaralarni (30/100 ms, 50% loss) bitta joyda saqlash uchun.
+Why a separate module: `styled_table` + the gradation are used dozens of times
+in `cli.py`; this keeps the same thresholds (30/100 ms, 50% loss) as the
+`ping_panel._rtt_cell`/`_loss_cell` logic in the TUI, all in one place.
 
-MUHIM — rang: TUI (Textual) `[$success]` markup'ini biladi, ammo CLI (Rich)
-BILMAYDI. Shu sababli bu yerda tema ranglari `app.SYSTOP_THEME` dagi AYNAN
-o'sha hex qiymatlar bilan beriladi (success=#34d399, warning=#fbbf24,
-error=#f87171, ...). Rich hex ranglarni to'g'ridan-to'g'ri qabul qiladi
-(`[#34d399]...[/]`), shunda CLI va TUI bir xil palitrada ko'rinadi. Rang HAR
-DOIM so'z/qiymat bilan birga — rang yagona signal emas (rangsiz terminalda ham
-ma'no yo'qolmaydi).
+IMPORTANT — colour: the TUI (Textual) understands the `[$success]` markup, but
+the CLI (Rich) DOES NOT. That is why the theme colours are given here as EXACTLY
+the same hex values as in `app.SYSTOP_THEME` (success=#34d399, warning=#fbbf24,
+error=#f87171, ...). Rich accepts hex colours directly (`[#34d399]...[/]`), so
+the CLI and the TUI appear in the same palette. The colour ALWAYS comes together
+with the word/value — colour is never the only signal (the meaning is not lost
+on a colourless terminal either).
 """
 
 from __future__ import annotations
@@ -24,22 +24,22 @@ from rich.table import Table
 
 from systop.widgets._glyphs import glyph
 
-# --- Tema ranglari (app.SYSTOP_THEME hex qiymatlari bilan AYNAN bir xil) ----
-# Textual `$success`/`$warning`/... ni Rich tushunmaydi — shu sababli hex.
-SUCCESS = "#34d399"  # tirik / yaxshi (yashil)
-WARNING = "#fbbf24"  # o'rtacha / ogohlantirish (amber)
-ERROR = "#f87171"  # o'lik / xato (qizil)
-PRIMARY = "#3b82f6"  # asosiy aksent — ko'k (jadval sarlavhalari)
-SECONDARY = "#22d3ee"  # ikkilamchi — turkuaz
+# --- Theme colours (EXACTLY the same hex values as in app.SYSTOP_THEME) -----
+# Rich does not understand Textual's `$success`/`$warning`/... — hence the hex.
+SUCCESS = "#34d399"  # alive / good (green)
+WARNING = "#fbbf24"  # middling / warning (amber)
+ERROR = "#f87171"  # dead / error (red)
+PRIMARY = "#3b82f6"  # the main accent — blue (table titles)
+SECONDARY = "#22d3ee"  # the secondary one — turquoise
 
 
 def styled_table(title: str) -> Table:
-    """TUI bilan bir xil yengil chrome'li Rich jadval yasaydi.
+    """Builds a Rich table with the same light chrome as the TUI.
 
-    - `box.HORIZONTALS` — faqat gorizontal chiziqlar (og'ir ┏━┳━┓ ramka yo'q,
-      vertikal ajratkichlar yo'q) — TUI'dagi DataTable hissini beradi.
-    - title chapga tekislangan, `bold` + primary (ko'k) — panel sarlavhasi kabi.
-    - `pad_edge=False` — chap/o'ng chetda ortiqcha bo'shliq yo'q (ixcham).
+    - `box.HORIZONTALS` — horizontal lines only (no heavy ┏━┳━┓ frame, no
+      vertical separators) — it gives the feel of the DataTable in the TUI.
+    - the title is left-aligned, `bold` + primary (blue) — like a panel title.
+    - `pad_edge=False` — no extra whitespace at the left/right edge (compact).
     """
     return Table(
         title=title,
@@ -53,10 +53,10 @@ def styled_table(title: str) -> Table:
 
 
 def rtt_cell(ms: float) -> str:
-    """RTT (ms) qiymatini kattaligiga qarab ranglaydi (ping_panel bilan bir xil).
+    """Colours an RTT (ms) value by its magnitude (the same as in ping_panel).
 
-    <30 ms yashil, <100 ms amber, aks holda qizil. Rang doim qiymat bilan —
-    rangsiz terminalda ham raqamning o'zi ko'rinadi.
+    <30 ms green, <100 ms amber, otherwise red. The colour always comes with the
+    value — on a colourless terminal the number itself is still visible.
     """
     if ms < 30:
         return f"[{SUCCESS}]{ms:.1f}[/]"
@@ -66,7 +66,7 @@ def rtt_cell(ms: float) -> str:
 
 
 def loss_cell(pct: float) -> str:
-    """Loss foizini ranglaydi (ping_panel bilan bir xil): 0 yashil, <50 amber, aks qizil."""
+    """Colours the loss percentage (same as ping_panel): 0 green, <50 amber, else red."""
     if pct <= 0:
         return f"[{SUCCESS}]0[/]"
     if pct < 50:
@@ -75,11 +75,12 @@ def loss_cell(pct: float) -> str:
 
 
 def alive_cell(alive: bool) -> str:
-    """Holat katakchasi — TUI leksikoni: `tirik` / `o'lik` (glyph + tema rangi).
+    """The state cell — the TUI's vocabulary: `alive` / `dead` (glyph + theme colour).
 
-    glyph('ok')/('dead') monoxrom belgi beradi (Unicode `●`, ASCII `*`/`x`);
-    rang ma'noni kuchaytiradi, so'z (`tirik`/`o'lik`) yagona signal sifatida qoladi.
+    glyph('ok')/('dead') gives a monochrome mark (Unicode `●`, ASCII `*`/`x`);
+    the colour reinforces the meaning, and the word (`alive`/`dead`) remains the
+    single signal.
     """
     if alive:
-        return f"[{SUCCESS}]{glyph('ok')}[/] tirik"
-    return f"[{ERROR}]{glyph('dead')}[/] o'lik"
+        return f"[{SUCCESS}]{glyph('ok')}[/] alive"
+    return f"[{ERROR}]{glyph('dead')}[/] dead"

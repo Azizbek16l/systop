@@ -433,28 +433,29 @@ _WIN_PING_SENT_RE = re.compile(
 _WIN_PING_RECV_RE = re.compile(
     r"(?:Received|Получено|Empfangen)\s*=\s*([0-9]+)", re.IGNORECASE | re.UNICODE
 )
-# TTL belgisi har tilda lotin "TTL" bo'lib qoladi (RUS chiqishida ham "TTL=").
-# Shuning uchun javob qatorini aniqlash uchun "ttl" ni qidiramiz (til-mustaqil).
+# The TTL label stays Latin "TTL" in every language (even Russian output says
+# "TTL="). So we look for "ttl" to identify a reply line (language-independent).
 
 
 def parse_windows_ping(output: str, expected_count: int) -> tuple[bool, list[float], float]:
-    """Windows `ping` chiqishini (alive, rtts_ms, loss) ga aylantiradi.
+    """Turns Windows `ping` output into (alive, rtts_ms, loss).
 
-    TIL-MUSTAQIL: ingliz, rus (cp866 dekodlangan), nemis chiqishini tushunadi.
-    Bu — IcmpSendEcho mavjud bo'lmagan holatdagi zaxira yo'l.
+    LANGUAGE-INDEPENDENT: it understands English, Russian (decoded from cp866)
+    and German output. This is the fallback path for when IcmpSendEcho is not
+    available.
 
-    Argumentlar:
-        output — `ping ...` to'liq stdout matni (allaqachon dekodlangan).
-        expected_count — yuborilgan paketlar soni (loss zaxira hisobi uchun).
+    Arguments:
+        output — the full `ping ...` stdout text (already decoded).
+        expected_count — the number of packets sent (for the fallback loss sum).
 
-    Qaytaradi:
-        alive — kamida bitta javob kelganmi.
-        rtts_ms — har javob RTT'si (ms); javobsizlar kirmaydi.
-        loss — paket yo'qotish ulushi (0.0..1.0).
+    Returns:
+        alive — whether at least one reply arrived.
+        rtts_ms — the RTT of each reply (ms); non-replies are not included.
+        loss — the packet loss fraction (0.0..1.0).
     """
     rtts: list[float] = []
     for line in output.splitlines():
-        # Javob qatorini "TTL" bo'yicha aniqlaymiz (RUS chiqishida ham "TTL=").
+        # We identify a reply line by "TTL" (Russian output says "TTL=" too).
         low = line.lower()
         if "ttl=" not in low and "ttl =" not in low:
             continue
@@ -465,7 +466,8 @@ def parse_windows_ping(output: str, expected_count: int) -> tuple[bool, list[flo
         if m:
             rtts.append(float(m.group(1).replace(",", ".")))
 
-    # Loss: avval yakuniy statistika foizidan ("(25% loss)") — til-mustaqil.
+    # Loss: first from the closing statistics percentage ("(25% loss)") —
+    # language-independent.
     loss: float | None = None
     pct = _WIN_PING_LOSS_PCT_RE.search(output)
     if pct:
@@ -489,12 +491,12 @@ def parse_windows_ping(output: str, expected_count: int) -> tuple[bool, list[flo
     return alive, rtts, loss
 
 
-# --- Windows `tracert` chiqishini parse qilish (TIL-MUSTAQIL ZAXIRA) ---------
+# --- Parsing Windows `tracert` output (LANGUAGE-INDEPENDENT FALLBACK) --------
 
 _WIN_TRACERT_LINE_RE = re.compile(
     r"^\s*(\d+)\s+(.*?)\s*$",
 )
-# RTT ustuni: ascii "12 ms" yoki kirill "12 мс" (o'nlik vergul ham).
+# The RTT column: ascii "12 ms" or Cyrillic "12 мс" (decimal comma included).
 _WIN_TRACERT_RTT_RE = re.compile(r"([0-9]+(?:[.,][0-9]+)?)\s*(?:ms|мс)", re.IGNORECASE | re.UNICODE)
 _WIN_TRACERT_SUBMS_RE = re.compile(r"<\s*1\s*(?:ms|мс)", re.IGNORECASE | re.UNICODE)
 _IPV4_RE = re.compile(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b")
@@ -502,13 +504,14 @@ _IPV6_RE = re.compile(r"\b([0-9a-fA-F:]{2,}:[0-9a-fA-F:]*)\b")
 
 
 def parse_windows_tracert(output: str) -> list[tuple[int, str | None, float, bool]]:
-    """Windows `tracert -d` chiqishini hop ro'yxatiga aylantiradi (til-mustaqil).
+    """Turns Windows `tracert -d` output into a list of hops (language-independent).
 
-    Qaytaradi: har element `(hop_index, address|None, avg_rtt_ms, alive)`.
+    Returns: each element is `(hop_index, address|None, avg_rtt_ms, alive)`.
 
-    `address` topilmasa (`* * *` / `Request timed out` / `Превышен интервал`) ->
-    None, alive=False, rtt=0. RTT — qatordagi o'lchovlar o'rtachasi (ms).
-    `<1 ms`/`<1 мс` => 0.5ms. IcmpSendEcho yo'q holatdagi zaxira.
+    When no `address` is found (`* * *` / `Request timed out` / `Превышен
+    интервал`) -> None, alive=False, rtt=0. The RTT is the average of the
+    measurements on that line (ms). `<1 ms`/`<1 мс` => 0.5ms. This is the
+    fallback for when IcmpSendEcho is missing.
     """
     hops: list[tuple[int, str | None, float, bool]] = []
     for line in output.splitlines():
@@ -544,7 +547,7 @@ def parse_windows_tracert(output: str) -> list[tuple[int, str | None, float, boo
     return hops
 
 
-# --- Windows `route print` chiqishidan default gateway ----------------------
+# --- The default gateway from Windows `route print` output -------------------
 
 _WIN_ROUTE_DEFAULT_RE = re.compile(
     r"^\s*0\.0\.0\.0\s+0\.0\.0\.0\s+(\d{1,3}(?:\.\d{1,3}){3})\b",
@@ -556,34 +559,35 @@ _WIN_NETROUTE_NEXTHOP_RE = re.compile(
 
 
 def parse_windows_route_print(output: str) -> str | None:
-    """`route print -4` chiqishidan default (0.0.0.0/0) gateway IP'ni oladi."""
+    """Extracts the default (0.0.0.0/0) gateway IP from `route print -4` output."""
     m = _WIN_ROUTE_DEFAULT_RE.search(output)
     if m and m.group(1) != "0.0.0.0":
         return m.group(1)
     return None
 
 
-# --- Umumiy async subprocess yordamchisi ------------------------------------
+# --- Shared async subprocess helper ------------------------------------------
 
 
-# Tarmoq buyruqlarining ko'pchiligi PATH'da BO'LMAYDIGAN kataloglarda yotadi:
-# `system_profiler`, `ndp`, `arp`, `route`, `ifconfig` -> /usr/sbin yoki /sbin.
-# Interaktiv qobiqda ular PATH'da bo'ladi, lekin `cron`, `systemd` va launchd
-# odatda `PATH=/usr/bin:/bin` beradi — aynan sysadmin toolni avtomatlashtirgan
-# joyda. O'lchab ko'rildi: shunday PATH bilan `doctor` link turini "wifi"
-# o'rniga "wired" deb aniqlab, chegaralarni noto'g'ri tanladi.
+# Most network commands live in directories that are NOT on PATH:
+# `system_profiler`, `ndp`, `arp`, `route`, `ifconfig` -> /usr/sbin or /sbin.
+# In an interactive shell they are on PATH, but `cron`, `systemd` and launchd
+# normally hand over `PATH=/usr/bin:/bin` — EXACTLY where a sysadmin has
+# automated the tool. Measured: with such a PATH `doctor` decided the link type
+# was "wired" instead of "wifi" and picked the wrong thresholds.
 _EXTRA_BIN_DIRS = ("/usr/sbin", "/sbin", "/usr/local/sbin")
 
 
 @functools.lru_cache(maxsize=64)
 def resolve_binary(name: str) -> str:
-    """Buyruq nomini to'liq yo'lga aylantiradi; topilmasa nomni qaytaradi.
+    """Turns a command name into a full path; returns the name if not found.
 
-    Avval PATH, keyin `_EXTRA_BIN_DIRS`. Topilmasa nom o'zgarishsiz qaytadi —
-    `create_subprocess_exec` o'zi `FileNotFoundError` beradi va `run_command`
-    uni bo'sh satrga aylantiradi (mavjud xatti-harakat saqlanadi).
+    PATH first, then `_EXTRA_BIN_DIRS`. If nothing is found the name is returned
+    unchanged — `create_subprocess_exec` then raises `FileNotFoundError` itself
+    and `run_command` turns that into an empty string (the existing behaviour is
+    preserved).
 
-    Yo'l (`/` yoki `\\` bor) berilgan bo'lsa tegilmaydi.
+    A path (containing `/` or `\\`) is left alone.
     """
     if os.sep in name or (os.altsep and os.altsep in name):
         return name
@@ -602,19 +606,19 @@ async def run_command(
     timeout: float,
     include_stderr: bool = False,
 ) -> str:
-    """Buyruqni async ishga tushirib stdout matnini qaytaradi (bloklanmaydi).
+    """Runs a command asynchronously and returns its stdout text (never blocks).
 
-    Chiqish `decode_console` bilan dekodlanadi — Windows OEM codepage (cp866/
-    cp850) to'g'ri o'qiladi (kirill mojibake yo'q). Windows'da CREATE_NO_WINDOW
-    bilan ishga tushadi (konsol oynasi miltillamasin).
+    The output is decoded with `decode_console` — so a Windows OEM codepage
+    (cp866/cp850) is read correctly (no Cyrillic mojibake). On Windows it starts
+    with CREATE_NO_WINDOW (so no console window flashes up).
 
-    `include_stderr=True` — stderr ham qo'shiladi. Ba'zi diagnostika xabarlari
-    AYNAN stderr'ga yoziladi: macOS `ping` "Message too long" ni shu yerga
-    chiqaradi va uni tashlab yuborish path-MTU aniqlashni butunlay ishlamas
-    qilardi ("juda katta" javobi hech qachon ko'rinmasdi).
+    `include_stderr=True` — stderr is included as well. Some diagnostic messages
+    are written to stderr EXACTLY: macOS `ping` prints "Message too long" there,
+    and throwing it away made path-MTU detection completely non-functional (the
+    "too big" answer was never seen).
 
-    Xato (buyruq yo'q / timeout / OS) bo'lsa bo'sh satr qaytaradi — chaqiruvchi
-    "natija yo'q" deb degrade qilaverishi uchun (istisno ko'tarilmaydi).
+    On an error (command missing / timeout / OS) it returns an empty string — so
+    the caller can degrade to "no result" (no exception is raised).
     """
     cmd = [resolve_binary(cmd[0]), *cmd[1:]] if cmd else cmd
     try:

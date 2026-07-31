@@ -8,7 +8,7 @@ the tooling, and the two conventions that keep the codebase coherent.
 systop uses [uv](https://docs.astral.sh/uv/) and targets **Python 3.11+**.
 
 ```bash
-git clone https://github.com/azizbek/systop
+git clone https://github.com/Azizbek16l/systop
 cd systop
 uv sync --extra dev      # create the venv and install dev dependencies
 ```

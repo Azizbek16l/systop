@@ -1,4 +1,4 @@
-"""Ping paneli — lokal gateway va global serverlarni davriy ping qiladi."""
+"""The ping panel — periodically pings the local gateway and the global servers."""
 
 from __future__ import annotations
 
@@ -15,14 +15,14 @@ REFRESH_SECONDS = 3.0
 
 
 class PingPanel(Vertical):
-    """Nishonlar jadvali + birinchi nishon RTT'sining jonli grafigi.
+    """A table of targets + a live graph of the first target's RTT.
 
-    Har qator holatga qarab ranglanadi (tirik/o'lik), loss foiziga ko'ra
-    sariq/qizil. Grafik ostida joriy/min/o'rt/maks RTT (ms).
+    Every row is coloured by its state (alive/dead), and yellow/red according to
+    the loss percentage. Below the graph: the current/min/avg/max RTT (ms).
     """
 
-    BORDER_TITLE = "Ping — lokal + global"
-    BORDER_SUBTITLE = "r yangilash"
+    BORDER_TITLE = "Ping — local + global"
+    BORDER_SUBTITLE = "r refresh"
 
     def compose(self) -> ComposeResult:
         yield DataTable(id="ping-table", zebra_stripes=True, cursor_type="row")
@@ -31,11 +31,12 @@ class PingPanel(Vertical):
 
     def on_mount(self) -> None:
         table = self.query_one("#ping-table", DataTable)
-        table.add_columns("Holat", "Nishon", "Manzil", "Avg ms", "Loss %")
+        table.add_columns("State", "Target", "Address", "Avg ms", "Loss %")
         self._targets = build_targets(default_gateway())
         self._rtt_history: list[float] = []
-        # Grafik ma'lumotsiz yashirin — ma'lumot kelguncha jadval ostida bo'sh
-        # joy/soxta bar bo'lmaydi (grafik to'g'ridan-to'g'ri jadvalga yopishadi).
+        # The graph is hidden while there is no data — so that there is no empty
+        # space/fake bar under the table until data arrives (the graph sits
+        # directly against the table).
         self.query_one("#ping-spark", Sparkline).display = False
         self.update_pings()
         self.set_interval(REFRESH_SECONDS, self.update_pings)
@@ -47,39 +48,40 @@ class PingPanel(Vertical):
         try:
             results = await ping_many(self._targets)
         except Exception:
-            # ICMP ruxsati yo'q yoki tarmoq xatosi — panel yiqilmasin.
+            # No ICMP permission or a network error — the panel must not crash.
             return
 
         table = self.query_one("#ping-table", DataTable)
         table.clear()
         for r in results:
-            # Holat HAR DOIM haqiqiy parse natijasidan: o'lik bo'lsa ham
-            # r.loss_pct ko'rsatiladi (qattiq "100" emas). Qisman yo'qotishda
-            # (alive=True, lekin loss>0) sariq, to'liq o'lik bo'lsa qizil.
+            # The state ALWAYS comes from the real parse result: even when the
+            # target is dead, r.loss_pct is shown (never a hard-coded "100").
+            # On partial loss (alive=True but loss>0) yellow, on a fully dead
+            # target red.
             loss = self._loss_cell(r.loss_pct)
             if r.alive:
-                dot = f"[green]{glyph('ok')}[/] [dim]tirik[/]"
+                dot = f"[green]{glyph('ok')}[/] [dim]alive[/]"
                 avg = self._rtt_cell(r.avg_rtt)
             else:
-                dot = f"[red]{glyph('dead')}[/] [dim]o'lik[/]"
+                dot = f"[red]{glyph('dead')}[/] [dim]dead[/]"
                 avg = f"[dim]{dash()}[/]"
             table.add_row(dot, r.label, r.address, avg, loss)
 
-        # Grafik uchun birinchi tirik nishonni kuzatamiz.
+        # For the graph we track the first alive target.
         first_alive = next((r for r in results if r.alive), None)
         if first_alive:
             self._rtt_history.append(round(first_alive.avg_rtt, 1))
             self._rtt_history = self._rtt_history[-80:]
             spark = self.query_one("#ping-spark", Sparkline)
             spark.data = self._rtt_history
-            spark.display = unicode_ok()  # ma'lumot bor — grafikni ko'rsatamiz
+            spark.display = unicode_ok()  # there is data — show the graph
             self.query_one("#ping-stats", Static).update(
                 self._stats_caption(self._rtt_history, label=first_alive.label)
             )
 
     @staticmethod
     def _rtt_cell(ms: float) -> str:
-        """RTT qiymatini kattaligiga qarab ranglaydi (DataTable Rich markup)."""
+        """Colours the RTT value by its magnitude (DataTable Rich markup)."""
         if ms < 30:
             return f"[green]{ms:.1f}[/]"
         if ms < 100:
@@ -96,18 +98,18 @@ class PingPanel(Vertical):
 
     @staticmethod
     def _stats_caption(history: list[float] | None, label: str = "") -> str:
-        """Grafik ostidagi izoh: joriy / min / o'rt / maks RTT (ms)."""
+        """The caption below the graph: current / min / avg / max RTT (ms)."""
         head = f"[dim]{label}[/]  " if label else ""
         if not history:
             d = dash()
-            return f"{head}[dim]joriy {d}   min {d}   o'rt {d}   maks {d}   ms[/]"
+            return f"{head}[dim]cur {d}   min {d}   avg {d}   max {d}   ms[/]"
         cur = history[-1]
         lo = min(history)
         avg = sum(history) / len(history)
         hi = max(history)
         return (
-            f"{head}[dim]joriy[/] [b]{cur:.1f}[/]   "
+            f"{head}[dim]cur[/] [b]{cur:.1f}[/]   "
             f"[dim]min[/] [$success]{lo:.1f}[/]   "
-            f"[dim]o'rt[/] {avg:.1f}   "
-            f"[dim]maks[/] {hi:.1f}   [dim]ms[/]"
+            f"[dim]avg[/] {avg:.1f}   "
+            f"[dim]max[/] {hi:.1f}   [dim]ms[/]"
         )

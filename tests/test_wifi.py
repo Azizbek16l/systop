@@ -1,4 +1,4 @@
-"""`core/wifi.py` uchun offline testlar — barcha parser sof funksiya."""
+"""Offline tests for `core/wifi.py` — every parser is a pure function."""
 
 from systop.core.wifi import (
     NON_OVERLAPPING_24,
@@ -13,8 +13,8 @@ from systop.core.wifi import (
     parse_netsh_interfaces,
 )
 
-# macOS chiqishi — SSID YASHIRILGAN (`<redacted>`) va ba'zi qo'shni bloklarida
-# sarlavha qatori umuman yo'q. Ikkalasi ham haqiqiy macOS xulqi.
+# macOS output — the SSID is REDACTED (`<redacted>`) and some neighbour blocks
+# have no header line at all. Both are genuine macOS behaviour.
 _MACOS = """Wi-Fi:
 
       Interfaces:
@@ -88,7 +88,7 @@ def test_macos_phy_and_card_capability():
 
 
 def test_macos_redacted_ssid_is_none_not_literal():
-    """macOS SSID'ni `<redacted>` qiladi — uni nom sifatida saqlamaslik kerak."""
+    """macOS turns the SSID into `<redacted>` — that must not be kept as a name."""
     w = parse_macos_airport(_MACOS)
     assert w.ssid is None
 
@@ -101,7 +101,7 @@ def test_macos_transmit_rate_and_security():
 
 
 def test_macos_parses_headerless_neighbour_blocks():
-    """Sarlavhasiz qo'shni bloklari takroriy kalit bo'yicha ajratilishi kerak."""
+    """Headerless neighbour blocks must be split apart by the repeated key."""
     w = parse_macos_airport(_MACOS)
     assert len(w.neighbours) == 3
     channels = sorted(n.channel for n in w.neighbours if n.channel)
@@ -187,18 +187,18 @@ def test_netsh_parses_ssid_channel_security():
 
 
 def test_netsh_converts_percent_signal_to_dbm():
-    """netsh foizda beradi; taxminiy dBm ga chiziqli o'girish."""
+    """netsh reports a percentage; a linear conversion to an approximate dBm."""
     w = parse_netsh_interfaces(_NETSH)
     assert w.rssi_dbm == -59  # 82% -> 82/2 - 100
 
 
 # --------------------------------------------------------------------------- #
-# Sof yordamchilar
+# Pure helpers
 # --------------------------------------------------------------------------- #
 
 
 def test_phy_generation_prefers_ax_over_ac():
-    """`a/b/g/n/ac/ax` da `ac` `ax` ni yutib yubormasligi kerak."""
+    """In `a/b/g/n/ac/ax`, `ac` must not swallow `ax`."""
     assert _phy_generation("802.11 a/b/g/n/ac/ax") == "ax"
 
 
@@ -224,18 +224,18 @@ def test_freq_to_channel():
 
 
 def test_overlap_counts_adjacent_24ghz_channels():
-    """2.4 GHz da qo'shni kanal fizik ustma-ust tushadi (±4)."""
+    """On 2.4 GHz an adjacent channel physically overlaps (±4)."""
     nb = [
         WifiNetwork(channel=6, band="2.4GHz", width_mhz=20),
         WifiNetwork(channel=8, band="2.4GHz", width_mhz=20),
         WifiNetwork(channel=11, band="2.4GHz", width_mhz=20),
     ]
     over = overlapping_24ghz(6, nb)
-    assert len(over) == 2  # ch6 va ch8; ch11 uzoq
+    assert len(over) == 2  # ch6 and ch8; ch11 is far enough away
 
 
 def test_overlap_wider_reach_for_40mhz():
-    """40 MHz AP ikki barobar keng joyni egallaydi (±8)."""
+    """A 40 MHz AP occupies twice as much room (±8)."""
     nb = [WifiNetwork(channel=13, band="2.4GHz", width_mhz=40)]
     assert len(overlapping_24ghz(6, nb)) == 1
     nb20 = [WifiNetwork(channel=13, band="2.4GHz", width_mhz=20)]
@@ -252,7 +252,7 @@ def test_non_overlapping_channels_constant():
 
 
 # --------------------------------------------------------------------------- #
-# WifiStatus xossalari
+# WifiStatus properties
 # --------------------------------------------------------------------------- #
 
 
@@ -273,49 +273,49 @@ def test_snr_none_without_noise():
 
 
 # --------------------------------------------------------------------------- #
-# Kanal kesishuvi — IKKALA diapazon
+# Channel intersection — BOTH bands
 # --------------------------------------------------------------------------- #
 
 from systop.core.wifi import channel_span, overlapping_channels  # noqa: E402
 
 
-def test_80mhz_kanal_tortta_uyachani_egallaydi():
-    """ "Kanal 64" degan yozuv AP qancha joy egallashini AYTMAYDI.
+def test_80mhz_channel_occupies_four_cells():
+    """The note "channel 64" does NOT say how much room the AP takes up.
 
-    80 MHz kenglikdagi AP to'rtta 20 MHz kanalni bosadi. Faqat raqamni
-    taqqoslash bu to'qnashuvlarni butunlay o'tkazib yuboradi.
+    An AP at 80 MHz width covers four 20 MHz channels. Comparing the number
+    alone misses these collisions entirely.
     """
     assert channel_span(64, "5GHz", 80) == {52, 56, 60, 64}
     assert channel_span(36, "5GHz", 80) == {36, 40, 44, 48}
     assert channel_span(157, "5GHz", 80) == {149, 153, 157, 161}
 
 
-def test_40mhz_va_20mhz_span():
+def test_40mhz_and_20mhz_span():
     assert channel_span(60, "5GHz", 40) == {60, 64}
     assert channel_span(64, "5GHz", 20) == {64}
     assert channel_span(64, "5GHz", None) == {64}
 
 
-def test_unii3_bloki_arifmetika_bilan_chiqmaydi():
-    """(149-36)/4 butun son emas — shuning uchun bloklar ro'yxat sifatida.
+def test_unii3_block_does_not_come_out_of_arithmetic():
+    """(149-36)/4 is not an integer — which is why the blocks are a table.
 
-    Arifmetik formula bu yerda noto'g'ri natija berardi.
+    An arithmetic formula would give the wrong answer here.
     """
     assert channel_span(149, "5GHz", 80) == {149, 153, 157, 161}
     assert 149 not in channel_span(144, "5GHz", 80)
 
 
-def test_notanish_kanal_ehtiyotkor():
-    """Noma'lum (DFS/mintaqaviy) kanalda faqat o'zi hisoblanadi — taxmin qilinmaydi."""
+def test_unknown_channel_is_treated_cautiously():
+    """On an unknown (DFS/regional) channel only itself counts — nothing is guessed."""
     assert channel_span(177, "5GHz", 80) == {177}
 
 
-def test_5ghz_bir_kanaldagi_qoshni_aniqlanadi():
-    """ASOSIY KAMCHILIK REGRESSIYASI.
+def test_5ghz_neighbour_on_the_same_channel_is_detected():
+    """REGRESSION FOR THE KEY GAP.
 
-    Ilgari faqat 2.4 GHz tekshirilardi. Natijada 5 GHz da AYNAN bir kanalda
-    turgan qo'shni — eng jiddiy holat, to'liq co-channel raqobat — umuman
-    aytilmasdi.
+    Only 2.4 GHz used to be checked. As a result a neighbour sitting on
+    EXACTLY the same 5 GHz channel — the most serious case, full co-channel
+    contention — was never mentioned at all.
     """
     ns = [
         WifiNetwork(channel=64, band="5GHz", width_mhz=80),
@@ -326,31 +326,31 @@ def test_5ghz_bir_kanaldagi_qoshni_aniqlanadi():
     assert [n.channel for n in ov] == [64]
 
 
-def test_5ghz_kesishuvchi_blok_aniqlanadi():
-    """60-kanaldagi 40 MHz AP {60,64} ni egallaydi — 64 bilan kesishadi."""
+def test_5ghz_intersecting_block_is_detected():
+    """A 40 MHz AP on channel 60 occupies {60,64} — it intersects 64."""
     ns = [WifiNetwork(channel=60, band="5GHz", width_mhz=40)]
     assert len(overlapping_channels(64, "5GHz", 20, ns)) == 1
 
 
-def test_boshqa_diapazon_hech_qachon_xalaqit_bermaydi():
-    """2.4 va 5 GHz — turli chastotalar, ular kesisha olmaydi."""
+def test_the_other_band_never_interferes():
+    """2.4 and 5 GHz are different frequencies, they cannot intersect."""
     ns = [WifiNetwork(channel=6, band="2.4GHz", width_mhz=20)]
     assert overlapping_channels(64, "5GHz", 80, ns) == []
     ns2 = [WifiNetwork(channel=64, band="5GHz", width_mhz=80)]
     assert overlapping_channels(6, "2.4GHz", 20, ns2) == []
 
 
-def test_24ghz_qoidasi_saqlanadi():
-    """2.4 GHz uzluksiz ustma-ust tushadi: ±4, 40 MHz uchun ±8."""
+def test_the_24ghz_rule_is_preserved():
+    """2.4 GHz overlaps continuously: ±4, and ±8 for 40 MHz."""
     ns = [
-        WifiNetwork(channel=1, band="2.4GHz", width_mhz=20),  # 6 dan 5 uzoq -> yo'q
-        WifiNetwork(channel=8, band="2.4GHz", width_mhz=20),  # 2 uzoq -> ha
-        WifiNetwork(channel=13, band="2.4GHz", width_mhz=40),  # 7 uzoq, ±8 -> ha
+        WifiNetwork(channel=1, band="2.4GHz", width_mhz=20),  # 5 away from 6 -> no
+        WifiNetwork(channel=8, band="2.4GHz", width_mhz=20),  # 2 away -> yes
+        WifiNetwork(channel=13, band="2.4GHz", width_mhz=40),  # 7 away, ±8 -> yes
     ]
     got = {n.channel for n in overlapping_channels(6, "2.4GHz", 20, ns)}
     assert got == {8, 13}
 
 
-def test_kanalsiz_qoshni_tashlanadi():
+def test_neighbour_without_a_channel_is_dropped():
     ns = [WifiNetwork(channel=None, band="5GHz", width_mhz=80)]
     assert overlapping_channels(64, "5GHz", 80, ns) == []

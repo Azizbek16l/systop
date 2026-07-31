@@ -1,7 +1,8 @@
-"""Holat-paneli — Header ostidagi ingichka qator: gateway / public IP / interfeys.
+"""The status bar — a thin row under the Header: gateway / public IP / interface.
 
-`gather_summary()` (core.netinfo) dan ma'lumot oladi va uchta "chip" ko'rinishida
-ko'rsatadi. Tarmoq xatosi panelni yiqitmaydi — qiymatlar "—" bo'lib qoladi.
+It takes its data from `gather_summary()` (core.netinfo) and shows it as three
+"chips". A network error does not bring the panel down — the values simply stay
+at "—".
 """
 
 from __future__ import annotations
@@ -16,16 +17,16 @@ from systop.widgets._glyphs import dash, ellipsis, glyph
 
 
 class StatusBar(Horizontal):
-    """Tarmoq holatining yig'ma ko'rinishi: gateway, public IP, asosiy interfeys."""
+    """An aggregate view of the network state: gateway, public IP, primary interface."""
 
     def compose(self) -> ComposeResult:
         loading = ellipsis()
         yield Static(self._chip("Gateway", loading), id="chip-gateway")
         yield Static(self._chip("Public IP", loading), id="chip-public")
-        yield Static(self._chip("Interfeys", loading), id="chip-iface")
+        yield Static(self._chip("Interface", loading), id="chip-iface")
 
     def on_mount(self) -> None:
-        # Mahalliy ma'lumotni darhol ko'rsatamiz, public IP'ni keyin to'ldiramiz.
+        # We show the local data straight away and fill in the public IP later.
         self._show_iface(primary_interface())
         self.load_summary()
 
@@ -35,14 +36,15 @@ class StatusBar(Horizontal):
         try:
             summary = await gather_summary()
         except Exception:
-            # Tarmoq mavjud emas — placeholder bilan qoldiramiz, panel yiqilmasin.
+            # There is no network — we leave the placeholders in place so that
+            # the panel does not crash.
             self.query_one("#chip-gateway", Static).update(self._chip("Gateway", d))
             self.query_one("#chip-public", Static).update(self._chip("Public IP", d))
             return
 
-        # Gateway yoniga prefiks qo'shamiz (`10.0.0.1/24`) — tarmoq hajmi bir
-        # qarashda ko'rinsin. Prefiks asosiy interfeys maskasidan olinadi,
-        # chunki gateway o'sha segmentda turadi.
+        # We append the prefix next to the gateway (`10.0.0.1/24`) — so that the
+        # size of the network is visible at a glance. The prefix is taken from
+        # the primary interface's mask, because the gateway sits on that segment.
         iface = primary_interface()
         gw = summary.gateway or d
         if summary.gateway and iface is not None and iface.prefixlen is not None:
@@ -50,13 +52,14 @@ class StatusBar(Horizontal):
         pub = summary.public_ip or d
         self.query_one("#chip-gateway", Static).update(self._chip("Gateway", gw))
         self.query_one("#chip-public", Static).update(self._chip("Public IP", pub))
-        # Interfeysni primary_interface() aniqlaydi — APIPA (169.254) yoki
-        # vEthernet emas, haqiqiy asosiy NIC. summary'dagi birinchi-ipv4
-        # heuristikasidan ko'ra ishonchli (gateway bog'liqligini hisobga oladi).
+        # The interface is determined by primary_interface() — the real primary
+        # NIC, not an APIPA (169.254) or a vEthernet one. That is more reliable
+        # than the first-ipv4 heuristic in the summary (it takes the gateway
+        # relationship into account).
         self._show_iface(primary_interface())
 
     def _show_iface(self, iface: object) -> None:
-        """Interfeys chipini yangilaydi (`name · ipv4`); iface yo'q bo'lsa o'tkazadi."""
+        """Updates the interface chip (`name · ipv4`); skips it if there is no iface."""
         if iface is None:
             return
         name = getattr(iface, "name", None)
@@ -64,9 +67,9 @@ class StatusBar(Horizontal):
             return
         ipv4 = getattr(iface, "ipv4", None) or dash()
         label = f"{name} {glyph('sep')} {ipv4}"
-        self.query_one("#chip-iface", Static).update(self._chip("Interfeys", label))
+        self.query_one("#chip-iface", Static).update(self._chip("Interface", label))
 
     @staticmethod
     def _chip(title: str, value: str) -> str:
-        """Bitta "chip": [dim sarlavha] qiymat."""
+        """A single "chip": [dim title] value."""
         return f"[dim]{title}[/]  [b]{value}[/]"

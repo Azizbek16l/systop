@@ -1,4 +1,4 @@
-"""Dashboard panellari (Textual widget'lari)."""
+"""The dashboard panels (Textual widgets)."""
 
 from systop.widgets.help_screen import HelpScreen
 from systop.widgets.ping_panel import PingPanel

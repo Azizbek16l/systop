@@ -1,19 +1,20 @@
-"""ARP/NDP kuzatuv — vaqt bo'yicha MAC o'zgarishini aniqlash. Root kerak emas.
+"""ARP/NDP watch — detecting MAC changes over time. No root required.
 
-Nima uchun sysadmin uchun muhim: bir marta olingan ARP jadvali "hozir kim bor"
-degan savolga javob beradi. Lekin eng xavfli holatlar **o'zgarishda** ko'rinadi —
+Why this matters for a sysadmin: a single ARP table snapshot answers the
+question "who is here right now". But the most dangerous situations only show
+up **in the change** —
 
-  * **ARP spoofing / MITM** — gateway IP'sining MAC'i almashadi. Bir snapshot
-    bunda hech qanday g'ayrioddiylik ko'rsatmaydi: jadval "to'g'ri" ko'rinadi,
-    faqat MAC boshqa. Faqat oldingi holat bilan solishtirish fosh qiladi;
-  * **IP dublikati** — ikki qurilma bir IP'ni talashadi, MAC almashib turadi
-    (alomat: "internet uzilib-uzilib ketadi");
-  * **ruxsatsiz qurilma** — tarmoqqa yangi host qo'shildi;
-  * **qurilma almashtirilgan** — bir xil IP, boshqa vendor (masalan kamera
-    o'rniga noutbuk).
+  * **ARP spoofing / MITM** — the MAC behind the gateway IP changes. A single
+    snapshot shows nothing unusual at all: the table looks "correct", only the
+    MAC is different. Only a comparison against the previous state exposes it;
+  * **a duplicate IP** — two devices fight over one IP and the MAC keeps
+    flipping (symptom: "the internet keeps cutting out");
+  * **an unauthorised device** — a new host joined the network;
+  * **a replaced device** — same IP, different vendor (a laptop where a camera
+    used to be, for instance).
 
-Bazaviy holat (baseline) config katalogida JSON sifatida saqlanadi, har
-ishlashda diff olinadi. `diff_snapshots` — sof funksiya, offline sinaladi.
+The baseline is stored as JSON in the config directory and diffed on every run.
+`diff_snapshots` is a pure function and is tested offline.
 """
 
 from __future__ import annotations
@@ -26,14 +27,14 @@ from pathlib import Path
 
 from systop.core.diagnose import is_real_device_mac
 
-# Baseline fayl joyi — `core/config.py` bilan bir xil katalog qoidasi
-# (`SYSTOP_CONFIG` env yo'lni ko'chirishga imkon beradi).
+# Where the baseline file lives — the same directory rule as `core/config.py`
+# (`SYSTOP_CONFIG` allows the path to be relocated).
 _DEFAULT_DIR = Path.home() / ".config" / "systop"
 BASELINE_NAME = "arp-baseline.json"
 
 
 def baseline_path() -> Path:
-    """Baseline fayl yo'li. `SYSTOP_STATE_DIR` env bilan ko'chirilishi mumkin."""
+    """Path to the baseline file. Can be relocated with `SYSTOP_STATE_DIR`."""
     env = os.environ.get("SYSTOP_STATE_DIR")
     base = Path(env) if env else _DEFAULT_DIR
     return base / BASELINE_NAME
@@ -41,7 +42,7 @@ def baseline_path() -> Path:
 
 @dataclass(slots=True)
 class ArpChange:
-    """Bitta o'zgarish."""
+    """A single change."""
 
     kind: str  # mac_changed | new_host | disappeared | duplicate_mac
     ip: str
@@ -49,11 +50,11 @@ class ArpChange:
     new_mac: str | None = None
     old_vendor: str | None = None
     new_vendor: str | None = None
-    extra_ips: list[str] = field(default_factory=list)  # duplicate_mac uchun
+    extra_ips: list[str] = field(default_factory=list)  # for duplicate_mac
 
     @property
     def severity(self) -> str:
-        """`high` — MAC almashishi (spoofing/dublikat), qolgani `low`/`info`."""
+        """`high` — a MAC change (spoofing/duplicate); the rest is `low`/`info`."""
         if self.kind == "mac_changed":
             return "high"
         if self.kind == "duplicate_mac":
@@ -65,7 +66,7 @@ class ArpChange:
 
 @dataclass(slots=True)
 class ArpDiff:
-    """Baseline bilan joriy holat orasidagi farq."""
+    """The difference between the baseline and the current state."""
 
     changes: list[ArpChange] = field(default_factory=list)
     baseline_age_s: float | None = None
@@ -79,16 +80,17 @@ class ArpDiff:
 
     @property
     def has_suspicious(self) -> bool:
-        """MAC almashishi yoki MAC dublikati bormi (e'tibor talab qiladigan)."""
+        """Is there a MAC change or a duplicate MAC (anything needing attention)."""
         return any(c.kind in ("mac_changed", "duplicate_mac") for c in self.changes)
 
 
 def _address_scope(ip: str) -> str:
-    """Manzil doirasi: `ipv4` | `ipv6` | `link-local` | `apipa` — SOF funksiya.
+    """Address scope: `ipv4` | `ipv6` | `link-local` | `apipa` — pure function.
 
-    Doira bo'yicha ajratish shart: bitta NIC'da bir vaqtda APIPA (169.254.x)
-    va DHCP manzili bo'lishi, yoki IPv6 link-local va global bo'lishi mumkin.
-    Ularni bir doirada taqqoslash "bir MAC ko'p IP'da" soxta natijasini berardi.
+    Separating by scope is essential: one NIC can hold an APIPA address
+    (169.254.x) and a DHCP address at the same time, or an IPv6 link-local and
+    a global one. Comparing those within a single scope produced the false
+    result "one MAC on many IPs".
     """
     bare = ip.split("%")[0]
     if ":" in bare:
@@ -101,14 +103,15 @@ def diff_snapshots(
     current: dict[str, str],
     vendor_lookup=None,
 ) -> list[ArpChange]:
-    """Ikki `{ip: mac}` snapshot orasidagi farqni topadi — SOF funksiya.
+    """Find the difference between two `{ip: mac}` snapshots — pure function.
 
-    `vendor_lookup` — ixtiyoriy `mac -> vendor` funksiyasi (odatda
-    `oui.lookup_vendor`); berilsa o'zgarishga vendor nomi qo'shiladi, chunki
-    "Hikvision -> Apple" almashishi "MAC o'zgardi" dan ko'ra ancha ma'noli.
+    `vendor_lookup` is an optional `mac -> vendor` function (usually
+    `oui.lookup_vendor`); when supplied, the vendor name is attached to the
+    change, because "Hikvision -> Apple" is far more meaningful than "the MAC
+    changed".
 
-    Yo'qolgan hostlar ham qaytariladi, lekin ular normal holat bo'lishi mumkin
-    (qurilma o'chirilgan) — shuning uchun `severity` da `info`.
+    Disappeared hosts are returned too, but they may well be a normal
+    situation (the device was switched off) — hence `info` in `severity`.
     """
     ven = vendor_lookup or (lambda _mac: None)
     changes: list[ArpChange] = []
@@ -137,22 +140,23 @@ def diff_snapshots(
                 ArpChange(kind="disappeared", ip=ip, old_mac=old_mac, old_vendor=ven(old_mac))
             )
 
-    # Bir MAC bir nechta IP'da — joriy holat ichida.
+    # One MAC on several IPs — within the current state.
     #
-    # MUHIM: faqat BIR OILA ichida taqqoslanadi. Bitta qurilmada IPv4 va IPv6
-    # (link-local) manzil bir vaqtda bo'lishi butunlay normal va MAC ikkalasida
-    # bir xil — ularni "MAC dublikati" deb belgilash soxta pozitiv beradi
-    # (dastlabki versiyada aynan shu bo'lib, 34 ta soxta ogohlantirish chiqdi).
+    # IMPORTANT: the comparison happens only WITHIN ONE SCOPE. It is entirely
+    # normal for a single device to hold an IPv4 and an IPv6 (link-local)
+    # address at the same time with the same MAC on both — flagging that as a
+    # "duplicate MAC" gives a false positive (that is exactly what the first
+    # version did, and it produced 34 false warnings).
     by_mac: dict[tuple[str, str], list[str]] = {}
     for ip, mac in current.items():
-        # Broadcast/multicast MAC tabiiy ravishda ko'p IP bilan bog'lanadi —
-        # ularni dublikat deb belgilash soxta pozitiv beradi.
+        # A broadcast/multicast MAC is naturally associated with many IPs —
+        # flagging those as duplicates gives a false positive.
         if not is_real_device_mac(mac):
             continue
         by_mac.setdefault((mac, _address_scope(ip)), []).append(ip)
     for (mac, _scope), ips in by_mac.items():
-        # AYNI manzil turli zonada ko'rinishi (fe80::x%awdl0 va %llw0) bitta
-        # manzil — dublikat emas. Zonani olib tashlab takrorlarni yig'amiz.
+        # The SAME address seen in different zones (fe80::x%awdl0 and %llw0) is
+        # one address, not a duplicate. Strip the zone and collapse repeats.
         unique = {i.split("%")[0] for i in ips}
         if len(unique) > 1:
             ordered = sorted(ips)
@@ -166,26 +170,26 @@ def diff_snapshots(
                 )
             )
 
-    # Barqaror tartib: jiddiylik, keyin IP.
+    # A stable order: severity first, then IP.
     order = {"mac_changed": 0, "duplicate_mac": 1, "new_host": 2, "disappeared": 3}
     changes.sort(key=lambda c: (order.get(c.kind, 9), c.ip))
     return changes
 
 
 def load_baseline(path: Path | None = None) -> tuple[dict[str, str], float | None]:
-    """Saqlangan baseline'ni o'qiydi. Qaytaradi: `(snapshot, yozilgan_vaqt)`.
+    """Read the stored baseline. Returns `(snapshot, written_at)`.
 
-    Fayl yo'q/buzuq bo'lsa `({}, None)` — istisno ko'tarilmaydi (config.py
-    bilan bir xil "jim default" qoidasi).
+    If the file is missing or corrupt, `({}, None)` — no exception is raised
+    (the same "quiet default" rule as config.py).
     """
     p = path or baseline_path()
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        # ValueError JSONDecodeError va UnicodeDecodeError ni ham qamraydi.
-        # `errors="replace"` ATAYLAB ishlatilmaydi: u buzuq faylni
-        # `{"10.0.0.1": "\ufffd\ufffd"}` ga aylantirib, disk buzilishidan
-        # SOXTA "ARP spoofing" ogohlantirishi yasardi.
+        # ValueError also covers JSONDecodeError and UnicodeDecodeError.
+        # `errors="replace"` is DELIBERATELY not used: it would turn a corrupt
+        # file into `{"10.0.0.1": "��"}` and manufacture a FALSE
+        # "ARP spoofing" warning out of a disk problem.
         return {}, None
     if not isinstance(data, dict):
         return {}, None
@@ -200,13 +204,13 @@ def load_baseline(path: Path | None = None) -> tuple[dict[str, str], float | Non
 
 
 def save_baseline(snapshot: dict[str, str], path: Path | None = None) -> bool:
-    """Baseline'ni yozadi. Muvaffaqiyatda True (xato yutiladi)."""
+    """Write the baseline. True on success (errors are swallowed)."""
     p = path or baseline_path()
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         payload = {"saved_at": time.time(), "hosts": snapshot}
-        # Atomik yozish: yarim yozilgan fayl keyingi o'qishda baseline'ni
-        # yo'qotmasligi kerak.
+        # An atomic write: a half-written file must not lose the baseline on
+        # the next read.
         tmp = p.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         tmp.replace(p)
@@ -216,12 +220,12 @@ def save_baseline(snapshot: dict[str, str], path: Path | None = None) -> bool:
 
 
 def own_mac_addresses() -> set[str]:
-    """Shu mashinaning o'z interfeys MAC'lari — SOF-ga yaqin yordamchi.
+    """This machine's own interface MACs — a near-pure helper.
 
-    Qo'shni jadvalida o'zimizning interfeyslar ham turadi (macOS'da `awdl0` va
-    `llw0` bir MAC va bir `fe80::` manzilni bo'lishadi, faqat zona farq qiladi).
-    Ularni qo'shni deb hisoblash "bir MAC ikki IP'da" degan DOIMIY soxta
-    ogohlantirish berardi — spoofing detektori o'zini ayblab turardi.
+    Our own interfaces also appear in the neighbour table (on macOS `awdl0` and
+    `llw0` share one MAC and one `fe80::` address, only the zone differs).
+    Treating them as neighbours produced a PERMANENT false warning of "one MAC
+    on two IPs" — the spoofing detector kept accusing itself.
     """
     import psutil
 
@@ -234,15 +238,15 @@ def own_mac_addresses() -> set[str]:
 
 
 async def current_snapshot(include_ipv6: bool = True) -> dict[str, str]:
-    """Joriy ARP (+ ixtiyoriy NDP) jadvalini `{ip: mac}` sifatida oladi.
+    """Take the current ARP (plus optional NDP) table as `{ip: mac}`.
 
-    O'z interfeyslarimiz chiqarib tashlanadi — ular qo'shni emas.
+    Our own interfaces are excluded — they are not neighbours.
     """
     from systop.core import topology
 
     try:
         own = own_mac_addresses()
-    except Exception:  # noqa: BLE001 — psutil yiqilsa filtrsiz davom etamiz
+    except Exception:  # noqa: BLE001 — if psutil fails we carry on unfiltered
         own = set()
 
     snap = {ip: mac for ip, mac in topology._parse_arp_table().items() if mac.lower() not in own}
@@ -258,14 +262,14 @@ async def check(
     include_ipv6: bool = True,
     path: Path | None = None,
 ) -> ArpDiff:
-    """Joriy holatni baseline bilan solishtiradi va (ixtiyoriy) baseline'ni yangilaydi.
+    """Compare the current state with the baseline and (optionally) update it.
 
-    Birinchi ishlashda taqqoslash uchun narsa yo'q — `first_run=True` qaytadi va
-    baseline yoziladi (ogohlantirish berilmaydi, aks holda har yangi mashinada
-    "hamma host yangi" degan foydasiz shovqin chiqardi).
+    On the first run there is nothing to compare against — `first_run=True` is
+    returned and the baseline is written (no warning is emitted, otherwise
+    every new machine would produce the useless noise "every host is new").
 
-    `update=False` — baseline o'zgarmaydi (faqat ko'rish; `doctor` shu rejimda
-    ishlaydi, chunki diagnostika holatni o'zgartirmasligi kerak).
+    `update=False` leaves the baseline untouched (view only; `doctor` runs in
+    this mode, because diagnostics must not change state).
     """
     from systop.core.oui import lookup_vendor
 

@@ -223,7 +223,9 @@ async def trace_path(
             return TraceResult(
                 address=address,
                 hops=[],
-                error="Traceroute returned nothing (host unreachable, or the name did not resolve).",
+                error=(
+                    "Traceroute returned nothing (host unreachable, or the name did not resolve)."
+                ),
             )
         hops = await _map_hops(raw_hops, resolve=resolve)
         return TraceResult(address=address, hops=hops)
@@ -244,33 +246,34 @@ async def trace_path(
             error=f"Could not resolve the name '{address}' to an IP address (DNS error).",
         )
     except ICMPLibError as exc:
-        # `SocketPermissionError` (ICMPLibError'dan meros) — macOS/Linux'da TTL
-        # uchun raw socket kerak, `privileged=False` bilan bo'lmaydi. Ping esa
-        # datagram socket bilan ishlaydi, shuning uchun "ping ishlaydi, lekin
-        # traceroute ishlamaydi" holati kelib chiqadi. Tizim `traceroute`
-        # binari setuid/CAP_NET_RAW bilan keladi va sudo talab qilmaydi —
-        # shunga o'tamiz.
+        # `SocketPermissionError` (inherits from ICMPLibError) — on macOS/Linux
+        # setting the TTL needs a raw socket, which `privileged=False` cannot
+        # give us. Ping, on the other hand, works over a datagram socket, so you
+        # land in the "ping works but traceroute does not" state. The system
+        # `traceroute` binary ships setuid/CAP_NET_RAW and demands no sudo — so
+        # we fall back to it.
         raw_hops = await _posix_traceroute(address, max_hops=max_hops, timeout=timeout)
         if not raw_hops:
             return TraceResult(
                 address=address,
                 hops=[],
                 error=(
-                    f"Traceroute bajarilmadi: {exc}. Tizim `traceroute` buyrug'i "
-                    "ham natija bermadi — u o'rnatilganini tekshiring."
+                    f"Traceroute failed: {exc}. The system `traceroute` command "
+                    "returned nothing either — check that it is installed."
                 ),
             )
     except OSError as exc:
-        return TraceResult(address=address, hops=[], error=f"Tarmoq xatosi: {exc}")
+        return TraceResult(address=address, hops=[], error=f"Network error: {exc}")
 
     hops = await _map_hops(raw_hops, resolve=resolve)
     return TraceResult(address=address, hops=hops)
 
 
 async def _map_hops(raw_hops: list[_HopLike], resolve: bool) -> list[Hop]:
-    """Xom hop obyektlarini (icmplib yoki Windows) `Hop` ro'yxatiga aylantiradi.
+    """Converts raw hop objects (icmplib or Windows) into a list of `Hop`.
 
-    `resolve` True bo'lsa, manzili bor hoplar uchun reverse DNS ham bajariladi.
+    If `resolve` is True, reverse DNS is also done for the hops that have an
+    address.
     """
     hops: list[Hop] = []
     for h in raw_hops:
@@ -293,12 +296,13 @@ async def _probe_path(
     timeout: float,
     privileged: bool,
 ) -> list[_HopLike]:
-    """Bitta probe: `icmplib.traceroute`ni thread'da chaqirib, xom hop'larni qaytaradi.
+    """One probe: calls `icmplib.traceroute` in a thread and returns the raw hops.
 
-    Xato (DNS/ICMP/OS) bo'lsa bo'sh ro'yxat qaytaradi — istisno ko'tarmaydi,
-    chunki `trace_stream` ni uzmasligi kerak (oqim davom etadi). Windows'da
-    `tracert` (admin shart emas); macOS/Linux'da `icmplib`, u ruxsat bermasa
-    tizim `traceroute` binari (setuid/CAP_NET_RAW — sudo shart emas).
+    On error (DNS/ICMP/OS) it returns an empty list — it never raises, because it
+    must not break `trace_stream` (the stream has to keep going). On Windows this
+    is `tracert` (no admin needed); on macOS/Linux it is `icmplib`, and if that is
+    refused permission, the system `traceroute` binary (setuid/CAP_NET_RAW — no
+    sudo needed).
     """
     if _platform.IS_WINDOWS:
         return await _win_traceroute(address, max_hops=max_hops, timeout=timeout)
@@ -312,8 +316,9 @@ async def _probe_path(
             privileged=privileged,
         )
     except ICMPLibError:
-        # TTL uchun raw socket kerak (macOS) — tizim binariga o'tamiz, aks holda
-        # jonli mtr har cycle'da bo'sh natija berib, panel doim bo'sh turardi.
+        # Setting the TTL needs a raw socket (macOS) — fall back to the system
+        # binary, otherwise the live mtr returned an empty result on every cycle
+        # and the panel just sat there empty.
         return await _posix_traceroute(address, max_hops=max_hops, timeout=timeout)
     except OSError:
         return []
@@ -322,10 +327,10 @@ async def _probe_path(
 
 @dataclass(slots=True)
 class _WinRawHop:
-    """Windows `tracert` hop'i — `_HopLike` (icmplib hop) bilan bir xil shakl.
+    """A Windows `tracert` hop — the same shape as `_HopLike` (the icmplib hop).
 
-    `_map_hops`/`trace_stream` faqat `distance`/`address`/`avg_rtt`/`is_alive`
-    o'qiydi, shuning uchun shu to'rt atribut yetarli (duck typing).
+    `_map_hops`/`trace_stream` only read `distance`/`address`/`avg_rtt`/
+    `is_alive`, so these four attributes are enough (duck typing).
     """
 
     distance: int
@@ -334,18 +339,18 @@ class _WinRawHop:
     is_alive: bool
 
 
-# POSIX `traceroute` chiqishi: " 1  192.168.10.1  3.590 ms  4.1 ms  3.9 ms"
-# yoki javobsiz hop: " 3  * * *". `-n` bilan nom resolve qilinmaydi.
+# POSIX `traceroute` output: " 1  192.168.10.1  3.590 ms  4.1 ms  3.9 ms"
+# or an unanswered hop: " 3  * * *". With `-n` no names are resolved.
 _POSIX_TR_RE = re.compile(
     r"^\s*(\d+)\s+(?:(\*[\s*]*)$|([0-9a-fA-F.:]+)(?:\s+\(([^)]+)\))?\s+([\d.]+)\s*ms)"
 )
 
 
 def parse_posix_traceroute(text: str) -> list[tuple[int, str | None, float, bool]]:
-    """Tizim `traceroute` chiqishini parse qiladi — SOF funksiya (offline test).
+    """Parses the system `traceroute` output — a pure function (offline test).
 
-    Qaytaradi: `(hop_raqami, manzil, rtt_ms, tirikmi)` uchliklari.
-    Javobsiz hop (`* * *`) `(n, None, 0.0, False)` bo'ladi.
+    Returns tuples of `(hop_number, address, rtt_ms, alive)`.
+    An unanswered hop (`* * *`) becomes `(n, None, 0.0, False)`.
     """
     hops: list[tuple[int, str | None, float, bool]] = []
     for line in text.splitlines():
@@ -367,23 +372,23 @@ async def _posix_traceroute(
     max_hops: int = 30,
     timeout: float = 2.0,
 ) -> list[_HopLike]:
-    """macOS/Linux'da tizim `traceroute` orqali yo'lni o'lchaydi (root SHART EMAS).
+    """Measures the path via the system `traceroute` on macOS/Linux (root NOT needed).
 
-    Nima uchun kerak: `icmplib.traceroute(privileged=False)` macOS'da
-    `SocketPermissionError` beradi — TTL ni o'zgartirish uchun **raw socket**
-    kerak, oddiy ICMP datagram socket'i buni qila olmaydi. Ping esa datagram
-    bilan ishlaydi, shuning uchun ping ishlab, traceroute ishlamay qolardi
-    (TUI'da "Yo'l aniqlanmadi" — foydalanuvchi ko'rgan holat).
+    Why it is needed: on macOS `icmplib.traceroute(privileged=False)` raises
+    `SocketPermissionError` — changing the TTL requires a **raw socket**, and a
+    plain ICMP datagram socket cannot do it. Ping does work over a datagram, so
+    ping kept working while traceroute stayed broken (the TUI said "No path
+    found." — the state the user actually saw).
 
-    Yechim: macOS'da `/usr/sbin/traceroute` **setuid root**, Linux'da esa
-    odatda `CAP_NET_RAW` bilan keladi — ikkalasi ham sudo'siz ishlaydi. IPv6
-    uchun `traceroute6` ishlatiladi.
+    The fix: on macOS `/usr/sbin/traceroute` is **setuid root**, and on Linux it
+    normally ships with `CAP_NET_RAW` — both run without sudo. For IPv6,
+    `traceroute6` is used.
 
-    Buyruq topilmasa yoki xato bersa — bo'sh ro'yxat (istisno yo'q).
+    If the command is missing or fails — an empty list (no exception).
     """
     is_v6 = ":" in address
     wait = max(1, int(timeout))
-    # `-n` nom resolve qilmaydi (tez), `-q 1` har hop uchun bitta probe.
+    # `-n` skips name resolution (fast), `-q 1` sends one probe per hop.
     base_args = ["-n", "-m", str(max_hops), "-w", str(wait), "-q", "1", address]
     candidates = (
         [["traceroute6", *base_args], ["/usr/sbin/traceroute6", *base_args]]
@@ -410,18 +415,19 @@ async def _win_traceroute(
     max_hops: int = 30,
     timeout: float = 2.0,
 ) -> list[_HopLike]:
-    """Windows'da yo'lni o'lchaydi (admin shart emas).
+    """Measures the path on Windows (no admin needed).
 
-    Ildiz yo'l: Win32 `IcmpSendEcho` + TTL (`_platform.win_icmp_traceroute`) —
-    til/codepage'dan mustaqil, matn-parse'siz (IPv4).
+    Primary path: Win32 `IcmpSendEcho` + TTL (`_platform.win_icmp_traceroute`) —
+    independent of language/codepage, with no text parsing (IPv4).
 
-    Zaxira yo'l: `IcmpSendEcho` yo'q yoki manzil IPv4'ga resolve bo'lmasa,
-    `tracert -d -h <max_hops> -w <ms> <address>` chiqishini TIL-MUSTAQIL
-    `parse_windows_tracert` bilan parse qilamiz. Har ikkala holatda `_WinRawHop`
-    ro'yxati qaytadi (`_map_hops`/`trace_stream` shu shaklni o'qiydi). Hech narsa
-    bo'lmasa — bo'sh ro'yxat.
+    Fallback path: if `IcmpSendEcho` is unavailable, or the address does not
+    resolve to IPv4, we parse the output of
+    `tracert -d -h <max_hops> -w <ms> <address>` with the LANGUAGE-INDEPENDENT
+    `parse_windows_tracert`. Either way a list of `_WinRawHop` comes back
+    (`_map_hops`/`trace_stream` read that shape). If neither works — an empty
+    list.
     """
-    # 1) Ildiz yo'l: IcmpSendEcho + TTL (IPv4, til/codepage'dan mustaqil).
+    # 1) Primary path: IcmpSendEcho + TTL (IPv4, independent of language/codepage).
     icmp = await asyncio.to_thread(_platform.win_icmp_traceroute, address, max_hops, timeout)
     if icmp is not None:
         return [
@@ -429,10 +435,10 @@ async def _win_traceroute(
             for (idx, addr, rtt, alive) in icmp
         ]
 
-    # 2) Zaxira yo'l: tizim `tracert.exe` + til-mustaqil parse.
+    # 2) Fallback path: the system `tracert.exe` + language-independent parsing.
     wait_ms = max(1, int(timeout * 1000))
     cmd = ["tracert", "-d", "-h", str(max_hops), "-w", str(wait_ms), address]
-    # tracert har hop uchun `-w` kutishi mumkin -> umumiy timeout kengroq.
+    # tracert may wait `-w` on every hop -> the overall timeout is wider.
     overall = timeout * max_hops + 5.0
     out = await _platform.run_command(cmd, timeout=overall)
     if not out:
@@ -446,25 +452,25 @@ async def _win_traceroute(
 
 @dataclass(slots=True)
 class _WinHost:
-    """Windows LAN sweep host natijasi — `_HostLike` shakliga mos (duck typing)."""
+    """A Windows LAN sweep host result — fits the `_HostLike` shape (duck typing)."""
 
     address: str
     is_alive: bool
     avg_rtt: float = 0.0
 
 
-# Windows LAN sweep'da parallel `ping` jarayonlari soni (resurs cheklash).
+# Number of parallel `ping` processes in a Windows LAN sweep (resource cap).
 _WIN_SWEEP_CONCURRENCY = 64
 
 
 async def _win_multiping(hosts: list[str], timeout: float) -> list[_HostLike]:
-    """Windows'da /24 ping sweep: har host uchun bitta `ping -n 1` (concurrency cheklangan).
+    """A /24 ping sweep on Windows: one `ping -n 1` per host (bounded concurrency).
 
-    `async_multiping`ning Windows o'rnini bosadi. `_win_ping` (ping.py) orqali
-    har hostni alohida tekshiradi; semaphore bir vaqtdagi jarayonlar sonini
-    cheklaydi (katta tarmoqda resurs portlashining oldini oladi).
+    Stands in for `async_multiping` on Windows. Checks each host separately via
+    `_win_ping` (ping.py); the semaphore caps how many processes run at once
+    (which stops a large network from blowing up resource usage).
     """
-    # Kech import: ping <-> topology aylanma importining oldini oladi.
+    # Late import: prevents the circular ping <-> topology import.
     from systop.core.ping import _win_ping
 
     sem = asyncio.Semaphore(_WIN_SWEEP_CONCURRENCY)
@@ -490,19 +496,20 @@ async def trace_stream(
     interval: float = 1.0,
     cycles: int | None = None,
 ) -> AsyncIterator[list[HopStat]]:
-    """mtr/trippy uslubidagi jonli traceroute: yo'lni qayta-qayta probe qiladi.
+    """A live traceroute in the style of mtr/trippy: it probes the path over and over.
 
-    Har `interval` soniyada butun yo'lni qaytadan o'lchaydi va har hop bo'yicha
-    jamlanma `HopStat` (sent, recv, loss%, last/avg/best/worst rtt) ni yangilab,
-    ro'yxat ko'rinishida `yield` qiladi. Chaqiruvchi har iteratsiyada eng so'nggi
-    holatni oladi.
+    Every `interval` seconds the whole path is measured again, and the
+    cumulative `HopStat` for each hop (sent, recv, loss%, last/avg/best/worst
+    rtt) is updated and `yield`ed as a list. The caller gets the very latest
+    state on each iteration.
 
-    `cycles` — necha marta probe qilish (None bo'lsa cheksiz; to'xtatish
-    chaqiruvchida CancelledError orqali). `index` (hop masofasi) bo'yicha
-    barqaror kalitlangan — yo'l o'zgarsa ham statistika to'planib boradi.
+    `cycles` — how many times to probe (None means endless; stopping is the
+    caller's business, via CancelledError). The stats are keyed stably by `index`
+    (the hop distance) — so they keep accumulating even if the path changes.
 
-    Eslatma: birinchi `yield`gacha bitta to'liq probe kutiladi (yo'l aniqlanishi
-    uchun). Reverse DNS faqat birinchi marta ko'rilgan manzil uchun bajariladi.
+    Note: one full probe is awaited before the first `yield` (so the path can be
+    determined). Reverse DNS is only done for an address the first time it is
+    seen.
     """
     stats: dict[int, HopStat] = {}
     cycle = 0
@@ -532,15 +539,15 @@ async def trace_stream(
 
 
 async def lan_cidrs(all_interfaces: bool = True) -> list[str]:
-    """Skan qilinadigan IPv4 tarmoqlar ro'yxati — SOF-ga yaqin yordamchi.
+    """The list of IPv4 networks to scan — a near-pure helper.
 
-    `all_interfaces=True` bo'lsa **har bir faol interfeysning** tarmog'i
-    qaytariladi (Wi-Fi + Ethernet + VPN bir vaqtda ulangan bo'lishi mumkin va
-    faqat bittasini skan qilish qolganlarini ko'rinmas qiladi). `False` bo'lsa
-    faqat asosiy interfeys.
+    With `all_interfaces=True` the network of **every active interface** is
+    returned (Wi-Fi + Ethernet + VPN can all be connected at once, and scanning
+    just one of them makes the rest invisible). With `False`, only the primary
+    interface.
 
-    Takrorlar olib tashlanadi: ikki interfeys bir tarmoqda bo'lsa ikki marta
-    skan qilish shart emas.
+    Duplicates are removed: if two interfaces sit on the same network there is
+    no need to scan it twice.
     """
     ifaces = netinfo.list_interfaces()
     if not all_interfaces:
@@ -560,12 +567,12 @@ async def discover_lan(
     resolve: bool = False,
     all_interfaces: bool = False,
 ) -> list[LanHost]:
-    """Lokal tarmoqdagi tirik hostlarni topadi (ping sweep + ARP jadval).
+    """Finds the alive hosts on the local network (a ping sweep + the ARP table).
 
-    `all_interfaces=True` — barcha faol interfeyslarning tarmoqlari skan
-    qilinadi (`cidr` berilmagan bo'lsa). Bu ko'p tarmoqqa ulangan mashinada
-    (Wi-Fi + kabel + VPN) muhim: bitta tarmoqni skan qilib "hammasi shu" deb
-    xulosa chiqarish noto'g'ri bo'ladi.
+    `all_interfaces=True` — the networks of every active interface are scanned
+    (when no `cidr` is given). That matters on a machine attached to several
+    networks (Wi-Fi + cable + VPN): scanning one network and concluding "that is
+    all of them" would be wrong.
     """
     if cidr is None and all_interfaces:
         cidrs = await lan_cidrs(all_interfaces=True)
@@ -613,7 +620,7 @@ async def discover_lan(
             entry.hostname = await _reverse_dns(host.address)
         found.append(entry)
 
-    # ARP jadvalida bor, lekin ping'ga javob bermagan hostlarni ham qo'shamiz.
+    # We also add the hosts that are in the ARP table but did not answer the ping.
     seen = {h.ip for h in found}
     for ip, mac in arp_table.items():
         if ip not in seen and ipaddress.ip_address(ip) in network:
@@ -631,16 +638,17 @@ async def discover_lan(
 
 
 def parse_ndp_output(text: str, windows: bool = False) -> dict[str, str]:
-    """IPv6 qo'shni jadvali chiqishidan {ip: mac} — SOF funksiya (offline test).
+    """{ip: mac} from the IPv6 neighbour table output — a pure function (offline test).
 
-    Uch format qo'llab-quvvatlanadi: macOS `ndp -an`, Linux `ip -6 neigh`,
-    Windows `netsh interface ipv6 show neighbors`. MAC har holatda kichik harf
-    va ':' separatorga normallashtiriladi (IPv4 ARP bilan bir xil ko'rinish).
+    Three formats are supported: macOS `ndp -an`, Linux `ip -6 neigh`, and
+    Windows `netsh interface ipv6 show neighbors`. In every case the MAC is
+    normalised to lower case with a ':' separator (the same look as the IPv4
+    ARP table).
 
-    Zona qo'shimchasi (`fe80::1%en0`) **saqlanadi** — link-local manzil zonasiz
-    ishlatib bo'lmaydi (ping/ulanish uchun interfeys kerak).
+    The zone suffix (`fe80::1%en0`) is **preserved** — a link-local address is
+    unusable without its zone (pinging/connecting needs the interface).
 
-    To'liq bo'lmagan yozuvlar (MAC "incomplete"/bo'sh) tashlanadi.
+    Incomplete entries (MAC "incomplete"/empty) are dropped.
     """
     table: dict[str, str] = {}
     for line in text.splitlines():
@@ -654,7 +662,7 @@ def parse_ndp_output(text: str, windows: bool = False) -> dict[str, str]:
             if not m:
                 continue
             ip, mac = m.group(1), m.group(2).lower()
-        # Sarlavha qatorlari va noto'g'ri yozuvlarni chetlab o'tamiz.
+        # We skip the header lines and the invalid entries.
         if ip.lower() in ("neighbor", "internet") or ":" not in ip:
             continue
         table[ip] = _normalize_mac(mac)
@@ -662,7 +670,7 @@ def parse_ndp_output(text: str, windows: bool = False) -> dict[str, str]:
 
 
 def _read_ndp_table() -> dict[str, str]:
-    """OS IPv6 qo'shni jadvalini o'qiydi (macOS/Linux/Windows). Xatolar yutiladi."""
+    """Reads the OS IPv6 neighbour table (macOS/Linux/Windows). Errors are swallowed."""
     if _platform.IS_WINDOWS:
         try:
             raw = subprocess.run(
@@ -687,15 +695,15 @@ def _read_ndp_table() -> dict[str, str]:
 
 
 async def _ping_all_nodes(timeout: float = 2.0) -> None:
-    """`ff02::1` ga multicast ping yuboradi — qo'shni jadvalni "to'ldirish" uchun.
+    """Sends a multicast ping to `ff02::1` — to "fill up" the neighbour table.
 
-    Javoblar o'qilmaydi (turli OS turlicha chiqaradi); maqsad — hostlarni
-    javob berishga majburlash, keyin qo'shni jadvalidan o'qish. Shuning uchun
-    xato butunlay yutiladi: ping6 bo'lmasa ham discovery ARP/NDP jadvali
-    hisobiga ishlaydi (graceful degrade).
+    The replies are not read (each OS prints them differently); the point is to
+    force the hosts to answer and then read the neighbour table. That is why
+    errors are swallowed entirely: even without ping6 the discovery still works
+    off the ARP/NDP table (a graceful degrade).
 
-    Interfeys zonasi shart — link-local multicast qaysi interfeysdan
-    yuborilishini OS o'zi bilmaydi.
+    The interface zone is mandatory — the OS does not know by itself which
+    interface a link-local multicast should go out of.
     """
     iface = netinfo.primary_interface()
     zone = f"%{iface.name}" if iface and iface.name else ""
@@ -704,7 +712,7 @@ async def _ping_all_nodes(timeout: float = 2.0) -> None:
     if _platform.IS_WINDOWS:
         cmds = [["ping", "-6", "-n", "2", "-w", "1000", target]]
     else:
-        # macOS: ping6; Linux (iputils yangi): ping -6. Ikkalasini ham sinaymiz.
+        # macOS: ping6; Linux (a recent iputils): ping -6. We try both.
         cmds = [
             ["ping6", "-c", "2", "-i", "0.3", target],
             ["ping", "-6", "-c", "2", "-i", "0.3", target],
@@ -729,18 +737,18 @@ async def discover_lan6(
     resolve: bool = False,
     include_link_local: bool = True,
 ) -> list[LanHost]:
-    """Lokal tarmoqdagi IPv6 hostlarni topadi (multicast ping + NDP jadvali).
+    """Finds the IPv6 hosts on the local network (a multicast ping + the NDP table).
 
-    **Nega IPv4'dan boshqacha:** IPv6 tarmog'i odatda /64 — bu 18 kvintillion
-    manzil, ping sweep imkonsiz. Standart usul (RFC 4291): `ff02::1`
-    ("barcha nodelar" link-local multicast) ga ping yuborib, javob berganlarni
-    OS qo'shni (neighbour) jadvalidan o'qish.
+    **Why this differs from IPv4:** an IPv6 network is normally a /64 — that is
+    18 quintillion addresses, so a ping sweep is impossible. The standard
+    approach (RFC 4291): ping `ff02::1` (the "all nodes" link-local multicast)
+    and read whoever answered out of the OS neighbour table.
 
-    `include_link_local=False` bo'lsa fe80::/10 manzillar tashlanadi (faqat
-    global/ULA qoladi — routerdan o'tadigan manzillar).
+    With `include_link_local=False` the fe80::/10 addresses are dropped (only
+    global/ULA remain — the addresses that cross a router).
 
-    Root kerak emas: multicast ping tizim `ping6`/`ping -6` orqali yuboriladi,
-    jadval esa `ip -6 neigh`/`ndp -an`/`netsh` dan o'qiladi.
+    No root needed: the multicast ping goes out through the system `ping6`/
+    `ping -6`, and the table is read from `ip -6 neigh`/`ndp -an`/`netsh`.
     """
     await _ping_all_nodes(timeout=timeout)
     table = _read_ndp_table()
@@ -767,7 +775,7 @@ async def discover_lan6(
 
 
 def _ipv6_sort_key(host: LanHost) -> tuple[int, object]:
-    """IPv6 hostlarni barqaror tartiblash (noto'g'ri manzil oxiriga tushadi)."""
+    """A stable sort order for IPv6 hosts (an invalid address lands at the end)."""
     try:
         return (0, ipaddress.ip_address(host.ip.split("%")[0]))
     except ValueError:
@@ -775,24 +783,27 @@ def _ipv6_sort_key(host: LanHost) -> tuple[int, object]:
 
 
 def _parse_arp_table() -> dict[str, str]:
-    """OS ARP jadvalidan {ip: mac} lug'atini o'qiydi (Windows/macOS/Linux).
+    """Reads an {ip: mac} dict out of the OS ARP table (Windows/macOS/Linux).
 
-    macOS/Linux: `arp -a` (qavs ichida IP, ':' bilan MAC) yoki zaxira `ip neigh`.
-    Windows: `arp -a` (tire bilan MAC, "dynamic/static" turi). MAC har holatda
-    kichik harf + ':' separatorga normallashtiriladi (oui.lookup_vendor ikkala
-    separatorni ham qabul qiladi, lekin saqlash bir xil bo'lsin).
+    macOS/Linux: `arp -a` (the IP in brackets, the MAC with ':'), or `ip neigh`
+    as the fallback. Windows: `arp -a` (the MAC with dashes, a
+    "dynamic/static" type). In every case the MAC is normalised to lower case
+    with a ':' separator (oui.lookup_vendor accepts either separator, but what
+    we store should be uniform).
 
-    Buyruq topilmasa (`FileNotFoundError`) yoki xato bersa — toza yutiladi va
-    keyingi buyruqqa o'tadi (har platformada graceful degrade).
+    If the command is missing (`FileNotFoundError`) or fails, that is swallowed
+    cleanly and we move on to the next command (a graceful degrade on every
+    platform).
     """
     if _platform.IS_WINDOWS:
         return _parse_arp_table_windows()
 
     table: dict[str, str] = {}
-    # `-n` (numeric) SHART: `arp -a` har yozuv uchun reverse DNS qiladi va katta
-    # tarmoqda (masalan /23, ~280 yozuv) 5+ sekund ketadi — timeout'ga urilib
-    # jadval BO'SH qaytardi, natijada MAC/vendor ustunlari to'liq bo'sh
-    # ko'rinardi. `arp -an` xuddi shu ma'lumotni ~9 ms da beradi.
+    # `-n` (numeric) is MANDATORY: `arp -a` does a reverse DNS lookup for every
+    # entry, and on a large network (a /23 with ~280 entries, say) that takes 5+
+    # seconds — it hit the timeout and returned an EMPTY table, so the
+    # MAC/vendor columns came out completely blank. `arp -an` gives exactly the
+    # same data in ~9 ms.
     for cmd in (["arp", "-an"], ["ip", "-4", "neigh"]):
         try:
             raw = subprocess.run(cmd, capture_output=True, timeout=10).stdout
@@ -809,21 +820,21 @@ def _parse_arp_table() -> dict[str, str]:
 
 
 def _normalize_mac(mac: str) -> str:
-    """MAC'ni kichik harf + ikki raqamli oktetlarga keltiradi.
+    """Brings a MAC to lower case with two-digit octets.
 
-    macOS `arp` qisqa yozadi (`0:15:5d:27:40:3`), OUI jadvali esa to'liq
-    formatni kutadi — to'ldirmasa vendor **hech qachon** topilmaydi
+    macOS `arp` writes them short (`0:15:5d:27:40:3`), whereas the OUI table
+    expects the full form — without the padding the vendor is **never** found
     (`c0:6:c3:2:63:55` -> None, `c0:06:c3:02:63:55` -> TP-Link).
     """
     return ":".join(part.zfill(2) for part in mac.lower().split(":"))
 
 
 def _parse_arp_table_windows() -> dict[str, str]:
-    """Windows `arp -a` chiqishidan {ip: mac} (MAC ':' bilan, kichik harf).
+    """{ip: mac} from Windows `arp -a` output (the MAC with ':', lower case).
 
-    Chiqish bayt sifatida olinib `decode_console` (OEM codepage) bilan
-    dekodlanadi — RUS konsolida ham IP/MAC to'g'ri o'qiladi. Konsol oynasi
-    miltillamasligi uchun CREATE_NO_WINDOW.
+    The output is taken as bytes and decoded with `decode_console` (the OEM
+    codepage) — so the IP/MAC are read correctly on a Russian console too.
+    CREATE_NO_WINDOW keeps the console window from flashing up.
     """
     table: dict[str, str] = {}
     try:
@@ -839,13 +850,13 @@ def _parse_arp_table_windows() -> dict[str, str]:
     for line in out.splitlines():
         m = _ARP_WIN_RE.search(line)
         if m:
-            # "00-11-22-33-44-55" -> "00:11:22:33:44:55" (saqlash bir xil bo'lsin).
+            # "00-11-22-33-44-55" -> "00:11:22:33:44:55" (so storage is uniform).
             table[m.group(1)] = m.group(2).replace("-", ":").lower()
     return table
 
 
 async def _reverse_dns(address: str, timeout: float = 1.0) -> str | None:
-    """Best-effort reverse DNS (PTR) — xatolar yutiladi."""
+    """Best-effort reverse DNS (PTR) — errors are swallowed."""
     try:
         result = await asyncio.wait_for(asyncio.to_thread(socket.gethostbyaddr, address), timeout)
         return result[0]

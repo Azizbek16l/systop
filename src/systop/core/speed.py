@@ -1,13 +1,12 @@
-"""Internet bandwidth o'lchovi — Cloudflare speed test endpointlari orqali.
+"""Internet bandwidth measurement — through the Cloudflare speed test endpoints.
 
-`speedtest-cli` eskirgan; uning o'rniga Cloudflare'ning ochiq endpointlaridan
-foydalanamiz:
+`speedtest-cli` is outdated; instead of it we use Cloudflare's public endpoints:
     download: GET  https://speed.cloudflare.com/__down?bytes=N
-    upload:   POST https://speed.cloudflare.com/__up   (tana = N bayt)
+    upload:   POST https://speed.cloudflare.com/__up   (body = N bytes)
 
-O'lchov vaqt bilan chegaralangan (duration soniya): bir nechta parallel
-ulanish ochib, shu vaqt ichida o'tgan baytlarni hisoblaymiz va Mbps chiqaramiz.
-Har bir bosqich `on_progress(mbps)` callback orqali jonli yangilanadi.
+The measurement is time-bounded (duration in seconds): we open several parallel
+connections, count the bytes that passed within that time and derive Mbps. Every
+phase is updated live through the `on_progress(mbps)` callback.
 """
 
 from __future__ import annotations
@@ -23,18 +22,18 @@ import httpx
 DOWN_URL = "https://speed.cloudflare.com/__down"
 UP_URL = "https://speed.cloudflare.com/__up"
 
-# Cloudflare `__down` endpointi bitta so'rovda ~100 MB dan ortig'iga 403 qaytaradi.
-# Shuning uchun har bir worker `stop` o'rnatilguncha shu hajmda qayta-qayta
-# so'rov yuboradi (vaqt bilan chegaralangan o'lchov shu yo'l bilan saqlanadi).
-DOWN_CHUNK_BYTES = 50 * 1024 * 1024  # 50 MB — limitdan past, xavfsiz
-UP_CHUNK_BYTES = 25 * 1024 * 1024  # 25 MB — bitta POST tanasi
+# The Cloudflare `__down` endpoint returns 403 for more than ~100 MB in a single
+# request. That is why every worker keeps sending requests of this size over and
+# over until `stop` is set (this is how the time-bounded measurement is kept).
+DOWN_CHUNK_BYTES = 50 * 1024 * 1024  # 50 MB — below the limit, safe
+UP_CHUNK_BYTES = 25 * 1024 * 1024  # 25 MB — a single POST body
 
 ProgressCb = Callable[[float], None] | None
 
 
 @dataclass(slots=True)
 class SpeedResult:
-    """Tezlik testi natijasi."""
+    """The result of the speed test."""
 
     download_mbps: float = 0.0
     upload_mbps: float = 0.0
@@ -45,7 +44,7 @@ class SpeedResult:
 
 
 async def measure_latency(client: httpx.AsyncClient, samples: int = 8) -> tuple[float, float]:
-    """Bo'sh (0 bayt) so'rovlar orqali latency va jitter (ms) o'lchaydi."""
+    """Measures latency and jitter (ms) through empty (0 byte) requests."""
     times: list[float] = []
     for _ in range(samples):
         start = time.perf_counter()
@@ -65,22 +64,24 @@ async def measure_latency(client: httpx.AsyncClient, samples: int = 8) -> tuple[
 async def _download_stream(
     client: httpx.AsyncClient, size: int, counter: list[int], stop: asyncio.Event
 ) -> None:
-    # `size` — har bir so'rov hajmi (endpoint limitidan past). `stop` o'rnatilguncha
-    # qayta-qayta so'rov yuboramiz; shunday qilib o'lchov vaqt bilan cheklanadi.
+    # `size` — the size of each request (below the endpoint limit). We keep
+    # sending requests until `stop` is set; that is how the measurement stays
+    # bounded by time.
     try:
         while not stop.is_set():
             async with client.stream("GET", DOWN_URL, params={"bytes": size}) as resp:
                 if resp.status_code != 200:
-                    # Limitga urilsa yoki xato bo'lsa — qayta urinmaymiz.
+                    # If we hit the limit or something failed — do not retry.
                     await resp.aread()
                     return
                 async for chunk in resp.aiter_bytes():
                     counter[0] += len(chunk)
                     if stop.is_set():
                         break
-            # Har so'rovdan keyin event loop'ga nazoratni qaytaramiz — darhol
-            # javob beruvchi transport (masalan test mock'i) monitor coroutine'ni
-            # och qoldirib, `stop` o'rnatilmasligining oldini olamiz.
+            # Hand control back to the event loop after every request — this
+            # prevents a transport that answers instantly (a test mock, for
+            # example) from starving the monitor coroutine so that `stop` is
+            # never set.
             await asyncio.sleep(0)
     except httpx.HTTPError:
         pass
@@ -89,12 +90,12 @@ async def _download_stream(
 async def _upload_gen(
     chunk: bytes, max_bytes: int, sent_box: list[int], stop: asyncio.Event
 ) -> AsyncIterator[bytes]:
-    # Bu generator faqat httpx tarmoqqa yozish UCHUN so'ragan baytlarni ishlab
-    # beradi. Yield'dan keyin `sent_box[0]` ni oshiramiz — chunk httpx'ga
-    # uzatildi (ya'ni transport buferiga yozildi). Lekin BU hisoblagich umumiy
-    # `counter` EMAS: agar POST yarmida uzilsa, yuborilmagan baytlar umumiy
-    # o'lchovga kirmasligi uchun commit faqat POST muvaffaqiyatli tugaganda
-    # (`_upload_stream`da) bo'ladi.
+    # This generator only produces the bytes that httpx asked FOR writing to the
+    # network. After the yield we increment `sent_box[0]` — the chunk was handed
+    # to httpx (that is, written into the transport buffer). But THIS counter is
+    # NOT the shared `counter`: so that bytes which were never sent do not enter
+    # the overall measurement if the POST breaks half way, the commit happens
+    # only once the POST has finished successfully (in `_upload_stream`).
     sent = 0
     while sent < max_bytes and not stop.is_set():
         yield chunk
@@ -109,36 +110,37 @@ async def _upload_stream(
     counter: list[int],
     stop: asyncio.Event,
 ) -> None:
-    # `stop` o'rnatilguncha qayta-qayta POST yuboramiz — tez kanallarda bitta
-    # POST tugab qolmasligi va o'lchov to'liq vaqt davom etishi uchun.
+    # We keep sending POSTs until `stop` is set — so that on fast links a single
+    # POST does not run out and the measurement lasts the full duration.
     #
-    # BUG TUZATILDI: ilgari baytlar generator ichida to'g'ridan-to'g'ri umumiy
-    # `counter`ga qo'shilardi — POST xato bo'lsa (yoki uzilsa) tarmoqqa
-    # yetmagan baytlar ham sanalib, Mbps shishardi. Endi har POST uchun
-    # alohida `sent_box`da hisoblanadi va faqat POST MUVAFFAQIYATLI tugagach
-    # umumiy `counter`ga commit qilinadi (xatoda rollback — hech narsa
-    # qo'shilmaydi). Shunday qilib faqat haqiqatan yuborilgan baytlar o'lchanadi.
+    # BUG FIXED: previously the bytes were added straight into the shared
+    # `counter` inside the generator — if the POST failed (or broke) the bytes
+    # that never reached the network were counted too and the Mbps was inflated.
+    # Now they are counted per POST in a separate `sent_box` and are committed to
+    # the shared `counter` only once the POST has finished SUCCESSFULLY (on an
+    # error it rolls back — nothing is added). That way only the bytes really
+    # sent are measured.
     try:
         while not stop.is_set():
             sent_box = [0]
             try:
                 await client.post(UP_URL, content=_upload_gen(chunk, max_bytes, sent_box, stop))
             except httpx.HTTPError:
-                # POST uzildi — bu so'rovning baytlari ishonchsiz, hisoblamaymiz.
+                # The POST broke — this request's bytes are unreliable, do not count them.
                 break
-            # Faqat to'liq, muvaffaqiyatli POST baytlarini commit qilamiz.
+            # Commit only the bytes of a complete, successful POST.
             counter[0] += sent_box[0]
-            await asyncio.sleep(0)  # event loop'ga nafas (starvation oldini olish)
+            await asyncio.sleep(0)  # a breath for the event loop (avoid starvation)
     except httpx.HTTPError:
         pass
 
 
-# `stop` o'rnatilgandan keyin uchib turgan (in-flight) so'rovni kutish muddati.
-# Upload fazasida server javobni sekin bersa POST `stop`'dan keyin ham osilib
-# qolishi mumkin edi (foydalanuvchiga "osilgandek" ko'rinardi). Shu grace
-# o'tgach uchayotgan worker'lar bekor qilinadi — natija (commit qilingan
-# baytlar) o'zgarmaydi, faqat osilish to'xtaydi. Mock transport darhol javob
-# bergani uchun bu yo'l testlarda hech qachon ishga tushmaydi.
+# How long to wait for an in-flight request after `stop` has been set.
+# In the upload phase, if the server was slow to answer, a POST could stay stuck
+# even after `stop` (which looked to the user like a "hang"). Once this grace
+# expires the in-flight workers are cancelled — the result (the committed bytes)
+# does not change, only the hang stops. Because a mock transport answers
+# instantly, this path is never taken in the tests.
 _DRAIN_GRACE_S = 3.0
 
 
@@ -150,21 +152,23 @@ async def _run_phase(
     on_progress: ProgressCb,
     warmup: float = 0.0,
 ) -> tuple[float, int]:
-    """Berilgan worker'larni `duration` soniya davomida ishlatib, Mbps qaytaradi.
+    """Runs the given workers for `duration` seconds and returns the Mbps.
 
-    `stop` — worker'lar kuzatadigan event; vaqt tugaganda o'rnatamiz.
-    `warmup` — boshlang'ich ramp-up soniyalari: shu vaqtgacha o'tgan baytlar
-    o'lchovga kirmaydi (TCP slow-start tufayli past tezlik o'rtachani buzmasin).
-    O'lchov oynasi warmup'dan keyin boshlanadi va `duration` soniya davom etadi.
+    `stop` — the event the workers watch; we set it when the time is up.
+    `warmup` — the initial ramp-up seconds: the bytes that pass before then do
+    not enter the measurement (so that the low speed caused by TCP slow-start
+    does not spoil the average). The measurement window starts after the warmup
+    and lasts `duration` seconds.
 
-    `on_progress` warmup davomida ham JONLI qiymat oladi (boshlanish vaqtidan
-    hisoblangan oraliq throughput) — upload fazasi "0.0 da osilgandek"
-    ko'rinmasligi uchun. O'lchovga kiradigan (qaytariladigan) Mbps esa faqat
-    warmup'dan keyingi oynadan hisoblanadi — aniqlik o'zgarmaydi.
+    `on_progress` receives a LIVE value during the warmup as well (the interim
+    throughput computed from the start time) — so that the upload phase does not
+    look like it is "stuck at 0.0". The Mbps that enters the measurement (the
+    returned one) is however computed only from the window after the warmup —
+    the accuracy is unchanged.
     """
     start = time.perf_counter()
-    base_bytes = 0  # warmup oxiridagi bayt hisoblagichi
-    base_time = start  # o'lchov oynasi boshlangan vaqt
+    base_bytes = 0  # the byte counter at the end of the warmup
+    base_time = start  # the time the measurement window started
     warmed = warmup <= 0.0
     gather = asyncio.gather(*workers)
     try:
@@ -173,7 +177,7 @@ async def _run_phase(
             now = time.perf_counter()
             elapsed = now - start
             if not warmed and elapsed >= warmup:
-                # Warmup tugadi — o'lchov oynasini shu nuqtadan boshlaymiz.
+                # The warmup is over — we start the measurement window here.
                 base_bytes = counter[0]
                 base_time = now
                 warmed = True
@@ -182,9 +186,10 @@ async def _run_phase(
                 measured_bytes = counter[0] - base_bytes
                 mbps = (measured_bytes * 8) / window / 1e6 if window > 0 else 0.0
             else:
-                # Warmup ichida — boshlanishdan oraliq throughput ko'rsatamiz,
-                # shunda UI harakatda turadi (0.0 da qotib qolmaydi). Bu qiymat
-                # YAKUNIY o'lchovga kirmaydi, faqat jonli ko'rsatkich.
+                # Inside the warmup — we show the interim throughput from the
+                # start so that the UI keeps moving (instead of freezing at
+                # 0.0). This value does not enter the FINAL measurement, it is
+                # only a live indicator.
                 warm_window = now - start
                 mbps = (counter[0] * 8) / warm_window / 1e6 if warm_window > 0 else 0.0
             if on_progress:
@@ -195,7 +200,7 @@ async def _run_phase(
     finally:
         await _drain_workers(gather)
     if not warmed:
-        # Worker'lar warmup tugashidan oldin yakunlandi — hammasini hisoblaymiz.
+        # The workers finished before the warmup was over — we count everything.
         base_bytes = 0
         base_time = start
     window = max(time.perf_counter() - base_time, 1e-6)
@@ -204,14 +209,14 @@ async def _run_phase(
 
 
 async def _drain_workers(gather: asyncio.Future) -> None:
-    """`stop`'dan keyin uchayotgan worker'larni kutadi; osilib qolsa bekor qiladi.
+    """Waits for the workers still in flight after `stop`; cancels them if they hang.
 
-    Normal holatda worker'lar `stop`'ni ko'rib darhol tugaydi (`gather` zudlik
-    bilan yakunlanadi). Lekin upload POST'i server javobini kutib turgan bo'lsa
-    `_DRAIN_GRACE_S` dan ortiq osilishi mumkin — bu muddatdan keyin `gather`
-    bekor qilinadi (in-flight POST baytlari allaqachon `counter`ga commit
-    qilinmagani uchun natija buzilmaydi). Bekor qilingach `CancelledError`'ni
-    yutamiz — chaqiruvchi faza hisobini bemalol yakunlaydi.
+    Normally the workers see `stop` and finish immediately (`gather` completes
+    at once). But if an upload POST is waiting for the server's answer it can
+    hang for longer than `_DRAIN_GRACE_S` — after that deadline `gather` is
+    cancelled (the result is not spoiled, because the bytes of an in-flight POST
+    have not been committed to `counter` yet). After the cancellation we swallow
+    the `CancelledError` — the caller can finish the phase accounting in peace.
     """
     try:
         await asyncio.wait_for(gather, timeout=_DRAIN_GRACE_S)
@@ -220,8 +225,8 @@ async def _drain_workers(gather: asyncio.Future) -> None:
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await gather
     except asyncio.CancelledError:
-        # Tashqaridan bekor qilindi (masalan butun speedtest cancel) — gather'ni
-        # ham bekor qilib, qayta ko'taramiz (cancel semantikasini saqlash uchun).
+        # Cancelled from outside (the whole speedtest was cancelled, say) — we
+        # cancel `gather` as well and re-raise (to preserve cancel semantics).
         gather.cancel()
         with contextlib.suppress(Exception):
             await gather
@@ -235,7 +240,7 @@ async def measure_download(
     on_progress: ProgressCb = None,
     warmup: float = 1.0,
 ) -> tuple[float, int]:
-    """Download tezligini (Mbps) o'lchaydi. Qaytaradi: (mbps, baytlar)."""
+    """Measures the download speed (Mbps). Returns: (mbps, bytes)."""
     counter = [0]
     stop = asyncio.Event()
     workers = [_download_stream(client, DOWN_CHUNK_BYTES, counter, stop) for _ in range(parallel)]
@@ -249,7 +254,7 @@ async def measure_upload(
     on_progress: ProgressCb = None,
     warmup: float = 1.0,
 ) -> tuple[float, int]:
-    """Upload tezligini (Mbps) o'lchaydi. Qaytaradi: (mbps, baytlar)."""
+    """Measures the upload speed (Mbps). Returns: (mbps, bytes)."""
     counter = [0]
     chunk = b"\x00" * (64 * 1024)
     stop = asyncio.Event()
@@ -266,10 +271,10 @@ async def run_speedtest(
     on_upload: ProgressCb = None,
     warmup: float = 1.0,
 ) -> SpeedResult:
-    """To'liq tezlik testi: latency -> download -> upload.
+    """The full speed test: latency -> download -> upload.
 
-    `warmup` — har bir bosqichda TCP slow-start davridagi baytlarni o'lchovga
-    kiritmaslik uchun boshlang'ich soniyalar (aniqroq Mbps).
+    `warmup` — the initial seconds of each phase, so that the bytes from the TCP
+    slow-start period are kept out of the measurement (a more accurate Mbps).
     """
     limits = httpx.Limits(max_connections=parallel * 2)
     async with httpx.AsyncClient(http2=False, timeout=30.0, limits=limits) as client:
@@ -291,25 +296,27 @@ async def run_speedtest(
 
 
 # ===========================================================================
-# Lokal (IX) vs xalqaro tezlik
+# Local (IX) vs international speed
 # ===========================================================================
 #
-# Nima uchun kerak: ko'p mamlakatda provayder LOKAL almashuv nuqtasi (IX)
-# ichidagi trafikni xalqarodan butunlay boshqacha narxlaydi va cheklaydi —
-# O'zbekistonda TAS-IX, Qozog'istonda KazIX, Rossiyada MSK-IX va hokazo.
-# Natijada foydalanuvchida lokal tezlik to'la, xalqaro esa chekланган bo'ladi.
+# Why this is needed: in many countries the ISP prices and rate-limits traffic
+# inside the LOCAL exchange point (IX) completely differently from
+# international traffic — TAS-IX in Uzbekistan, KazIX in Kazakhstan, MSK-IX in
+# Russia and so on. The result is that the user gets the full local speed while
+# the international one is throttled.
 #
-# "Internet sekin" shikoyatida bu farqni ko'rmasdan turib xulosa chiqarib
-# bo'lmaydi: agar lokal 100 Mbps, xalqaro 8 Mbps bo'lsa — bu nosozlik EMAS,
-# tarif shunday. Aksincha ikkalasi ham past bo'lsa — bu haqiqiy muammo.
+# When someone complains that "the internet is slow" you cannot draw any
+# conclusion without seeing that difference: if local is 100 Mbps and
+# international is 8 Mbps — that is NOT a fault, that is the plan. If on the
+# other hand both are low — that is a real problem.
 #
-# Endpoint KODGA YOZILMAYDI: har mamlakatda o'zinikini config'da beriladi
-# (`speed_local_urls`). Shunda bir xil kod hamma joyda ishlaydi.
+# The endpoint is NOT HARD-CODED: every country supplies its own in the config
+# (`speed_local_urls`). That way the same code works everywhere.
 
 
 @dataclass(slots=True)
 class LocalSpeedResult:
-    """Bitta lokal endpoint bo'yicha o'lchov."""
+    """The measurement for a single local endpoint."""
 
     url: str
     ok: bool = False
@@ -321,7 +328,7 @@ class LocalSpeedResult:
 
 @dataclass(slots=True)
 class SpeedComparison:
-    """Lokal va xalqaro tezlik taqqoslashi."""
+    """A comparison of the local and the international speed."""
 
     international_mbps: float = 0.0
     local: list[LocalSpeedResult] = field(default_factory=list)
@@ -333,17 +340,17 @@ class SpeedComparison:
 
     @property
     def ratio(self) -> float | None:
-        """Lokal / xalqaro nisbati. Xalqaro 0 bo'lsa None."""
+        """The local / international ratio. None if international is 0."""
         if self.international_mbps <= 0:
             return None
         return self.best_local_mbps / self.international_mbps
 
     @property
     def is_throttled_international(self) -> bool:
-        """Lokal xalqarodan sezilarli tez bo'lsa — xalqaro kanal cheklangan.
+        """If local is noticeably faster than international — the international link is throttled.
 
-        Chegara 3x: tabiiy farq (masofa, peering) odatda 2x dan oshmaydi,
-        3x va undan yuqorisi tarif/shaping belgisidir.
+        The threshold is 3x: the natural difference (distance, peering) does not
+        usually exceed 2x, and 3x or more is a sign of the plan/shaping.
         """
         r = self.ratio
         return r is not None and r >= 3.0
@@ -354,13 +361,14 @@ async def measure_local(
     duration: float = 5.0,
     timeout: float = 10.0,
 ) -> list[LocalSpeedResult]:
-    """Berilgan lokal endpointlardan yuklab, o'tkazuvchanlikni o'lchaydi.
+    """Downloads from the given local endpoints and measures the throughput.
 
-    Har URL katta fayl bo'lishi kerak (>= 10 MB tavsiya etiladi). Yuklash
-    `duration` soniyadan keyin to'xtatiladi — butun faylni yuklab olish shart
-    emas, faqat barqaror tezlikni o'lchash kerak.
+    Every URL should be a large file (>= 10 MB recommended). The download is
+    stopped after `duration` seconds — there is no need to fetch the whole file,
+    only to measure the steady speed.
 
-    Istisno ko'tarmaydi: har endpoint mustaqil, biri yiqilsa qolgani davom etadi.
+    Raises no exception: every endpoint is independent, and if one fails the
+    rest carry on.
     """
     results: list[LocalSpeedResult] = []
     for url in urls:
@@ -385,10 +393,10 @@ async def measure_local(
             res.mbps = (total * 8) / elapsed / 1e6
             res.ok = total > 0
             if not res.ok:
-                res.error = "ma'lumot kelmadi"
+                res.error = "no data received"
         except httpx.HTTPError as exc:
-            res.error = f"so'rov xatosi: {type(exc).__name__}"
+            res.error = f"request error: {type(exc).__name__}"
         except (OSError, ValueError) as exc:
-            res.error = f"ulanish xatosi: {type(exc).__name__}"
+            res.error = f"connection error: {type(exc).__name__}"
         results.append(res)
     return results

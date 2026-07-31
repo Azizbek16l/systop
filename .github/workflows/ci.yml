@@ -49,11 +49,11 @@ jobs:
         run: uv run pytest -q
 
   # ---------------------------------------------------------------------------
-  # Lokalizatsiya regressiya to'ri: ruscha/nemischa va C/ASCII lokal ostida ham
+  # Localisation regression net: the CLI must not crash on non-ASCII output
   # testlar o'tishi SHART. systop'ning eng yashirin xatosi shu yerda yashiringan
   # edi (RUS Windows konsoli cp866; POSIX `LANG=C` ascii codec). Bu ish stdout'ni
   # ascii codec'ga majburlab (PYTHONUTF8=0 + PYTHONCOERCECLOCALE=0 + LC_ALL=C),
-  # CLI'ning non-ASCII chiqishda yiqilmasligini (UnicodeEncodeError yo'q)
+  # (no UnicodeEncodeError) under Russian/German or C/ASCII locales either.
   # tasdiqlaydi.
   locale-matrix:
     name: Locale (${{ matrix.locale.name }})
@@ -84,7 +84,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Generate RU/DE locales (UTF-8 variantlar uchun)
+      - name: Generate RU/DE locales (for the UTF-8 variants)
         if: matrix.locale.name != 'C-ascii'
         run: |
           sudo locale-gen ru_RU.UTF-8 de_DE.UTF-8
@@ -149,30 +149,30 @@ jobs:
           $out = uv run systop info --json | Out-String
           Write-Host $out
           $json = $out | ConvertFrom-Json
-          if ($null -eq $json.interfaces) { throw "info --json: interfaces yo'q" }
+          if ($null -eq $json.interfaces) { throw "info --json: no interfaces" }
 
       - name: systop ping --json (localhost — har doim tirik)
         shell: pwsh
         run: |
-          # 127.0.0.1 loopback — internet bo'lmasa ham tirik bo'lishi shart.
-          # RUS konsoli xatosi (rtts=[] -> alive=False) bo'lsa BU YERDA tushadi.
+          # 127.0.0.1 loopback must be alive even with no internet at all.
+          # A Russian-console defect (rtts=[] -> alive=False) fails RIGHT HERE.
           $out = uv run systop ping --json --targets 127.0.0.1 | Out-String
           Write-Host $out
           $json = $out | ConvertFrom-Json
           $loop = $json | Where-Object { $_.address -eq "127.0.0.1" } | Select-Object -First 1
-          if ($null -eq $loop) { throw "ping --json: 127.0.0.1 natijasi yo'q" }
+          if ($null -eq $loop) { throw "ping --json: no result for 127.0.0.1" }
           if (-not $loop.alive) { throw "ping --json: loopback 'o'lik' deb topildi (ICMP/codepage regressiyasi!)" }
 
-      - name: systop ping --json exit kodi mazmunli (o'lik nishon -> 2)
+      - name: systop ping --json has a meaningful exit code (dead target -> 2)
         shell: pwsh
         run: |
           # 192.0.2.1 — TEST-NET-1 (RFC 5737), hech qachon javob bermaydi.
-          # Yetib bo'lmaydigan nishon EXIT_UNREACHABLE (2) berishi kerak.
+          # An unreachable target must return EXIT_UNREACHABLE (2).
           uv run systop ping --json --targets 192.0.2.1 | Out-Null
           if ($LASTEXITCODE -ne 2) {
-            throw "o'lik nishon exit kodi 2 emas: $LASTEXITCODE"
+            throw "dead target exit code is not 2: $LASTEXITCODE"
           }
-          Write-Host "OK: o'lik nishon -> exit 2"
+          Write-Host "OK: dead target -> exit 2"
 
       - name: systop tls --json (chiqish UTF-8 toza)
         shell: pwsh

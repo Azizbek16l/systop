@@ -1,18 +1,20 @@
-"""O'rnatilgan kichik OUI -> vendor jadvali (offline MAC vendor lookup uchun).
+"""A small built-in OUI -> vendor table (for the offline MAC vendor lookup).
 
-Bu IEEE OUI registrining JUDA kichik qism to'plami — uy/ofis tarmoqlarida eng
-ko'p uchraydigan ~60 ta vendor. To'liq IEEE bazasi (~30k yozuv) emas; maqsad —
-qo'shimcha bog'liqlik va katta fayl yuklamasdan ko'p hostlarni taniб olish.
+This is a VERY small subset of the IEEE OUI registry — the ~60 vendors most
+commonly seen on home/office networks. It is not the full IEEE database (~30k
+entries); the goal is to recognise most hosts without an extra dependency and
+without loading a large file.
 
-Kalit — OUI ning birinchi 3 okteti, KATTA harfli hex, ajratuvchisiz (masalan
-``"A4B1C2"``). Qiymat — vendor nomi. Bir vendorda bir nechta OUI bo'lishi normal.
+The key is the first 3 octets of the OUI, in UPPERCASE hex, with no separator
+(``"A4B1C2"``, for example). The value is the vendor name. It is normal for one
+vendor to hold several OUIs.
 
-Manba: ochiq IEEE MA-L assignment registri (jamoatchilikka ochiq).
+Source: the open IEEE MA-L assignment registry (publicly available).
 """
 
 from __future__ import annotations
 
-# OUI (aynan 6 ta hex belgi, separatorsiz, UPPER) -> vendor nomi.
+# OUI (exactly 6 hex characters, no separator, UPPER) -> vendor name.
 OUI_VENDORS: dict[str, str] = {
     # --- Apple ---
     "A4B1C2": "Apple",
@@ -129,10 +131,11 @@ OUI_VENDORS: dict[str, str] = {
     # --- Aruba (HPE) ---
     "186472": "Aruba",
     "9C1C12": "Aruba",
-    # --- Virtual NIC'lar (hypervisor/konteyner) ---------------------------
-    # Sysadmin uchun juda qimmatli: LAN'dagi host jismoniy qurilmami yoki VM'mi
-    # — shu prefikslar aytadi. Hyper-V ("00:15:5D") ayniqsa muhim, chunki bir
-    # xost o'nlab VM chiqaradi va ularning hammasi shu prefiks bilan ko'rinadi.
+    # --- Virtual NICs (hypervisor/container) ------------------------------
+    # Extremely valuable for a sysadmin: whether a host on the LAN is a physical
+    # device or a VM — these prefixes are what tell you. Hyper-V ("00:15:5D") is
+    # especially important, because a single host puts out dozens of VMs and all
+    # of them show up with that prefix.
     "00155D": "Microsoft Hyper-V (VM)",
     "080027": "VirtualBox (VM)",
     "0A0027": "VirtualBox (VM)",
@@ -141,5 +144,5 @@ OUI_VENDORS: dict[str, str] = {
     "001C42": "Parallels (VM)",
     "000569": "VMware (VM)",
     "001C14": "VMware (VM)",
-    "0242AC": "Docker (konteyner)",
+    "0242AC": "Docker (container)",
 }

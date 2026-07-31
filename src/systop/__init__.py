@@ -1,7 +1,7 @@
-"""systop — sysadminlar uchun tarmoq TUI tooli.
+"""systop — a terminal network toolkit for sysadmins.
 
-Internet tezligini o'lchaydi, lokal va global ping qiladi, tarmoq
-topologiyasini (traceroute + LAN discovery) ko'rsatib beradi.
+Measures internet speed, pings local and global targets, and maps the network
+topology (traceroute + LAN discovery).
 """
 
 __version__ = "0.10.2"

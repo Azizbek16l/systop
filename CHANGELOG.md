@@ -43,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `wifi --neighbours` now shows an **SSID** column and an **interference**
-  column (`bir kanalda` / `kesishadi` / `yo'q`), with the interfering APs
+  column (`same channel` / `overlaps` / `no`), with the interfering APs
   sorted to the top. Reading the old table meant comparing channel numbers by
   eye, which is exactly the work the tool exists to do.
 - When the OS withholds SSIDs (macOS hides them without Location Services
@@ -75,7 +75,7 @@ against real macOS, Linux **and** Windows command output in the test suite.
   `RISKY_LISTENERS` table — Docker API on 2375, Redis, telnet, MongoDB, VNC —
   **never fired**, while `checks_run` still incremented and `skipped` stayed empty.
   Verified end to end: with a socket bound to `0.0.0.0:6379` the old path found
-  nothing; the new one reports `high — Redis butun tarmoqqa ochiq`.
+  nothing; the new one reports `high — Redis is exposed to the whole network`.
   Added `scan_connections() -> ConnScan(conns, permitted, source)` with a pure
   `parse_netstat_listeners()` fallback. When neither source works the check is
   no longer counted, and an INFO finding says so out loud.
@@ -84,7 +84,7 @@ against real macOS, Linux **and** Windows command output in the test suite.
 - **`doctor` reported healthy corporate networks as broken DNS.** Nothing ever
   asked the machine which resolvers it uses; only 8.8.8.8/1.1.1.1/9.9.9.9/
   208.67.222.222 were probed, so a network that deliberately blocks egress
-  UDP/53 produced `high — Barcha DNS serverlar javob bermayapti`, **exit 2 on a
+  UDP/53 produced `high — All DNS servers are unresponsive`, **exit 2 on a
   working network, with the wrong remediation**. `--resolvers` and the config
   key `dns_resolvers` were dead code.
   Added `system_resolvers()` plus pure parsers for all three platforms, and
@@ -94,7 +94,7 @@ against real macOS, Linux **and** Windows command output in the test suite.
   dropped *all* link-local next-hops to silence macOS's `fe80::%utunN`
   placeholders — but in a normal IPv6 network the router advertises its
   link-local address as the default gateway, so an IPv6-only host got a false
-  `critical — Default marshrut yo'q`. Now the discriminator is a **zero
+  `critical — No default route`. Now the discriminator is a **zero
   interface-ID**, not link-local-ness. `routable_default_gateways` also
   zone-qualifies (`fe80::1` + `dev eth0` → `fe80::1%eth0`); Linux prints these
   un-zoned and an un-zoned link-local ping always reports dead.

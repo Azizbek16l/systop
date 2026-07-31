@@ -1,4 +1,4 @@
-"""`python -m systop` uchun kirish nuqtasi."""
+"""Entry point for `python -m systop`."""
 
 from systop.cli import main
 

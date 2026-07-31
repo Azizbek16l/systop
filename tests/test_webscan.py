@@ -1,7 +1,8 @@
-"""`core/webscan.py` uchun offline testlar — tarmoqqa chiqmaydi.
+"""Offline tests for `core/webscan.py` — they never touch the network.
 
-`classify` ataylab sof funksiya qilingan (tarmoq chaqiruvi `probe_service`da),
-shuning uchun admin-panel aniqlash mantiqini tarmoqsiz to'liq sinash mumkin.
+`classify` was deliberately made a pure function (the network call lives in
+`probe_service`), so the admin-panel detection logic can be exercised in full
+without a network.
 """
 
 from systop.core.webscan import (
@@ -28,7 +29,7 @@ def test_extract_title_collapses_whitespace():
 
 
 def test_extract_title_missing():
-    assert extract_title("<html><body>salom</body></html>") is None
+    assert extract_title("<html><body>hello</body></html>") is None
 
 
 def test_extract_title_empty_is_none():
@@ -40,7 +41,7 @@ def test_extract_title_truncated_to_120():
 
 
 # --------------------------------------------------------------------------- #
-# classify — admin panelni topish
+# classify — finding the admin panel
 # --------------------------------------------------------------------------- #
 
 
@@ -57,7 +58,7 @@ def test_classify_digest_auth_detected():
 
 
 def test_classify_password_form_is_admin():
-    v = classify('<title>Kirish</title><input type="password" name="p">', {}, 200)
+    v = classify('<title>Sign in</title><input type="password" name="p">', {}, 200)
     assert v.is_admin
     assert v.auth_type == "form"
 
@@ -66,7 +67,7 @@ def test_classify_known_admin_product():
     v = classify("<title>Web Client</title>/doc/page/login.asp", {}, 200)
     assert v.is_admin
     assert v.product == "Hikvision"
-    assert v.device_kind == "kamera/NVR"
+    assert v.device_kind == "camera/NVR"
 
 
 def test_classify_proxmox_from_body():
@@ -75,18 +76,18 @@ def test_classify_proxmox_from_body():
     assert v.is_admin
 
 
-# --- soxta pozitivlar: web server admin panel EMAS ------------------------- #
+# --- false positives: a web server is NOT an admin panel ------------------- #
 
 
 def test_classify_nginx_default_is_not_admin():
-    """nginx welcome sahifasi — admin panel emas (dastlab shu xato bo'lgan)."""
+    """The nginx welcome page — not an admin panel (this was the original bug)."""
     v = classify(
         "<title>Welcome to nginx!</title><h1>Welcome to nginx!</h1>",
         {"Server": "nginx"},
         200,
     )
     assert not v.is_admin
-    assert v.product == "Nginx"  # identifikatsiya bo'ladi, ball emas
+    assert v.product == "Nginx"  # identification happens, but no score
     assert v.score == 0
 
 
@@ -96,27 +97,27 @@ def test_classify_apache_default_is_not_admin():
 
 
 def test_classify_plain_site_behind_caddy_is_not_admin():
-    v = classify("<title>Static site — services</title><p>salom</p>", {"Server": "caddy"}, 200)
+    v = classify("<title>Static site — services</title><p>hello</p>", {"Server": "caddy"}, 200)
     assert not v.is_admin
     assert v.product == "Caddy"
 
 
 def test_classify_short_token_does_not_false_match():
-    """'chassis' ichidagi 'hass' Home Assistant deb topilmasligi kerak."""
+    """The 'hass' inside 'chassis' must not be detected as Home Assistant."""
     v = classify("<title>Server chassis status</title>", {}, 200)
     assert v.product is None
     assert not v.is_admin
 
 
-# --- soxta pozitivlar: naqsh oddiy INGLIZCHA SO'Z ichiga tushib ketgan ------ #
+# --- false positives: the pattern fell inside an ordinary ENGLISH WORD ------ #
 #
-# Hammasi haqiqatda ko'rilgan holatlar. `\b` so'z chegarasi bularni YECHMAYDI:
-# "asterisk" ham, "prometheus" ham matnda alohida so'z bo'lib turadi — yechim
-# naqshga kontekst qo'shish ("asterisk management portal").
+# All of these were seen in reality. The `\b` word boundary does NOT fix them:
+# both "asterisk" and "prometheus" stand as separate words in the text — the fix
+# is to add context to the pattern ("asterisk management portal").
 
 
 def test_classify_asterisk_word_is_not_telephony():
-    """'marked with an asterisk (*)' — oddiy login sahifasi, FreePBX emas."""
+    """'marked with an asterisk (*)' — an ordinary login page, not FreePBX."""
     body = (
         "<title>Login</title><form>"
         '<input type="password" name="p">'
@@ -124,11 +125,11 @@ def test_classify_asterisk_word_is_not_telephony():
     )
     v = classify(body, {}, 200)
     assert v.product is None
-    assert v.device_kind != "telefoniya"
+    assert v.device_kind != "telephony"
 
 
 def test_classify_unified_communications_is_not_unifi():
-    """'Unified' ichida 'unifi' bor — UniFi qurilmasi deb belgilanmasin."""
+    """'Unified' contains 'unifi' — it must not be flagged as a UniFi device."""
     v = classify(
         "<title>Unified Communications for Business</title>"
         "<p>Our unified communications platform</p>",
@@ -136,19 +137,19 @@ def test_classify_unified_communications_is_not_unifi():
         200,
     )
     assert v.product != "UniFi"
-    assert v.device_kind != "tarmoq"
+    assert v.device_kind != "network"
     assert not v.is_admin
 
 
 def test_classify_dominion_is_not_minio():
-    """'dominion' ichidagi 'minio' — storage paneli emas."""
+    """The 'minio' inside 'dominion' — not a storage panel."""
     v = classify("<title>Dominion Insurance</title><p>Dominion Group</p>", {}, 200)
     assert v.product is None
     assert not v.is_admin
 
 
 def test_classify_k8s_manifest_is_not_docker_api():
-    """'apiVersion' har qanday Kubernetes manifestida bor — ochiq Docker API emas."""
+    """'apiVersion' appears in any Kubernetes manifest — it is not an exposed Docker API."""
     v = classify(
         '{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "web"}}',
         {"Content-Type": "application/json"},
@@ -159,48 +160,48 @@ def test_classify_k8s_manifest_is_not_docker_api():
 
 
 def test_classify_jenkins_surname_is_not_jenkins():
-    """'Jenkins' — familiya ham bo'ladi; CI serveri deb belgilanmasin."""
-    v = classify("<title>Jamoa</title><p>Bog'lanish: Sarah Jenkins</p>", {}, 200)
+    """'Jenkins' is also a surname; it must not be flagged as a CI server."""
+    v = classify("<title>Our team</title><p>Contact: Sarah Jenkins</p>", {}, 200)
     assert v.product is None
     assert not v.is_admin
 
 
 def test_classify_prometheus_prose_is_not_monitoring():
-    """Mifologiya/blog matnidagi 'Prometheus' — monitoring paneli emas."""
-    v = classify("<title>Prometheus va olov</title><p>Yunon afsonasi</p>", {}, 200)
+    """'Prometheus' in mythology/blog prose — not a monitoring panel."""
+    v = classify("<title>Prometheus and the fire</title><p>A Greek myth</p>", {}, 200)
     assert v.product is None
     assert not v.is_admin
 
 
-# --- header va body naqshlari ARALASHMAYDI ---------------------------------- #
+# --- header and body patterns DO NOT MIX ------------------------------------ #
 
 
 def test_classify_header_token_in_body_does_not_match():
-    """`x-jenkins` — header tokeni; sahifa MATNIDA uchrasa hisobga olinmaydi."""
-    v = classify("<p>Header nomi: x-jenkins</p>", {}, 200)
+    """`x-jenkins` is a header token; if it appears in the page TEXT it is ignored."""
+    v = classify("<p>Header name: x-jenkins</p>", {}, 200)
     assert v.product is None
 
 
 def test_classify_server_pattern_in_body_does_not_match():
-    """`server:nginx` naqshi faqat header matnida izlanadi, tanada emas."""
+    """The `server:nginx` pattern is searched only in the header text, not the body."""
     v = classify("<pre>server:nginx</pre>", {}, 200)
     assert v.product is None
 
 
 def test_classify_body_pattern_in_header_does_not_match():
-    """Body naqshi ('welcome to nginx') header qiymatida topilmasin."""
+    """A body pattern ('welcome to nginx') must not be found in a header value."""
     v = classify("", {"X-Note": "welcome to nginx"}, 200)
     assert v.product is None
 
 
-# --- soya (shadowing): birinchi moslik to'g'ri mahsulotni bosib ketmasin ---- #
+# --- shadowing: the first match must not override the correct product ------- #
 
 
 def test_classify_bogus_hit_does_not_shadow_real_product():
-    """Soxta erta moslik haqiqiy mahsulotni SOYALAB qo'ymasligi kerak.
+    """A bogus early match must not SHADOW the real product.
 
-    Ilgari birinchi moslikda `break` bor edi: ro'yxatda yuqoriroq turgan UniFi
-    ("Unified" ichidan) Proxmox'ni bosib ketardi.
+    Previously there was a `break` on the first match: UniFi (from inside
+    "Unified"), sitting higher in the list, would override Proxmox.
     """
     v = classify(
         "<title>Unified Communications</title><script src='/pve2/js/pvemanagerlib.js'></script>",
@@ -212,30 +213,30 @@ def test_classify_bogus_hit_does_not_shadow_real_product():
 
 
 def test_classify_admin_product_wins_over_infra():
-    """nginx ortidagi Kerio — mahsulot Kerio bo'lishi kerak, nginx emas."""
+    """Kerio behind nginx — the product must be Kerio, not nginx."""
     v = classify("<title>Kerio Control</title>", {"Server": "nginx"}, 200)
     assert v.product == "Kerio Control"
 
 
-# --- tasdiq (corroboration): zaif iz YOLG'IZ o'zi admin panel emas --------- #
+# --- corroboration: a weak fingerprint ALONE is not an admin panel ---------- #
 
 
 def test_classify_weak_product_alone_is_not_admin():
-    """Yalang'och so'zli iz ('grafana') boshqa dalilsiz admin panel emas."""
-    v = classify("<p>Biz grafana ishlatamiz</p>", {}, 200)
-    assert v.product == "Grafana"  # identifikatsiya qoladi
+    """A bare-word fingerprint ('grafana') is not an admin panel without other evidence."""
+    v = classify("<p>We use grafana here</p>", {}, 200)
+    assert v.product == "Grafana"  # the identification stays
     assert v.score == 2
-    assert not v.is_admin  # ...lekin xavfsizlik topilmasi emas
+    assert not v.is_admin  # ...but it is not a security finding
 
 
 def test_classify_weak_product_with_login_form_is_admin():
-    """O'sha iz + parol maydoni = haqiqiy panel."""
+    """The same fingerprint + a password field = a real panel."""
     v = classify('<title>Grafana</title><input type="password">', {}, 200)
     assert v.product == "Grafana"
     assert v.is_admin
 
 
-# --- haqiqiy mahsulotlar hamon topiladi (aniqlash yo'qolmadi) -------------- #
+# --- the real products are still found (detection was not lost) ------------- #
 
 
 def test_classify_real_freepbx_still_detected():
@@ -260,10 +261,10 @@ def test_classify_real_prometheus_still_detected():
 
 
 def test_classify_open_docker_api_from_header():
-    """Ochiq Docker API — `Server: Docker/...` header'i bilan aniqlanadi."""
+    """An exposed Docker API — detected by the `Server: Docker/...` header."""
     v = classify('{"ApiVersion":"1.41"}', {"Server": "Docker/20.10.7 (linux)"}, 200)
-    assert v.product == "Docker API (ochiq!)"
-    assert v.is_admin  # header izi kuchli — o'zicha yetarli
+    assert v.product == "Docker API (exposed!)"
+    assert v.is_admin  # the header fingerprint is strong — enough on its own
 
 
 def test_classify_jenkins_header_still_detected():
@@ -278,7 +279,7 @@ def test_classify_empty_body_no_headers():
 
 
 def test_classify_401_alone_is_not_enough():
-    """Faqat 401 (mahsulot/auth headersiz) admin panel deb hisoblanmaydi."""
+    """A 401 on its own (with no product/auth header) does not count as an admin panel."""
     v = classify("", {}, 401)
     assert v.score == 1
     assert not v.is_admin
@@ -296,14 +297,15 @@ def test_classify_headers_case_insensitive():
     assert lower.is_admin == upper.is_admin == True  # noqa: E712
 
 
-def test_classify_uzbek_and_russian_login_words():
+def test_classify_localized_login_words():
+    """Device firmware often ships a localised login page — those titles count too."""
     for title in ("Tizimga kirish", "Вход в систему"):
         v = classify(f"<title>{title}</title>", {}, 401)
         assert v.is_admin, title
 
 
 # --------------------------------------------------------------------------- #
-# WebService property'lari (url / risk)
+# WebService properties (url / risk)
 # --------------------------------------------------------------------------- #
 
 
@@ -312,7 +314,7 @@ def test_url_ipv4():
 
 
 def test_url_ipv6_is_bracketed():
-    """IPv6 manzil URL'da qavsga olinishi SHART, aks holda port ajratilmaydi."""
+    """An IPv6 address MUST be bracketed in the URL, otherwise the port is not separated."""
     svc = WebService(ip="2001:db8::1", port=443, scheme="https")
     assert svc.url == "https://[2001:db8::1]:443/"
 
@@ -348,7 +350,7 @@ def test_risk_low_admin_over_https():
 
 
 # --------------------------------------------------------------------------- #
-# summarize + port jadvallari
+# summarize + the port tables
 # --------------------------------------------------------------------------- #
 
 
@@ -387,5 +389,5 @@ def test_quick_ports_are_subset_of_web_ports():
 
 
 def test_kerio_admin_port_present():
-    """4081 — Kerio Control admin porti; the organisation parkida muhim."""
+    """4081 — the Kerio Control admin port; common on small-business firewalls."""
     assert 4081 in WEB_PORTS

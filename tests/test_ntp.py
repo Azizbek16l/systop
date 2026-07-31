@@ -1,11 +1,12 @@
-"""`core/ntp.py` uchun offline testlar — SNTP paket validatsiyasi.
+"""Offline tests for `core/ntp.py` — SNTP packet validation.
 
-`parse_response` sof funksiya: baytlarni oladi, `(offset, delay, stratum)`
-beradi yoki `ValueError`. Shuning uchun sun'iy paketlar bilan to'liq sinaladi.
+`parse_response` is a pure function: it takes bytes and returns
+`(offset, delay, stratum)` or raises `ValueError`. That makes it fully
+testable with synthetic packets.
 
-Bu modulning asosiy xavfi — **soxta xotirjamlik**: "soat to'g'ri" degan
-noto'g'ri xulosa soat noto'g'riligidan yomonroq, chunki sysadmin tekshirishni
-to'xtatadi. Shuning uchun testlarning ko'pchiligi "buni RAD ET" shaklida.
+The main hazard in this module is **false reassurance**: the wrong conclusion
+"the clock is correct" is worse than a wrong clock, because the sysadmin stops
+looking. Most of the tests are therefore phrased as "REJECT this".
 """
 
 import struct
@@ -22,12 +23,12 @@ from systop.core.ntp import (
 )
 
 # --------------------------------------------------------------------------- #
-# Paket yasovchi yordamchi
+# Packet-building helper
 # --------------------------------------------------------------------------- #
 
 
 def _ts(unix_time: float) -> bytes:
-    """Unix vaqtni NTP 32.32 fixed-point timestamp'ga o'giradi."""
+    """Convert a Unix time into an NTP 32.32 fixed-point timestamp."""
     ntp = unix_time + NTP_UNIX_DELTA
     sec = int(ntp)
     frac = int((ntp - sec) * 2**32)
@@ -46,7 +47,7 @@ def make_packet(
     zero_t2: bool = False,
     zero_t3: bool = False,
 ) -> bytes:
-    """To'liq 48-baytli SNTP javob paketini yasaydi."""
+    """Build a complete 48-byte SNTP reply packet."""
     p = bytearray(48)
     p[0] = (li << 6) | (4 << 3) | mode  # LI | VN=4 | Mode
     p[1] = stratum
@@ -57,17 +58,17 @@ def make_packet(
     return bytes(p)
 
 
-# Odatiy o'lchov oynasi: jo'natdik 1000.0, javob keldi 1000.1.
+# The usual measurement window: sent at 1000.0, reply arrived at 1000.1.
 T1, T4 = 1000.0, 1000.1
 
 
 # --------------------------------------------------------------------------- #
-# So'rov: nonce
+# Request: nonce
 # --------------------------------------------------------------------------- #
 
 
-def test_sorov_nonce_bilan_yasaladi():
-    """Nonce Transmit Timestamp maydoniga (40:48) yozilishi kerak."""
+def test_request_is_built_with_a_nonce():
+    """The nonce must be written into the Transmit Timestamp field (40:48)."""
     packet, nonce = build_request()
     assert len(packet) == 48
     assert len(nonce) == 8
@@ -75,24 +76,24 @@ def test_sorov_nonce_bilan_yasaladi():
     assert packet[0] == 0x23  # LI=0, VN=4, Mode=3 (client)
 
 
-def test_nonce_har_safar_boshqacha():
-    """Qat'iy nonce hech narsani himoya qilmasdi."""
+def test_nonce_differs_every_time():
+    """A fixed nonce would protect nothing."""
     nonces = {build_request()[1] for _ in range(20)}
     assert len(nonces) == 20
 
 
-def test_nonce_nol_emas():
-    """REGRESSIYA: ilgari bu maydon butunlay nol edi — tekshiruv imkonsiz edi."""
+def test_nonce_is_not_zero():
+    """REGRESSION: this field used to be all zeroes — nothing could be checked."""
     _, nonce = build_request()
     assert nonce != b"\x00" * 8
 
 
 # --------------------------------------------------------------------------- #
-# To'g'ri paket
+# Valid packet
 # --------------------------------------------------------------------------- #
 
 
-def test_togri_paket_parse_bolinadi():
+def test_valid_packet_is_parsed():
     offset, delay, stratum = parse_response(make_packet(), T1, T4)
     assert stratum == 2
     # offset = ((t2-t1) + (t3-t4)) / 2 = (0.04 + -0.05) / 2 = -0.005
@@ -101,7 +102,7 @@ def test_togri_paket_parse_bolinadi():
     assert delay == pytest.approx(0.09, abs=1e-6)
 
 
-def test_togri_nonce_qabul_qilinadi():
+def test_matching_nonce_is_accepted():
     nonce = b"\x01\x02\x03\x04\x05\x06\x07\x08"
     pkt = make_packet(originate=nonce)
     offset, _, _ = parse_response(pkt, T1, T4, nonce=nonce)
@@ -109,40 +110,40 @@ def test_togri_nonce_qabul_qilinadi():
 
 
 # --------------------------------------------------------------------------- #
-# RAD ETILISHI KERAK bo'lgan paketlar
+# Packets that MUST BE REJECTED
 # --------------------------------------------------------------------------- #
 
 
-def test_begona_datagramma_nonce_bilan_ushlanadi():
-    """ASOSIY XAVFSIZLIK TUZATISHI.
+def test_stray_datagram_is_caught_by_the_nonce():
+    """THE KEY SECURITY FIX.
 
-    Ephemeral portga tushgan begona UDP datagrammasi ilgari "server javobi"
-    deb qabul qilinardi va `offset=-400s`, `severity=critical` berardi —
-    ya'ni sog'lom soatni "buzuq" deb ko'rsatardi.
+    A stray UDP datagram that landed on the ephemeral port used to be accepted
+    as "the server's reply" and produced `offset=-400s`, `severity=critical` —
+    that is, it reported a healthy clock as "broken".
     """
     _, nonce = build_request()
-    soxta = make_packet(originate=b"\xff" * 8)  # boshqa so'rovga javob
-    with pytest.raises(ValueError, match="mos kelmadi"):
-        parse_response(soxta, T1, T4, nonce=nonce)
+    forged = make_packet(originate=b"\xff" * 8)  # a reply to some other request
+    with pytest.raises(ValueError, match="does not match"):
+        parse_response(forged, T1, T4, nonce=nonce)
 
 
-def test_server_javobi_emas_rad_etiladi():
-    """Mode=3 — bu mijoz so'rovi, javob emas (broadcast/spoof belgisi)."""
+def test_non_server_reply_is_rejected():
+    """Mode=3 — that is a client request, not a reply (a broadcast/spoof sign)."""
     with pytest.raises(ValueError, match="Mode"):
         parse_response(make_packet(mode=3), T1, T4)
 
 
-def test_alarm_holati_rad_etiladi():
-    """LI=3 — server o'zi sinxronlanmagan, uning vaqtiga ishonib bo'lmaydi."""
-    with pytest.raises(ValueError, match="sinxronlanmagan"):
+def test_alarm_condition_is_rejected():
+    """LI=3 — the server itself is unsynchronised, its time cannot be trusted."""
+    with pytest.raises(ValueError, match="not synchronised"):
         parse_response(make_packet(li=3), T1, T4)
 
 
-def test_kiss_of_death_rad_etiladi_va_sabab_oqiladi():
-    """stratum=0 — KoD. Ilgari bu `severity='ok'` deb ko'rsatilardi.
+def test_kiss_of_death_is_rejected_and_reason_is_read():
+    """stratum=0 — KoD. This used to be reported as `severity='ok'`.
 
-    Ya'ni server "so'rovlaringiz juda tez, to'xtang" deb turgan paytda tool
-    "soat to'g'ri" deb xulosa qilardi — sof soxta xotirjamlik.
+    In other words, while the server was saying "your requests are too fast,
+    stop", the tool concluded "the clock is correct" — pure false reassurance.
     """
     with pytest.raises(ValueError, match="RATE"):
         parse_response(make_packet(stratum=0, ref_id=b"RATE"), T1, T4)
@@ -150,26 +151,26 @@ def test_kiss_of_death_rad_etiladi_va_sabab_oqiladi():
         parse_response(make_packet(stratum=0, ref_id=b"DENY"), T1, T4)
 
 
-def test_yaroqsiz_stratum_rad_etiladi():
-    """16 = sinxronlanmagan; undan yuqorisi umuman yaroqsiz."""
+def test_invalid_stratum_is_rejected():
+    """16 = unsynchronised; anything above that is invalid outright."""
     with pytest.raises(ValueError, match="stratum"):
         parse_response(make_packet(stratum=16), T1, T4)
     with pytest.raises(ValueError, match="stratum"):
         parse_response(make_packet(stratum=99), T1, T4)
 
 
-def test_stratum_1_va_15_qabul_qilinadi():
-    """Chegaralar ichidagilar rad etilmasligi kerak (haqiqiy serverlar)."""
+def test_stratum_1_and_15_are_accepted():
+    """Values inside the bounds must not be rejected (real servers)."""
     for s in (1, 2, 3, 15):
         _, _, got = parse_response(make_packet(stratum=s), T1, T4)
         assert got == s
 
 
-def test_yarim_bosh_paket_rad_etiladi():
-    """REGRESSIYA: shart `and` edi — faqat IKKALASI nol bo'lganda rad etilardi.
+def test_half_empty_packet_is_rejected():
+    """REGRESSION: the condition used to be `and` — rejected only if BOTH zero.
 
-    Bitta timestamp nol bo'lsa u 1900-yilga aylanib, `offset` ni ±2e9
-    soniyaga olib chiqardi.
+    When a single timestamp is zero it turns into the year 1900 and throws
+    `offset` off by ±2e9 seconds.
     """
     with pytest.raises(ValueError, match="timestamp"):
         parse_response(make_packet(zero_t2=True), T1, T4)
@@ -177,111 +178,112 @@ def test_yarim_bosh_paket_rad_etiladi():
         parse_response(make_packet(zero_t3=True), T1, T4)
 
 
-def test_qisqa_paket_rad_etiladi():
-    with pytest.raises(ValueError, match="qisqa"):
+def test_short_packet_is_rejected():
+    with pytest.raises(ValueError, match="too short"):
         parse_response(b"\x24" + b"\x00" * 20, T1, T4)
 
 
 # --------------------------------------------------------------------------- #
-# Sababiyat konverti — XOM delay bo'yicha
+# The causality envelope — on the RAW delay
 # --------------------------------------------------------------------------- #
 
 
-def test_mumkin_bolmagan_delay_rad_etiladi():
-    """delay lokal round-trip'dan katta bo'la olmaydi — paket boshqa vaqtdan.
+def test_impossible_delay_is_rejected():
+    """The delay cannot exceed the local round-trip — the packet is from elsewhere.
 
-    `max(delay, 0.0)` buni JIMGINA yashirardi: manfiy delay nolga aylanib,
-    buzuq o'lchov "mukammal" bo'lib ko'rinardi.
+    `max(delay, 0.0)` hid this SILENTLY: a negative delay became zero and a
+    corrupt measurement looked "perfect".
     """
-    # t3 - t2 manfiy (server "orqaga" ketgan) => delay > elapsed
-    with pytest.raises(ValueError, match="mantiqsiz"):
+    # t3 - t2 is negative (the server went "backwards") => delay > elapsed
+    with pytest.raises(ValueError, match="implausible"):
         parse_response(make_packet(t2=1000.5, t3=1000.0), T1, T4)
 
 
-def test_kichik_manfiy_delay_qabul_qilinadi():
-    """Soat granularligi tufayli bir necha ms manfiy delay normal — nolga qiriladi."""
-    # t3-t2 = 0.11 > elapsed 0.1 => delay = -0.01 (slack 0.05 ichida)
+def test_small_negative_delay_is_accepted():
+    """A few ms of negative delay is normal given clock granularity — clamped to zero."""
+    # t3-t2 = 0.11 > elapsed 0.1 => delay = -0.01 (within the 0.05 slack)
     _, delay, _ = parse_response(make_packet(t2=1000.0, t3=1000.11), T1, T4)
     assert delay == 0.0
 
 
-def test_haqiqiy_katta_siljish_rad_ETILMAYDI():
-    """MUHIM: konvert `offset` ni emas, `delay` ni cheklaydi.
+def test_genuine_large_skew_is_NOT_rejected():
+    """IMPORTANT: the envelope constrains `delay`, not `offset`.
 
-    O'lgan RTC batareyali server 56 yil oldingi vaqtni beradi — bu HAQIQIY
-    topilma, uni tashlab yubormaslik kerak. Delay esa normal bo'lib qolaveradi.
+    A server with a dead RTC battery reports a time 56 years in the past — that
+    is a GENUINE finding and must not be thrown away. The delay meanwhile stays
+    perfectly normal.
     """
-    hozir = 1_767_000_000.0  # ~2026
-    server_1970 = 0.04  # RTC batareyasi o'lgan => Unix epoch
+    now = 1_767_000_000.0  # ~2026
+    server_1970 = 0.04  # dead RTC battery => the Unix epoch
     offset, delay, _ = parse_response(
         make_packet(t2=server_1970, t3=server_1970 + 0.01),
-        hozir,
-        hozir + 0.1,
+        now,
+        now + 0.1,
     )
-    assert offset < -1.7e9  # ~56 yillik siljish qayd etildi, tashlanmadi
+    assert offset < -1.7e9  # a ~56-year skew was recorded, not discarded
     assert delay == pytest.approx(0.09, abs=1e-6)
 
 
 # --------------------------------------------------------------------------- #
-# RFC 4330 "era" qoidasi
+# The RFC 4330 "era" rule
 # --------------------------------------------------------------------------- #
 
 
-def test_era_qoidasi_2036_gacha():
-    """0-bit o'rnatilgan => 1900-yildan sanaladi."""
+def test_era_rule_before_2036():
+    """Bit 0 set => counted from 1900."""
     assert _ntp_to_unix(NTP_UNIX_DELTA + 1000, 0) == pytest.approx(1000.0)
 
 
-def test_era_qoidasi_2036_dan_keyin():
-    """0-bit o'rnatilmagan => 2036-yildan sanaladi, MANFIY vaqt emas.
+def test_era_rule_after_2036():
+    """Bit 0 not set => counted from 2036, NOT a negative time.
 
-    Shartsiz ayirish bunday timestamp'ni -2.2e9 ga aylantirib, `offset` ni
-    butunlay yaroqsiz qilardi.
+    An unconditional subtraction turned such a timestamp into -2.2e9 and made
+    `offset` completely useless.
     """
-    kichik = 1000  # 0-bit o'rnatilmagan
-    got = _ntp_to_unix(kichik, 0)
+    small = 1000  # bit 0 not set
+    got = _ntp_to_unix(small, 0)
     assert got > 0
-    assert got == pytest.approx(kichik + 2**32 - NTP_UNIX_DELTA)
+    assert got == pytest.approx(small + 2**32 - NTP_UNIX_DELTA)
 
 
-def test_era_chegarasi():
-    """Aynan 2**31 — birinchi "eski era" qiymati."""
+def test_era_boundary():
+    """Exactly 2**31 — the first "old era" value."""
     assert _ntp_to_unix(2**31, 0) == pytest.approx(2**31 - NTP_UNIX_DELTA)
     assert _ntp_to_unix(2**31 - 1, 0) > 0
 
 
 # --------------------------------------------------------------------------- #
-# Hisobot jamlanmasi
+# Report summary
 # --------------------------------------------------------------------------- #
 
 
-def test_mediana_bitta_yolgonchi_serverga_bardosh_beradi():
-    """Bitta server yolg'on vaqt bersa o'rtacha buziladi, mediana yo'q."""
+def test_median_withstands_one_lying_server():
+    """If one server reports a bogus time the mean is ruined, the median is not."""
     rep = NtpReport(
         results=[
             NtpResult(server="a", ok=True, offset_s=0.01),
             NtpResult(server="b", ok=True, offset_s=0.02),
-            NtpResult(server="c", ok=True, offset_s=5000.0),  # yolg'onchi
+            NtpResult(server="c", ok=True, offset_s=5000.0),  # the liar
         ]
     )
     assert rep.median_offset_s == pytest.approx(0.02)
 
 
-def test_javob_bermaganlar_medianaga_kirmaydi():
+def test_non_responders_are_excluded_from_the_median():
     rep = NtpReport(
         results=[
             NtpResult(server="a", ok=True, offset_s=0.5),
-            NtpResult(server="b", ok=False),  # offset_s standart 0.0
+            NtpResult(server="b", ok=False),  # offset_s defaults to 0.0
         ]
     )
     assert rep.median_offset_s == pytest.approx(0.5)
 
 
-def test_bosh_hisobot_medianasi_none():
+def test_empty_report_median_is_none():
     assert NtpReport().median_offset_s is None
 
 
-def test_severity_chegaralari():
+def test_severity_thresholds():
     assert NtpResult(server="a", ok=True, offset_s=0.1).severity == "ok"
     assert NtpResult(server="a", ok=True, offset_s=2.0).severity == "warn"
     assert NtpResult(server="a", ok=True, offset_s=60.0).severity == "high"
@@ -289,8 +291,8 @@ def test_severity_chegaralari():
     assert NtpResult(server="a", ok=True, offset_s=-400.0).severity == "critical"
 
 
-def test_javob_bermagan_server_ok_deb_hisoblanmaydi():
-    """ok=False bo'lganda offset 0.0 bo'ladi — buni 'soat to'g'ri' deb o'qimaslik kerak."""
+def test_non_responding_server_is_not_counted_as_ok():
+    """With ok=False the offset is 0.0 — that must not be read as 'clock correct'."""
     r = NtpResult(server="a", ok=False)
     assert r.severity == "warn"
     assert NtpReport(results=[r]).worst_severity == "warn"

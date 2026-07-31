@@ -1,6 +1,7 @@
 /* systop dashboard uslublari — sovuq "terminal" palitrasi (systop temasi) */
 
-/* Fon SHAFFOF — ilova terminalning o'z fonini oladi (atrofi bilan qo'shiladi). */
+/* TRANSPARENT background — the app inherits the terminal's own background
+   so it blends into its surroundings. */
 Screen {
     layout: vertical;
     background: transparent;
@@ -20,7 +21,8 @@ Header, Footer {
 }
 
 /* Chiplar: 1fr emas, auto en — chapga ixcham guruhlanadi (tarqoqlik yo'qoladi).
-   Har biri o'z foni va o'ng-margin'i bilan haqiqiy "chip" his beradi. */
+   Each one gets its own background and right margin so it reads as a real
+   "chip". */
 #status-bar > Static {
     width: auto;
     height: 1;
@@ -91,7 +93,7 @@ SpeedPanel:focus-within, PingPanel:focus-within, TopologyPanel:focus-within {
 }
 
 /* --- ASCII-degrade rejimi (legacy Windows konsol, Unicode'siz) ---
-   `Screen.-ascii` klassi `app.py`da unicode_ok() False bo'lsa qo'shiladi.
+   The `Screen.-ascii` class is added in `app.py` when unicode_ok() is False.
    Yumaloq (round) ramka Unicode box belgilaridan iborat — legacy cmd.exe'da
    mojibake bo'ladi. Shu sababli ASCII ramka (+- |) ga o'tamiz va braille/block
    sparkline'larni yashiramiz (numeric stats caption baribir ko'rsatadi). */
@@ -110,7 +112,8 @@ SpeedPanel:focus-within, PingPanel:focus-within, TopologyPanel:focus-within {
 .-ascii #help-title {
     border-bottom: ascii $primary 40%;
 }
-/* Sparkline block belgilari (▁▂▃▅▆▇) legacy codepage'da yo'q — yashiramiz.
+/* The sparkline block glyphs (▁▂▃▅▆▇) do not exist in legacy codepages,
+   so they are hidden there.
    O'rnida grafik ostidagi joriy/min/o'rt/maks caption qoladi. */
 .-ascii Sparkline {
     display: none;

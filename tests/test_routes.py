@@ -1,10 +1,10 @@
-"""`core/routes.py` uchun offline testlar — parse va default-marshrut mantiqi.
+"""Offline tests for `core/routes.py` — parsing and default-route logic.
 
-Barcha parserlar sof funksiya: OS buyrug'i chiqishini oladi, `Route` beradi.
-Shuning uchun tarmoqsiz to'liq sinaladi. `check_next_hops` sinalmaydi — u
-ping yuboradi.
+Every parser is a pure function: it takes the output of an OS command and
+returns `Route` objects, so it can be tested fully without a network.
+`check_next_hops` is not tested — it sends pings.
 
-Uchala OS formati ham shu yerda: macOS/BSD `netstat -rn`, Linux `ip route`,
+All three OS formats live here: macOS/BSD `netstat -rn`, Linux `ip route`,
 Windows `route print`.
 """
 
@@ -18,12 +18,12 @@ from systop.core.routes import (
 )
 
 # --------------------------------------------------------------------------- #
-# macOS/BSD `netstat -rn` — Expire ustuni O'ZGARUVCHAN
+# macOS/BSD `netstat -rn` — the Expire column VARIES
 # --------------------------------------------------------------------------- #
 
-# Bu fixture'ning asosiy maqsadi: oxirgi (Expire) ustuni ba'zi qatorlarda bor,
-# ba'zilarida yo'q, ba'zilarida `!`. Qat'iy regex aynan shu yerda sinadi va
-# qatorlarni JIMGINA tashlab yuboradi (93 qatordan 75 tasi yo'qolgan holat).
+# The main point of this fixture: the last (Expire) column is present on some
+# lines, missing on others and `!` on yet others. A strict regex breaks exactly
+# here and drops lines SILENTLY (the case where 75 of 93 lines went missing).
 NETSTAT_MACOS = """Routing tables
 
 Internet:
@@ -47,39 +47,39 @@ fe80::1%lo0            link#1                UHLI          lo0
 """
 
 
-def test_netstat_expire_ustuni_qatorni_yoqotmaydi():
-    """Expire ustuni bor/yo'q/`!` bo'lgan qatorlar HAMMASI parse bo'lishi kerak."""
+def test_netstat_expire_column_does_not_lose_lines():
+    """Lines with/without an Expire column and with `!` must ALL be parsed."""
     rs = parse_netstat(NETSTAT_MACOS)
     dests = [r.destination for r in rs]
-    assert "169.254.0.0/16" not in dests or True  # normalizatsiya quyida
-    # 13 ta ma'noli qator bor (sarlavhalar va bo'sh qatorlardan tashqari).
-    assert len(rs) >= 12, f"qatorlar yo'qoldi: faqat {len(rs)} ta"
+    assert "169.254.0.0/16" not in dests or True  # normalisation is covered below
+    # There are 13 meaningful lines (headers and blank lines aside).
+    assert len(rs) >= 12, f"lines were lost: only {len(rs)}"
 
 
-def test_netstat_qisqartirilgan_prefiks_toliq_cidr_ga_keltiriladi():
-    """macOS `192.168.10/23` deb yozadi — oktetlar to'ldirilishi kerak.
+def test_netstat_abbreviated_prefix_is_expanded_to_full_cidr():
+    """macOS writes `192.168.10/23` — the octets have to be filled in.
 
-    Prefikssiz shakl (`192.168.10`, `127`) ATAYLAB tegilmaydi: u yerda mask
-    ko'rsatilmagan va uni taxmin qilish jadvalga yo'q ma'lumot qo'shish
-    bo'lardi. Bu hujjatlashtirilgan xatti-harakat.
+    The prefix-less form (`192.168.10`, `127`) is DELIBERATELY left alone: no
+    mask is given there and guessing one would add information to the table
+    that does not exist. This is documented behaviour.
     """
     rs = parse_netstat("Internet:\n192.168.10/23  link#11  UCS  en0\n")
     assert rs[0].destination == "192.168.10.0/23"
 
-    prefikssiz = parse_netstat("Internet:\n192.168.10  link#11  UCS  en0\n")
-    assert prefikssiz[0].destination == "192.168.10"
+    without_prefix = parse_netstat("Internet:\n192.168.10  link#11  UCS  en0\n")
+    assert without_prefix[0].destination == "192.168.10"
 
 
-def test_netstat_link_qatlam_gateway_emas():
-    """`link#11` va MAC — bular next-hop EMAS, to'g'ridan-to'g'ri yetishuv belgisi."""
+def test_netstat_link_layer_is_not_a_gateway():
+    """`link#11` and a MAC are NOT next hops but markers of direct reachability."""
     rs = parse_netstat(NETSTAT_MACOS)
     for r in rs:
         assert r.gateway != "link#11"
         assert r.gateway != "0:15:5d:27:40:3"
 
 
-def test_netstat_oila_bolimi_boyicha_ajratiladi():
-    """`Internet6:` sarlavhasidan keyingi hamma narsa ipv6 bo'lishi kerak."""
+def test_netstat_family_is_split_by_section():
+    """Everything after the `Internet6:` header must be ipv6."""
     rs = parse_netstat(NETSTAT_MACOS)
     v6_defaults = [r for r in rs if r.is_default and r.family == "ipv6"]
     v4_defaults = [r for r in rs if r.is_default and r.family == "ipv4"]
@@ -103,7 +103,7 @@ default via fe80::1 dev eth0 proto ra metric 1024 pref medium
 """
 
 
-def test_ip_route_default_va_metric():
+def test_ip_route_default_and_metric():
     rs = parse_ip_route(IP_ROUTE_V4)
     d = [r for r in rs if r.is_default]
     assert len(d) == 1
@@ -112,11 +112,11 @@ def test_ip_route_default_va_metric():
     assert d[0].metric == 100
 
 
-def test_ip_route_v6_ra_default_zonasiz_keladi():
-    """Linux RA default'ni ZONASIZ beradi — interfeys alohida `dev` ustunida.
+def test_ip_route_v6_ra_default_arrives_without_a_zone():
+    """Linux gives the RA default WITHOUT a zone — the interface is a separate `dev` column.
 
-    Bu `routable_default_gateways` uchun muhim: zonasiz link-local manzilga
-    ping "No route to host" beradi, shuning uchun zona qo'shilishi shart.
+    This matters for `routable_default_gateways`: pinging a zone-less
+    link-local address returns "No route to host", so the zone must be added.
     """
     rs = parse_ip_route(IP_ROUTE_V6, family="ipv6")
     d = [r for r in rs if r.is_default]
@@ -127,16 +127,16 @@ def test_ip_route_v6_ra_default_zonasiz_keladi():
 
 
 # --------------------------------------------------------------------------- #
-# routable_defaults — SOXTA POZITIV chegarasi
+# routable_defaults — the false-positive boundary
 # --------------------------------------------------------------------------- #
 
 
-def test_yalangoch_fe80_next_hop_emas():
-    """macOS `utun*` uchun `fe80::` (interfeys-ID butunlay nol) o'rnatadi.
+def test_bare_fe80_is_not_a_next_hop():
+    """macOS sets `fe80::` (interface-ID entirely zero) for `utun*`.
 
-    Bu haqiqiy qo'shni emas, joy egallovchi yozuv — ping'ga hech qachon javob
-    bermaydi. Uni default deb hisoblash "4 ta default marshrut" va "gateway
-    o'lik" degan doimiy soxta ogohlantirish berardi.
+    That is not a real neighbour but a placeholder entry — it never answers a
+    ping. Counting it as a default produced a permanent false warning of
+    "4 default routes" and "the gateway is dead".
     """
     t = RouteTable(
         routes=[
@@ -148,13 +148,13 @@ def test_yalangoch_fe80_next_hop_emas():
     assert t.routable_default_gateways == []
 
 
-def test_haqiqiy_ra_gateway_saqlanadi():
-    """REGRESSIYA: link-local'ning HAMMASINI tashlash noto'g'ri edi.
+def test_real_ra_gateway_is_kept():
+    """REGRESSION: dropping ALL link-local addresses was wrong.
 
-    Normal IPv6 tarmoqda router o'zining link-local manzilini (`fe80::1`)
-    RA orqali default gateway sifatida e'lon qiladi. Uni tashlab yuborish
-    IPv6-only hostda "Default marshrut yo'q" degan CRITICAL soxta xulosani
-    berardi.
+    In a normal IPv6 network the router announces its own link-local address
+    (`fe80::1`) as the default gateway through an RA. Throwing that away
+    produced a CRITICAL false conclusion of "no default route" on an
+    IPv6-only host.
     """
     t = RouteTable(
         routes=[
@@ -165,33 +165,33 @@ def test_haqiqiy_ra_gateway_saqlanadi():
     assert [r.gateway for r in t.routable_defaults] == ["fe80::1"]
 
 
-def test_link_local_gateway_ga_zona_qoshiladi():
-    """Zonasiz link-local manzilga ping ishlamaydi — `%iface` qo'shilishi shart."""
+def test_zone_is_added_to_a_link_local_gateway():
+    """Pinging a zone-less link-local address does not work — `%iface` is required."""
     t = RouteTable(routes=[Route("default", "fe80::1", "eth0", family="ipv6")])
     assert t.routable_default_gateways == ["fe80::1%eth0"]
 
 
-def test_mavjud_zona_ikki_marta_qoshilmaydi():
+def test_an_existing_zone_is_not_added_twice():
     t = RouteTable(routes=[Route("default", "fe80::1%en0", "en0", family="ipv6")])
     assert t.routable_default_gateways == ["fe80::1%en0"]
 
 
-def test_global_gateway_ga_zona_qoshilmaydi():
-    """Global manzil zonasiz ishlaydi — `2001:db8::1%en0` noto'g'ri bo'lardi."""
+def test_zone_is_not_added_to_a_global_gateway():
+    """A global address works without a zone — `2001:db8::1%en0` would be wrong."""
     t = RouteTable(routes=[Route("default", "2001:db8::1", "en0", family="ipv6")])
     assert t.routable_default_gateways == ["2001:db8::1"]
 
 
-def test_ipv4_gateway_ga_zona_qoshilmaydi():
+def test_zone_is_not_added_to_an_ipv4_gateway():
     t = RouteTable(routes=[Route("default", "192.168.1.1", "en0", family="ipv4")])
     assert t.routable_default_gateways == ["192.168.1.1"]
 
 
-def test_oila_boyicha_ajratish():
-    """IPv4 va IPv6 default'lari ALOHIDA sanalishi kerak.
+def test_counting_is_split_by_family():
+    """IPv4 and IPv6 defaults must be counted SEPARATELY.
 
-    Aralashtirsak, IPv4-only tarmoqda IPv6 default'ining yo'qligi "default
-    marshrut bor" deb yashirinardi va aksincha.
+    Mixing them, a missing IPv6 default on an IPv4-only network hid behind
+    "there is a default route", and vice versa.
     """
     t = RouteTable(
         routes=[
@@ -204,8 +204,8 @@ def test_oila_boyicha_ajratish():
     assert len(t.routable_defaults_for("ipv6")) == 1
 
 
-def test_unspecified_gateway_tashlanadi():
-    """`::` va `0.0.0.0` next-hop sifatida ma'nosiz."""
+def test_unspecified_gateway_is_dropped():
+    """`::` and `0.0.0.0` are meaningless as a next hop."""
     t = RouteTable(
         routes=[
             Route("default", "::", "en0", family="ipv6"),
@@ -215,19 +215,19 @@ def test_unspecified_gateway_tashlanadi():
     assert t.routable_defaults == []
 
 
-def test_yalangoch_fe80_ni_ipaddress_tasdiqlaydi():
-    """Ajratish mezoni AYNAN interfeys-ID nolligi ekanini qulflaymiz."""
+def test_bare_fe80_is_confirmed_by_ipaddress():
+    """Lock in that the criterion is EXACTLY a zero interface-ID."""
     assert ipaddress.ip_address("fe80::").packed[8:] == b"\x00" * 8
     assert ipaddress.ip_address("fe80::1").packed[8:] != b"\x00" * 8
 
 
 # --------------------------------------------------------------------------- #
-# VPN split-tunnel nayrangi
+# The VPN split-tunnel trick
 # --------------------------------------------------------------------------- #
 
 
-def test_vpn_split_hack_aniqlanadi():
-    """`0.0.0.0/1` + `128.0.0.0/1` birgalikda default'dan ustun turadi."""
+def test_vpn_split_hack_is_detected():
+    """`0.0.0.0/1` + `128.0.0.0/1` together outrank the default."""
     t = RouteTable(
         routes=[
             Route("default", "192.168.1.1", "en0"),
@@ -238,6 +238,6 @@ def test_vpn_split_hack_aniqlanadi():
     assert t.has_vpn_split_hack is True
 
 
-def test_oddiy_jadvalda_vpn_hack_yoq():
+def test_a_normal_table_has_no_vpn_hack():
     t = RouteTable(routes=[Route("default", "192.168.1.1", "en0")])
     assert t.has_vpn_split_hack is False

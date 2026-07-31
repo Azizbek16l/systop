@@ -4,8 +4,8 @@ on:
   push:
     tags:
       - "v*"
-  # Tegsiz ham qo'lda ishga tushirish — binarlarni tekshirib ko'rish uchun
-  # (release yaratilmaydi, faqat artefaktlar).
+  # Manual run without a tag — to smoke-test the binaries.
+  # (No release is created, artifacts only.)
   workflow_dispatch:
 
 permissions:
@@ -20,23 +20,20 @@ jobs:
   # DIQQAT — YOPIQ TARQATISH.
   #
   # Bu ish oqimi ATAYLAB `wheel`/`sdist` yasamaydi va PyPI'ga chop etmaydi.
-  # Ikkalasi ham `src/` ni O'ZGARISHSIZ, o'qiladigan holda tashiydi — ya'ni
-  # tarqatishning o'zi manba kodini berib qo'yadi. Faqat quyidagi `binaries`
-  # job'ining chiqishi tarqatiladi.
+  # Both carry `src/` VERBATIM and readable — i.e. distributing them hands out
+  # the source. Only the output of the `binaries` job below is distributed.
   #
-  # Agar kelajakda ochiq tarqatishga o'tilsa, `uv build` + `pypa/
-  # gh-action-pypi-publish` ni qaytarish oson — lekin bu ONGLI qaror bo'lishi
-  # kerak, tasodifan qайta paydo bo'lmasligi kerak.
+  # Restoring `uv build` + `pypa/gh-action-pypi-publish` later is easy — but it
+  # must be a DELIBERATE decision, not something that reappears by accident.
   # ---------------------------------------------------------------------------
 
   # ---------------------------------------------------------------------------
   # 1. Standalone onefile binarlar — HAR BIR OS O'Z OS'IDA.
   #
   #    NEGA MATRITSA MAJBURIY: PyInstaller cross-compile QILMAYDI. U host
-  #    OS'ning CPython kutubxonasini (libpython / python3xx.dll) va host uchun
-  #    kompilyatsiya qilingan bootloader'ni binarga joylaydi. Shuning uchun
-  #    macOS'da o'tirib Windows .exe yasab bo'lmaydi — bu ish oqimi Windows
-  #    .exe olishning YAGONA ishonchli yo'li.
+  #    embeds the host OS's CPython library (libpython / python3xx.dll) and a
+  #    host-compiled bootloader into the binary. You therefore cannot build a
+  #    Windows .exe from macOS — this workflow is the ONLY reliable way to get one.
   # ---------------------------------------------------------------------------
   binaries:
     name: ${{ matrix.label }}
@@ -45,7 +42,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # ubuntu-22.04 ATAYIN tanlangan (ubuntu-latest emas): PyInstaller
+          # ubuntu-22.04 is DELIBERATE (not ubuntu-latest): a PyInstaller
           # binari yig'ilgan glibc'dan PASTROQ tizimda ishlamaydi
           # (`GLIBC_2.xx not found`). Eski runner'da yig'ish = kengroq moslik.
           - os: ubuntu-22.04
@@ -56,12 +53,12 @@ jobs:
             label: windows-x86_64
             asset: systop-windows-x86_64.exe
             exe: dist/systop.exe
-          # Intel Mac (`macos-13`) ATAYLAB yo'q: GitHub bu runner'ni iste'foga
+          # Intel Mac (`macos-13`) is DELIBERATELY absent: GitHub retired that
           # chiqargan va job abadiy `queued` da qotib qoladi. `fail-fast: false`
           # tufayli qolgan uchtasi tugaydi, lekin relise job'i HAMMASINI kutadi —
           # ya'ni bitta o'lik matritsa yozuvi butun relise'ni to'xtatib qo'yadi
-          # (58 daqiqa navbatda turgani shundan). Intel Mac kerak bo'lsa
-          # `packaging/build-macos.sh` bilan Intel mashinada yig'iladi.
+          # (that is why one release sat queued for 58 minutes). If an Intel Mac
+          # build is needed, run `packaging/build-macos.sh` on an Intel machine.
           - os: macos-14 # Apple Silicon
             label: macos-arm64
             asset: systop-macos-arm64
@@ -79,13 +76,13 @@ jobs:
         run: uv sync
 
       # Spec fayli uchala OS'da bir xil — `--add-data` ajratuvchisi muammosi
-      # (POSIX `:` / Windows `;`) spec ichida umuman yo'q.
+      # (POSIX `:` / Windows `;`) does not appear inside the spec at all.
       - name: Build onefile binary
         run: uv run --with pyinstaller pyinstaller --noconfirm --clean packaging/systop.spec
 
       # Smoke test binarni HAQIQATAN tekshiradi: --help, --version,
       # `doctor --quick --json` (JSON parse), bundle ichida styles.tcss bormi,
-      # va POSIX'da TUI'ni PTY'da ochib ko'radi. `--help` yolg'iz yetarli emas —
+      # and on POSIX it opens the TUI in a PTY. `--help` alone is not enough —
       # u textual'ni umuman ushlamaydi.
       - name: Smoke test binary
         run: uv run --with pyinstaller python packaging/smoke_test.py ${{ matrix.exe }}

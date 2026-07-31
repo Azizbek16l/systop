@@ -1,12 +1,12 @@
-"""ICMP ping — lokal gateway va global serverlar (cross-platform).
+"""ICMP ping — the local gateway and global servers (cross-platform).
 
-macOS va Linux'da `icmplib`'ning `privileged=False` rejimida ishlaymiz:
-SOCK_DGRAM ICMP soketi root'siz ishlaydi. Agar tizim ruxsat bermasa,
-`privileged=True` (sudo) kerak bo'ladi.
+On macOS and Linux we work in `icmplib`'s `privileged=False` mode: a SOCK_DGRAM
+ICMP socket works without root. If the system does not permit it,
+`privileged=True` (sudo) becomes necessary.
 
-Windows'da `icmplib` unprivileged ICMP'ni qo'llamaydi (raw socket => admin
-kerak). Shuning uchun Windows'da tizimning `ping.exe` buyrug'iga tushamiz —
-u admin talab qilmaydi — va chiqishni parse qilamiz (`_platform`).
+On Windows `icmplib` does not support unprivileged ICMP (a raw socket => admin
+required). So on Windows we fall back to the system's `ping.exe` command — which
+demands no admin rights — and parse its output (`_platform`).
 """
 
 from __future__ import annotations
@@ -24,11 +24,11 @@ from systop.core import _platform
 
 @runtime_checkable
 class _HostLike(Protocol):
-    """`icmplib`'ning Host obyektining minimal interfeysi (duck typing).
+    """The minimal interface of `icmplib`'s Host object (duck typing).
 
-    `_to_result` faqat shu atributlarni o'qiydi. `icmplib` aniq tip eksport
-    qilmaydi, shuning uchun Protocol typing mypy-toza qiladi va test'dagi
-    `FakeHost` ham shu shaklga mos keladi.
+    `_to_result` reads only these attributes. `icmplib` exports no concrete
+    type, so the Protocol keeps the typing mypy-clean — and the tests' `FakeHost`
+    fits the same shape.
     """
 
     @property
@@ -56,7 +56,7 @@ class _HostLike(Protocol):
     def rtts(self) -> list[float]: ...
 
 
-# Standart global ping nishonlari (DNS provayderlar — barqaror va tez javob).
+# The default global ping targets (DNS providers — stable, fast to answer).
 DEFAULT_GLOBAL_TARGETS: dict[str, str] = {
     "Google DNS": "8.8.8.8",
     "Cloudflare": "1.1.1.1",
@@ -64,7 +64,7 @@ DEFAULT_GLOBAL_TARGETS: dict[str, str] = {
     "OpenDNS": "208.67.222.222",
 }
 
-# IPv6 global nishonlar (icmplib IPv6 ICMP'ni qo'llab-quvvatlaydi).
+# The global IPv6 targets (icmplib supports ICMP over IPv6).
 DEFAULT_GLOBAL_TARGETS_V6: dict[str, str] = {
     "Google DNS v6": "2001:4860:4860::8888",
     "Cloudflare v6": "2606:4700:4700::1111",
@@ -73,7 +73,7 @@ DEFAULT_GLOBAL_TARGETS_V6: dict[str, str] = {
 
 @dataclass(slots=True)
 class PingResult:
-    """Bitta nishon bo'yicha ping natijasi (ms larda)."""
+    """The ping result for a single target (in milliseconds)."""
 
     label: str
     address: str
@@ -98,10 +98,10 @@ async def ping_once(
     interval: float = 0.4,
     privileged: bool = False,
 ) -> PingResult:
-    """Bitta manzilni ping qiladi va natijani qaytaradi.
+    """Pings a single address and returns the result.
 
-    macOS/Linux'da `icmplib` (privileged=False); Windows'da tizim `ping`
-    buyrug'i orqali (admin shart emas).
+    On macOS/Linux via `icmplib` (privileged=False); on Windows via the system
+    `ping` command (no admin required).
     """
     if _platform.IS_WINDOWS:
         alive, rtts, loss = await _win_ping(address, count=count, timeout=timeout)
@@ -123,12 +123,12 @@ async def ping_many(
     interval: float = 0.3,
     privileged: bool = False,
 ) -> list[PingResult]:
-    """Bir nechta nishonni parallel ping qiladi.
+    """Pings several targets in parallel.
 
-    targets: {label: address} ko'rinishidagi lug'at.
+    targets: a dict in `{label: address}` form.
 
-    Windows'da har nishon alohida `ping` jarayoni bilan parallel ishlanadi
-    (asyncio.gather + semaphore concurrency'ni cheklaydi).
+    On Windows each target is handled in parallel by its own `ping` process
+    (asyncio.gather + a semaphore caps the concurrency).
     """
     labels = list(targets.keys())
     addresses = [targets[label] for label in labels]
@@ -152,21 +152,20 @@ def build_targets(
     include_ipv6: bool = False,
     extra_targets: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    """Ping nishonlari lug'atini yig'adi: lokal gateway + global serverlar.
+    """Builds the dict of ping targets: the local gateway + the global servers.
 
-    Argumentlar:
-        gateway — lokal gateway IP (None bo'lsa qo'shilmaydi).
-        include_global — standart global nishonlarni (DNS provayderlar) qo'shadi.
-        include_ipv6 — True bo'lsa IPv6 global nishonlar ham qo'shiladi.
-        extra_targets — {label: address} ko'rinishidagi qo'shimcha foydalanuvchi
-            nishonlari (masalan config fayldan). Standart nishonlardan KEYIN
-            qo'shiladi; bir xil label bo'lsa foydalanuvchi qiymati ustun keladi.
-            (Config faylni o'qish — Layer 2 ishi; bu funksiya faqat tayyor
-            lug'atni qabul qiladi.)
+    Arguments:
+        gateway — the local gateway IP (not added when None).
+        include_global — adds the default global targets (the DNS providers).
+        include_ipv6 — when True the global IPv6 targets are added as well.
+        extra_targets — additional user targets in `{label: address}` form (from
+            a config file, say). They are added AFTER the default targets; on a
+            clashing label the user's value wins. (Reading the config file is
+            Layer 2's job; this function only accepts a ready-made dict.)
     """
     targets: dict[str, str] = {}
     if gateway:
-        targets["Gateway (lokal)"] = gateway
+        targets["Gateway (local)"] = gateway
     if include_global:
         targets.update(DEFAULT_GLOBAL_TARGETS)
     if include_ipv6:
@@ -178,7 +177,7 @@ def build_targets(
 
 @dataclass(slots=True)
 class WatchStats:
-    """`ping --watch` uchun jamlanma statistika (bitta nishon bo'yicha)."""
+    """Cumulative statistics for `ping --watch` (for a single target)."""
 
     label: str
     address: str
@@ -188,7 +187,7 @@ class WatchStats:
     min_rtt: float = 0.0
     avg_rtt: float = 0.0
     max_rtt: float = 0.0
-    _rtt_sum: float = 0.0  # ichki: avg hisoblash uchun
+    _rtt_sum: float = 0.0  # internal: used to compute avg
 
     @property
     def loss_pct(self) -> float:
@@ -197,7 +196,7 @@ class WatchStats:
         return (self.sent - self.received) / self.sent * 100.0
 
     def update(self, alive: bool, rtt: float) -> None:
-        """Bitta ping natijasi bilan statistikani yangilaydi."""
+        """Updates the statistics with the result of a single ping."""
         self.sent += 1
         if not alive or rtt <= 0:
             return
@@ -216,11 +215,10 @@ async def ping_stream(
     timeout: float = 2.0,
     privileged: bool = False,
 ) -> AsyncIterator[WatchStats]:
-    """Cheksiz ping oqimi: har `interval` soniyada bitta paket, yangilangan stats.
+    """An endless ping stream: one packet every `interval` seconds, updated stats.
 
-    `--watch` rejimi uchun. To'xtatish chaqiruvchi tomonida (CancelledError /
-    KeyboardInterrupt) amalga oshiriladi. Har iteratsiyada yangilangan
-    `WatchStats` qaytaradi.
+    For `--watch` mode. Stopping is the caller's business (CancelledError /
+    KeyboardInterrupt). Each iteration yields the updated `WatchStats`.
     """
     stats = WatchStats(label=label or address, address=address)
     while True:
@@ -242,7 +240,7 @@ async def ping_stream(
         except OSError:
             stats.update(False, 0.0)
         yield stats
-        # Interval'ni ping vaqtini hisobga olib kutamiz (drift kamayadi).
+        # We wait out the interval minus the time the ping took (less drift).
         elapsed = asyncio.get_running_loop().time() - start
         sleep_for = interval - elapsed
         if sleep_for > 0:
@@ -263,18 +261,18 @@ def _to_result(host: _HostLike, label: str) -> PingResult:
     )
 
 
-# --- Windows shoxi (tizim `ping` buyrug'i, admin shart emas) -----------------
+# --- The Windows branch (the system `ping` command, no admin needed) ---------
 
-# Windows'da parallel `ping` jarayonlari sonini cheklaymiz (resurs tejash).
+# We cap the number of parallel `ping` processes on Windows (saving resources).
 _WIN_PING_CONCURRENCY = 64
 
 
 def _is_ipv6(address: str) -> bool:
-    """Manzil IPv6 bo'lsa True (Windows `ping` uchun `-6` bayrog'i kerak)."""
+    """True when the address is IPv6 (Windows `ping` then needs the `-6` flag)."""
     try:
         return isinstance(ipaddress.ip_address(address), ipaddress.IPv6Address)
     except ValueError:
-        # Nom (hostname) — IPv4 deb hisoblaymiz; `ping` o'zi resolve qiladi.
+        # A hostname — we treat it as IPv4; `ping` resolves it itself.
         return ":" in address
 
 
@@ -283,32 +281,36 @@ async def _win_ping(
     count: int = 4,
     timeout: float = 2.0,
 ) -> tuple[bool, list[float], float]:
-    """Windows'da ICMP ping (alive, rtts_ms, loss) — admin shart emas.
+    """ICMP ping on Windows (alive, rtts_ms, loss) — no admin required.
 
-    Ildiz yo'l: Win32 `IcmpSendEcho` (`_platform.win_icmp_ping`) — til/codepage'
-    dan mustaqil, matn-parse'siz. Bu IPv4 manzil uchun ishlaydi.
+    The primary path: Win32 `IcmpSendEcho` (`_platform.win_icmp_ping`) —
+    independent of language/codepage, with no text parsing. It works for an IPv4
+    address.
 
-    Zaxira yo'l: `IcmpSendEcho` mavjud bo'lmasa (juda eski muhit) yoki manzil
-    IPv4'ga resolve bo'lmasa (masalan IPv6) -> tizim `ping.exe` buyrug'iga
-    tushib, chiqishni TIL-MUSTAQIL parse qilamiz (`parse_windows_ping`).
-    Buyruq topilmasa / timeout bo'lsa -> (False, [], 1.0).
+    The fallback path: if `IcmpSendEcho` is unavailable (a very old environment)
+    or the address does not resolve to IPv4 (IPv6, for instance) -> we fall back
+    to the system `ping.exe` command and parse its output in a
+    LANGUAGE-INDEPENDENT way (`parse_windows_ping`). If the command is missing /
+    times out -> (False, [], 1.0).
     """
     count = max(1, count)
 
-    # 1) Ildiz yo'l: IcmpSendEcho (IPv4, til/codepage'dan mustaqil).
+    # 1) The primary path: IcmpSendEcho (IPv4, independent of language/codepage).
     if not _is_ipv6(address):
         icmp = await asyncio.to_thread(_platform.win_icmp_ping, address, count, timeout)
         if icmp is not None:
             return icmp
 
-    # 2) Zaxira yo'l: tizim `ping.exe` + til-mustaqil parse (IPv6 yoki DLL yo'q).
+    # 2) The fallback path: the system `ping.exe` + a language-independent parse
+    #    (IPv6, or no DLL).
     wait_ms = max(1, int(timeout * 1000))
     cmd = ["ping", "-n", str(count), "-w", str(wait_ms)]
     if _is_ipv6(address):
         cmd.append("-6")
     cmd.append(address)
 
-    # Butun jarayonga umumiy timeout: har paket `-w` kutadi, ortig'iga zaxira.
+    # An overall timeout for the whole process: each packet waits `-w`, plus
+    # some slack on top.
     overall = timeout * count + 2.0
     out = await _platform.run_command(cmd, timeout=overall)
     if not out:
@@ -323,7 +325,7 @@ def _win_result(
     rtts: list[float],
     loss: float,
 ) -> PingResult:
-    """Windows `ping` parse natijasidan `PingResult` yig'adi (icmplib bilan bir xil shakl)."""
+    """Builds a `PingResult` from the parsed Windows `ping` result (same shape as icmplib)."""
     if rtts:
         return PingResult(
             label=label,
@@ -345,7 +347,7 @@ def _win_result(
 
 
 def _mean_abs_consecutive_diff(values: list[float]) -> float:
-    """Ketma-ket qiymatlar farqining o'rtacha moduli (icmplib jitter ta'rifiga mos)."""
+    """The mean absolute difference between consecutive values (icmplib's jitter definition)."""
     if len(values) < 2:
         return 0.0
     diffs = [abs(values[i] - values[i - 1]) for i in range(1, len(values))]
@@ -358,7 +360,7 @@ async def _win_ping_many(
     count: int,
     timeout: float,
 ) -> list[PingResult]:
-    """Windows'da bir nechta nishonni parallel ping qiladi (semaphore bilan cheklab)."""
+    """Pings several targets in parallel on Windows (capped with a semaphore)."""
     sem = asyncio.Semaphore(_WIN_PING_CONCURRENCY)
 
     async def one(label: str, address: str) -> PingResult:

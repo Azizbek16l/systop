@@ -1,8 +1,9 @@
-"""netinfo testlari — OFFLINE.
+"""netinfo tests — OFFLINE.
 
-``default_gateway`` (Linux/macOS/netstat shoxlari), ``Interface.cidr`` chekka
-holatlari, ``list_interfaces`` (psutil monkeypatch bilan) sinaladi. Tarmoqqa
-chiqmaydi: barcha ``subprocess.run`` va ``psutil`` chaqiruvlari soxtalashtiriladi.
+``default_gateway`` (the Linux/macOS/netstat branches), the edge cases of
+``Interface.cidr`` and ``list_interfaces`` (with psutil monkeypatched) are
+exercised. It never touches the network: every ``subprocess.run`` and ``psutil``
+call is faked.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from conftest import FakeCompletedProcess, FakeSnicaddr, FakeSnicstats
 from systop.core import netinfo
 from systop.core.netinfo import Interface, list_interfaces, primary_interface
 
-# --- Interface.cidr chekka holatlar -----------------------------------------
+# --- Interface.cidr edge cases ----------------------------------------------
 
 
 def test_interface_cidr_basic():
@@ -38,7 +39,7 @@ def test_interface_cidr_none_when_no_netmask():
 
 
 def test_interface_cidr_invalid_netmask_returns_none():
-    # "255.255.255.7" — uzluksiz bo'lmagan (non-contiguous) maska -> ValueError.
+    # "255.255.255.7" — a non-contiguous mask -> ValueError.
     iface = Interface(name="en0", ipv4="192.168.1.42", netmask="255.255.255.7")
     assert iface.cidr is None
 
@@ -62,7 +63,7 @@ def _patch_platform(monkeypatch, system: str):
 
 # --- default_gateway: Windows `route print -4` ------------------------------
 
-# Real `route print -4` chiqishi (IPv4 Route Table qismi).
+# Real `route print -4` output (the IPv4 Route Table part).
 _WIN_ROUTE_OUT = (
     "===========================================================================\n"
     "IPv4 Route Table\n"
@@ -87,9 +88,9 @@ def test_default_gateway_windows_route_print(monkeypatch):
 
 
 def test_default_gateway_windows_falls_back_to_powershell(monkeypatch):
-    """`route print` gateway bermasa, PowerShell `Get-NetRoute` zaxirasi ishlaydi."""
+    """If `route print` gives no gateway, the PowerShell `Get-NetRoute` fallback works."""
     _patch_platform(monkeypatch, "Windows")
-    # Get-NetRoute -ExpandProperty NextHop faqat IP qatorini chiqaradi.
+    # Get-NetRoute -ExpandProperty NextHop prints the IP line only.
     ps_out = "10.0.0.1\n"
 
     calls = []
@@ -97,7 +98,7 @@ def test_default_gateway_windows_falls_back_to_powershell(monkeypatch):
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
         if cmd[:2] == ["route", "print"]:
-            # default qatorisiz chiqish -> parse None qaytaradi -> PowerShell'ga o'tadi.
+            # output without a default line -> the parse returns None -> it moves on to PowerShell.
             return FakeCompletedProcess(stdout="Active Routes:\n(no default)\n")
         if cmd[:1] == ["powershell"]:
             return FakeCompletedProcess(stdout=ps_out)
@@ -161,7 +162,7 @@ def test_default_gateway_macos_route_get(monkeypatch):
 
 
 def test_default_gateway_macos_falls_back_to_netstat(monkeypatch):
-    """`route -n get default` gateway bermasa, netstat -rn ishlaydi."""
+    """If `route -n get default` gives no gateway, netstat -rn takes over."""
     _patch_platform(monkeypatch, "Darwin")
     netstat_out = (
         "Routing tables\n"
@@ -177,7 +178,7 @@ def test_default_gateway_macos_falls_back_to_netstat(monkeypatch):
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
         if cmd[:1] == ["route"]:
-            # gateway qatorisiz chiqish -> regex topa olmaydi -> netstat'ga o'tadi
+            # output without a gateway line -> the regex finds nothing -> it moves on to netstat
             return FakeCompletedProcess(stdout="   route to: default\n  interface: en0\n")
         if cmd[:1] == ["netstat"]:
             return FakeCompletedProcess(stdout=netstat_out)
@@ -185,15 +186,15 @@ def test_default_gateway_macos_falls_back_to_netstat(monkeypatch):
 
     monkeypatch.setattr(netinfo.subprocess, "run", fake_run)
     assert netinfo.default_gateway() == "172.20.10.1"
-    # Haqiqatan ham netstat zaxirasiga tushganini tasdiqlaymiz.
+    # We confirm that it really did fall through to the netstat fallback.
     assert any(c[:1] == ["netstat"] for c in calls)
 
 
 def test_default_gateway_netstat_link_gateway_skipped(monkeypatch):
-    """netstat default qatorida gateway IP emas, link bo'lsa (masalan, `link#1`).
+    """When the netstat default line holds a link instead of a gateway IP (`link#1`, say).
 
-    Bunday holda ikkinchi ustun IP emas — funksiya None qaytarishi kerak,
-    qiymatni noto'g'ri olmasligi shart.
+    In that case the second column is not an IP — the function must return None
+    and must not take the value by mistake.
     """
     _patch_platform(monkeypatch, "Darwin")
     netstat_out = (
@@ -283,7 +284,7 @@ def test_list_interfaces_include_loopback(monkeypatch):
 
 def test_list_interfaces_skips_interface_without_ipv4(monkeypatch):
     addrs = {
-        # Faqat MAC bor, IPv4 yo'q — virtual interfeys, o'tkazib yuborilishi kerak.
+        # Only a MAC, no IPv4 — a virtual interface, it must be skipped.
         "utun0": [FakeSnicaddr(family=psutil.AF_LINK, address="aa:bb:cc:dd:ee:ff")],
         "en0": [FakeSnicaddr(family=socket.AF_INET, address="10.0.0.2", netmask="255.255.255.0")],
     }
@@ -295,7 +296,7 @@ def test_list_interfaces_skips_interface_without_ipv4(monkeypatch):
 
 
 def test_list_interfaces_missing_stats_keeps_defaults(monkeypatch):
-    """Interfeys uchun stats bo'lmasa, is_up=False va speed=0 qoladi (KeyError yo'q)."""
+    """With no stats for an interface, is_up=False and speed=0 remain (no KeyError)."""
     addrs = {
         "en0": [FakeSnicaddr(family=socket.AF_INET, address="10.0.0.2", netmask="255.255.255.0")],
     }
@@ -343,7 +344,7 @@ def test_primary_interface_gateway_not_in_any_network_falls_back(monkeypatch):
     monkeypatch.setattr(netinfo, "list_interfaces", lambda: ifaces)
     monkeypatch.setattr(netinfo, "default_gateway", lambda: "8.8.8.8")
     chosen = primary_interface()
-    # Gateway hech qaysi tarmoqqa kirmaydi -> birinchi interfeysga tushadi.
+    # The gateway belongs to none of the networks -> it falls back to the first interface.
     assert chosen is not None and chosen.name == "en0"
 
 
@@ -352,10 +353,11 @@ def test_primary_interface_gateway_not_in_any_network_falls_back(monkeypatch):
     ["", "not-an-ip", "999.999.999.999"],
 )
 def test_primary_interface_invalid_gateway_string(monkeypatch, gw):
-    """Gateway noto'g'ri/buzuq satr bo'lsa — yiqilmasdan birinchi interfeysga tushadi.
+    """If the gateway is an invalid/broken string — it falls back to the first interface, no crash.
 
-    (Avval ``ipaddress.ip_address(gw)`` try'siz edi va ValueError ko'tarardi;
-    tuzatilgandan keyin xato yutilib, birinchi interfeys qaytariladi.)
+    (Previously ``ipaddress.ip_address(gw)`` had no try around it and raised
+    ValueError; after the fix the error is swallowed and the first interface is
+    returned.)
     """
     ifaces = [Interface(name="en0", ipv4="192.168.1.50", netmask="255.255.255.0")]
     monkeypatch.setattr(netinfo, "list_interfaces", lambda: ifaces)
@@ -363,14 +365,15 @@ def test_primary_interface_invalid_gateway_string(monkeypatch, gw):
     assert primary_interface().name == "en0"
 
 
-# --- primary_interface: APIPA (169.254.x) / link-local filtri ---------------
+# --- primary_interface: the APIPA (169.254.x) / link-local filter -----------
 
 
 def test_primary_interface_skips_apipa_when_no_gateway(monkeypatch):
-    """Gateway yo'q: APIPA (169.254.x) interfeys o'tkazib, normalini tanlaydi.
+    """No gateway: the APIPA (169.254.x) interface is skipped and a normal one is picked.
 
-    Windows DHCP javob bermaganda APIPA tayinlaydi (ulanmagan adapter, masalan
-    Hyper-V vEthernet). Bunday interfeys primary bo'la olmaydi.
+    Windows assigns an APIPA address when DHCP does not answer (a disconnected
+    adapter, a Hyper-V vEthernet for instance). Such an interface cannot be the
+    primary one.
     """
     ifaces = [
         Interface(name="vEthernet", ipv4="169.254.10.20", netmask="255.255.0.0"),
@@ -383,7 +386,7 @@ def test_primary_interface_skips_apipa_when_no_gateway(monkeypatch):
 
 
 def test_primary_interface_apipa_first_real_second(monkeypatch):
-    """Birinchi interfeys APIPA bo'lsa ham — keyingi NON-APIPA tanlanadi."""
+    """Even if the first interface is APIPA — the next NON-APIPA one is chosen."""
     ifaces = [
         Interface(name="APIPA0", ipv4="169.254.1.1", netmask="255.255.0.0"),
         Interface(name="APIPA1", ipv4="169.254.99.99", netmask="255.255.0.0"),
@@ -395,7 +398,7 @@ def test_primary_interface_apipa_first_real_second(monkeypatch):
 
 
 def test_primary_interface_gateway_match_wins_over_apipa(monkeypatch):
-    """Gateway mos kelgan interfeys APIPA filtridan oldin afzal (1-qoida)."""
+    """The interface matching the gateway wins over the APIPA filter (rule 1)."""
     ifaces = [
         Interface(name="APIPA", ipv4="169.254.5.5", netmask="255.255.0.0"),
         Interface(name="LAN", ipv4="192.168.1.50", netmask="255.255.255.0"),
@@ -406,7 +409,7 @@ def test_primary_interface_gateway_match_wins_over_apipa(monkeypatch):
 
 
 def test_primary_interface_all_apipa_falls_back_to_first(monkeypatch):
-    """Hamma interfeys APIPA bo'lsa — oxirgi zaxira birinchi (None emas)."""
+    """If every interface is APIPA — the last resort is the first one (not None)."""
     ifaces = [
         Interface(name="A", ipv4="169.254.1.1", netmask="255.255.0.0"),
         Interface(name="B", ipv4="169.254.2.2", netmask="255.255.0.0"),
@@ -418,7 +421,7 @@ def test_primary_interface_all_apipa_falls_back_to_first(monkeypatch):
 
 
 def test_primary_interface_gateway_outside_network_skips_apipa(monkeypatch):
-    """Gateway hech qaysi tarmoqqa kirmasa, APIPA o'tkazilib normal tanlanadi."""
+    """If the gateway belongs to no network, APIPA is skipped and a normal one is chosen."""
     ifaces = [
         Interface(name="APIPA", ipv4="169.254.7.7", netmask="255.255.0.0"),
         Interface(name="Real", ipv4="192.168.1.50", netmask="255.255.255.0"),
@@ -445,7 +448,7 @@ def test_is_apipa(ipv4, expected):
 
 
 # --------------------------------------------------------------------------- #
-# prefixlen / host_count (0.6.1) — gateway yonida `/24` ko'rsatish uchun
+# prefixlen / host_count (0.6.1) — for showing `/24` next to the gateway
 # --------------------------------------------------------------------------- #
 
 
@@ -474,7 +477,7 @@ def test_prefixlen_invalid_netmask_is_none():
 
 
 def test_host_count_slash_24():
-    """/24 -> 254 (tarmoq va broadcast chiqariladi)."""
+    """/24 -> 254 (the network and the broadcast are excluded)."""
     assert Interface(name="en0", ipv4="10.0.0.5", netmask="255.255.255.0").host_count == 254
 
 
@@ -483,7 +486,7 @@ def test_host_count_slash_23():
 
 
 def test_host_count_slash_31_is_zero():
-    """/31 da foydalanish mumkin host qolmaydi (manfiy bo'lmasligi kerak)."""
+    """A /31 leaves no usable host (and must not go negative)."""
     assert Interface(name="en0", ipv4="10.0.0.5", netmask="255.255.255.254").host_count == 0
 
 

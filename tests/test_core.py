@@ -1,4 +1,4 @@
-"""Tarmoqsiz (offline) ishlaydigan birlik testlari."""
+"""Unit tests that run without a network (offline)."""
 
 from systop.core.netinfo import Interface
 from systop.core.ping import DEFAULT_GLOBAL_TARGETS, PingResult, build_targets
@@ -16,7 +16,7 @@ def test_interface_cidr_none_without_ip():
 
 def test_build_targets_with_gateway():
     targets = build_targets("192.168.1.1")
-    assert targets["Gateway (lokal)"] == "192.168.1.1"
+    assert targets["Gateway (local)"] == "192.168.1.1"
     assert "Cloudflare" in targets
     assert len(targets) == len(DEFAULT_GLOBAL_TARGETS) + 1
 
@@ -44,7 +44,7 @@ def test_neigh_regex_linux():
 
 
 # --------------------------------------------------------------------------- #
-# Rich emoji shortcode himoyasi (0.5.1) — MAC/IPv6 buzilishi regressiyasi
+# Rich emoji shortcode protection (0.5.1) — the MAC/IPv6 corruption regression
 # --------------------------------------------------------------------------- #
 
 import io  # noqa: E402
@@ -55,19 +55,19 @@ from systop.widgets._glyphs import data_cell  # noqa: E402
 
 
 def _render(renderable) -> str:
-    """Emoji almashtirish YOQILGAN konsolda render qiladi (TUI holati)."""
+    """Renders on a console with emoji substitution ENABLED (the TUI situation)."""
     c = Console(file=io.StringIO(), emoji=True, force_terminal=False, width=80)
     c.print(renderable)
     return c.file.getvalue()
 
 
 def test_raw_string_mac_is_corrupted_by_rich():
-    """Muammoni hujjatlashtiradi: xom satr Rich'da emojiga aylanadi."""
+    """Documents the problem: a raw string turns into an emoji in Rich."""
     assert "🆎" in _render("62:46:3c:ab:d1:1a")
 
 
 def test_data_cell_protects_mac_with_ab_octet():
-    """`:ab:` -> 🆎 bo'lmasligi kerak (ekranda ko'rilgan haqiqiy bug)."""
+    """`:ab:` must not become 🆎 (a real bug that was seen on screen)."""
     out = _render(data_cell("62:46:3c:ab:d1:1a"))
     assert "62:46:3c:ab:d1:1a" in out
     assert "🆎" not in out
@@ -80,7 +80,7 @@ def test_data_cell_protects_mac_with_cd_octet():
 
 
 def test_data_cell_protects_ipv6_hex_groups():
-    """IPv6'da xavf kattaroq: :a: :b: :abc: :abcd: :bed: :bee: :100: :1234:."""
+    """The danger is greater in IPv6: :a: :b: :abc: :abcd: :bed: :bee: :100: :1234:."""
     for addr, emoji in [
         ("2001:a:1::1", "🅰"),
         ("2001:b:1::1", "🅱"),
@@ -97,7 +97,7 @@ def test_data_cell_protects_ipv6_hex_groups():
 
 
 def test_data_cell_does_not_interpret_markup():
-    """Ma'lumotda `[dim]` bo'lsa ham uslub sifatida talqin qilinmasligi kerak."""
+    """Even if the data contains `[dim]`, it must not be interpreted as a style."""
     out = _render(data_cell("[red]not-a-style[/]"))
     assert "[red]not-a-style[/]" in out
 
@@ -112,10 +112,10 @@ def test_data_cell_stringifies_non_str():
 
 
 def test_all_hex_emoji_shortcodes_are_covered():
-    """Rich'da 16-lik belgilardan iborat shortcode'lar soni o'zgarsa xabar bersin.
+    """Warns if the number of hex-character shortcodes in Rich ever changes.
 
-    Rich yangilanib yangi shortcode qo'shilsa (masalan `:dead:`) bu test
-    yiqiladi va himoyani qayta ko'rib chiqishga majbur qiladi.
+    If Rich is updated and a new shortcode is added (`:dead:`, for example) this
+    test fails and forces the protection to be reviewed again.
     """
     from rich._emoji_codes import EMOJI
 

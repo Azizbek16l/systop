@@ -1,20 +1,21 @@
-"""Web xizmatlarni topish va admin panellarni aniqlash — tarmoqni "explore" qilish.
+"""Discovering web services and identifying admin panels — "exploring" the network.
 
-Nima uchun kerak: LAN'da o'nlab qurilma bo'ladi (router, switch, NVR, kamera,
-printer, Docker paneli...) va ularning ko'pi **himoyalanmagan HTTP admin
-panel**ini ochiq qoldiradi. `scan` faqat "port ochiq" deydi; bu modul ochiq
-web portga so'rov yuborib **nima ekanini** va **admin panel bo'lsa xavf
-darajasini** aytadi.
+Why this is needed: a LAN holds dozens of devices (router, switch, NVR, camera,
+printer, Docker panel...) and many of them leave an **unprotected HTTP admin
+panel** exposed. `scan` only says "the port is open"; this module sends a
+request to the open web port and tells you **what it is** and, **if it is an
+admin panel, how risky it is**.
 
-Arxitektura: tarmoq chaqiruvi (`probe_service`) bilan aniqlash mantiqi
-(`classify`) ataylab ajratilgan — `classify` sof funksiya, tarmoqsiz test
-qilinadi (loyihaning "testlar offline" qoidasi).
+Architecture: the network call (`probe_service`) is deliberately separated from
+the detection logic (`classify`) — `classify` is a pure function and is tested
+without any network (the project's "tests are offline" rule).
 
-Muhim (2026-07-28 saboqi): tez ketma-ket ko'p port/host tekshirish tarmoqdagi
-IPS/anti-scan himoyasini ishga tushiradi va skanerlovchi IP **vaqtincha
-bloklanadi** (alomat: ICMP ishlaydi, yangi TCP "Connection refused"). Shuning
-uchun bu yerda `concurrency` past (default 16) va `delay` (host orasidagi
-pauza) mavjud. Kerio/Fortigate turgan tarmoqda `--polite` ishlating.
+Important (lesson of 2026-07-28): checking many ports/hosts in quick succession
+trips the IPS/anti-scan protection on the network and the scanning IP gets
+**temporarily blocked** (symptom: ICMP works, new TCP connections say
+"Connection refused"). That is why `concurrency` here is low (default 16) and a
+`delay` (a pause between hosts) exists. On a network with an inline firewall/IPS
+use `--polite`.
 """
 
 from __future__ import annotations
@@ -26,14 +27,14 @@ from dataclasses import dataclass, field
 
 import httpx
 
-# Web interfeys uchraydigan portlar -> sxema. Faqat shular tekshiriladi
-# (65535 portni HTTP so'rov bilan urish ma'nosiz va IPS'ni qo'zg'atadi).
+# Ports where a web interface is likely -> scheme. Only these are checked
+# (hitting all 65535 ports with an HTTP request is pointless and provokes the IPS).
 WEB_PORTS: dict[int, str] = {
     80: "http",
     81: "http",
     443: "https",
     591: "http",
-    2375: "http",  # Docker API (himoyasiz bo'lsa juda xavfli)
+    2375: "http",  # Docker API (very dangerous if unprotected)
     2376: "https",
     3000: "http",  # Grafana / dev server
     4081: "https",  # Kerio Control admin
@@ -54,22 +55,23 @@ WEB_PORTS: dict[int, str] = {
     10000: "http",  # Webmin
 }
 
-# Eng ko'p uchraydigan qisqa ro'yxat (tez rejim uchun).
+# The short list of the most common ones (for quick mode).
 QUICK_WEB_PORTS: tuple[int, ...] = (80, 443, 8080, 8443, 8000, 8006, 4081, 9000)
 
 
 @dataclass(frozen=True, slots=True)
 class Fingerprint:
-    """Bitta mahsulot izi: body va header naqshlari ALOHIDA.
+    """The trace of a single product: body and header patterns kept SEPARATE.
 
-    `klass` ataylab ikkiga bo'lingan:
-      "admin" — mahsulotning o'zi boshqaruv paneli (Kerio, Hikvision, Proxmox...).
-                Bunday iz admin-ballga +2 qo'shadi.
-      "infra" — shunchaki web server/proxy (nginx, Apache, Caddy, Traefik).
-                Faqat IDENTIFIKATSIYA uchun, admin-ballga **0** qo'shadi.
+    `klass` is deliberately split in two:
+      "admin" — the product itself is a management panel (Kerio, Hikvision,
+                Proxmox...). Such a trace adds +2 to the admin score.
+      "infra" — merely a web server/proxy (nginx, Apache, Caddy, Traefik).
+                For IDENTIFICATION only, adds **0** to the admin score.
 
-    Bu bo'linish kerak: aks holda oddiy nginx welcome sahifasi ham "admin panel"
-    deb belgilanardi (dastlabki versiyada aynan shu soxta pozitiv chiqdi).
+    This split is necessary: otherwise even an ordinary nginx welcome page was
+    flagged as an "admin panel" (that exact false positive appeared in the
+    first version).
     """
 
     product: str
@@ -79,25 +81,25 @@ class Fingerprint:
     header_patterns: tuple[str, ...] = ()
 
 
-# Mahsulot barmoq izlari.
+# Product fingerprints.
 #
-# Naqshlar ikki AJRATILGAN matnda izlanadi: `body_patterns` faqat HTML tanasida,
-# `header_patterns` faqat "kalit:qiymat" ko'rinishidagi header matnida. Ilgari
-# ikkalasi bitta satrga yopishtirilardi va header tokeni (`x-jenkins`) sahifa
-# matnida ham "mos kelardi" (va aksincha).
+# The patterns are searched in two SEPARATE texts: `body_patterns` only in the
+# HTML body, `header_patterns` only in the "key:value" shaped header text.
+# Previously the two were glued into a single string and a header token
+# (`x-jenkins`) would "match" inside the page text as well (and vice versa).
 #
-# Naqshlar ataylab UZUN/aniq: substring qidiruvi oddiy inglizcha so'z ichiga
-# tushib ketadi. Amalda ko'rilgan soxta pozitivlar:
-#   "asterisk" ⊂ "marked with an asterisk (*)"  -> Asterisk/FreePBX (telefoniya!)
+# The patterns are deliberately LONG/specific: a substring search falls inside
+# ordinary English words. False positives seen in practice:
+#   "asterisk" ⊂ "marked with an asterisk (*)"  -> Asterisk/FreePBX (telephony!)
 #   "unifi"    ⊂ "Unified Communications"       -> UniFi
 #   "minio"    ⊂ "dominion"                     -> MinIO
-#   "prometheus" — Yunon mifologiyasi/blog matni -> Prometheus
-#   "jenkins"  — familiya ("Sarah Jenkins")     -> Jenkins
-#   '"apiversion"' — har qanday k8s manifesti   -> ochiq Docker API
+#   "prometheus" — Greek mythology/blog prose   -> Prometheus
+#   "jenkins"  — a surname ("Sarah Jenkins")    -> Jenkins
+#   '"apiversion"' — any k8s manifest           -> exposed Docker API
 #   "hass"     ⊂ "chassis"                      -> Home Assistant
-# `\b` so'z chegarasi YECHIM EMAS (sinab ko'rilgan): `\basterisk\b` ham,
-# `\bprometheus\b` ham yuqoridagi holatlarga baribir mos keladi — ular
-# haqiqatan ham alohida so'z. Yechim — kontekstni naqshning O'ZIGA kiritish
+# The `\b` word boundary is NOT THE FIX (it was tried): both `\basterisk\b` and
+# `\bprometheus\b` still match the cases above — they really are standalone
+# words there. The fix is to put the context into the pattern ITSELF
 # ("asterisk management portal", "unifi network", "minio console", "x-jenkins").
 _FINGERPRINTS: tuple[Fingerprint, ...] = (
     Fingerprint(
@@ -105,12 +107,12 @@ _FINGERPRINTS: tuple[Fingerprint, ...] = (
     ),
     Fingerprint(
         "Hikvision",
-        "kamera/NVR",
+        "camera/NVR",
         "admin",
         ("hikvision", "/doc/page/login.asp", "webcomponents.exe"),
     ),
-    Fingerprint("Dahua", "kamera/NVR", "admin", ("dahua", "dh_web", "webplugin")),
-    Fingerprint("UniFi", "tarmoq", "admin", ("unifi network", "unifi os", "ubiquiti"), ("ubnt",)),
+    Fingerprint("Dahua", "camera/NVR", "admin", ("dahua", "dh_web", "webplugin")),
+    Fingerprint("UniFi", "network", "admin", ("unifi network", "unifi os", "ubiquiti"), ("ubnt",)),
     Fingerprint("MikroTik", "router", "admin", ("mikrotik", "routeros", "webfig")),
     Fingerprint("TP-Link", "router", "admin", ("tp-link", "tplink")),
     Fingerprint(
@@ -145,7 +147,7 @@ _FINGERPRINTS: tuple[Fingerprint, ...] = (
         "admin",
         ("home assistant", "home-assistant", "homeassistant"),
     ),
-    Fingerprint("Docker API (ochiq!)", "docker", "admin", (), ("server:docker/",)),
+    Fingerprint("Docker API (exposed!)", "docker", "admin", (), ("server:docker/",)),
     Fingerprint("HP printer", "printer", "admin", ("hp laserjet", "hp officejet", "hp color")),
     Fingerprint("Canon printer", "printer", "admin", ("remote ui", "canon inkjet", "canon laser")),
     Fingerprint(
@@ -153,13 +155,13 @@ _FINGERPRINTS: tuple[Fingerprint, ...] = (
     ),
     Fingerprint(
         "Asterisk/FreePBX",
-        "telefoniya",
+        "telephony",
         "admin",
         ("freepbx", "asterisk management portal", "digium"),
     ),
     Fingerprint("MinIO", "storage", "admin", ("minio console",), ("x-minio", "server:minio")),
     Fingerprint("Keycloak", "identity", "admin", ("keycloak",)),
-    # --- faqat identifikatsiya, admin-ball bermaydi ---
+    # --- identification only, contributes no admin score ---
     Fingerprint("Nginx", "web server", "infra", ("welcome to nginx",), ("server:nginx",)),
     Fingerprint(
         "Apache", "web server", "infra", ("apache2 ubuntu default", "it works!"), ("server:apache",)
@@ -168,7 +170,9 @@ _FINGERPRINTS: tuple[Fingerprint, ...] = (
     Fingerprint("Caddy", "proxy", "infra", (), ("server:caddy",)),
 )
 
-# Admin panelga ishora qiluvchi sarlavha/matn kalitlari.
+# Title/text keywords that hint at an admin panel. The non-English entries are
+# deliberate: device firmware is frequently shipped with a localised login page,
+# and dropping them would silently miss those panels.
 _ADMIN_WORDS: tuple[str, ...] = (
     "login",
     "log in",
@@ -201,7 +205,7 @@ _FORM_RE = re.compile(r"<form[^>]", re.IGNORECASE)
 
 @dataclass(slots=True)
 class AdminVerdict:
-    """`classify` natijasi — sof aniqlash mantiqidan (tarmoqsiz sinaladi)."""
+    """The result of `classify` — from the pure detection logic (tested offline)."""
 
     is_admin: bool = False
     score: int = 0
@@ -213,7 +217,7 @@ class AdminVerdict:
 
 @dataclass(slots=True)
 class WebService:
-    """Bitta host:port bo'yicha web xizmat natijasi."""
+    """The web-service result for a single host:port."""
 
     ip: str
     port: int
@@ -227,7 +231,7 @@ class WebService:
     admin_score: int = 0
     admin_reasons: list[str] = field(default_factory=list)
     auth_type: str | None = None
-    insecure_admin: bool = False  # admin panel shifrlanmagan HTTP ustida
+    insecure_admin: bool = False  # an admin panel over unencrypted HTTP
     elapsed_ms: float = 0.0
     error: str | None = None
 
@@ -238,37 +242,37 @@ class WebService:
 
     @property
     def risk(self) -> str:
-        """Xavf darajasi: high | medium | low | none."""
+        """Risk level: high | medium | low | none."""
         if not self.is_admin:
             return "none"
         if self.insecure_admin and self.auth_type in ("basic", "digest"):
-            return "high"  # parol ochiq matnda uzatiladi
+            return "high"  # the password travels in clear text
         if self.insecure_admin:
             return "medium"
         return "low"
 
 
 def _is_strong(pattern: str) -> bool:
-    """Naqsh O'ZICHA boshqaruv panelini isbotlaydimi (qo'shimcha dalilsiz).
+    """Does the pattern prove a management panel BY ITSELF (with no other evidence)?
 
-    Kuchli naqsh — sof harf/raqamdan iborat BO'LMAGAN satr: yo'l
-    (`/doc/page/login.asp`), fayl (`pvemanagerlib.js`), header tokeni
-    (`x-jenkins`) yoki ko'p so'zli ibora ("kerio control"). Bunday satr oddiy
-    nasr ichida tasodifan uchramaydi.
+    A strong pattern is a string that is NOT purely alphanumeric: a path
+    (`/doc/page/login.asp`), a file (`pvemanagerlib.js`), a header token
+    (`x-jenkins`) or a multi-word phrase ("kerio control"). Such a string does
+    not turn up by accident inside ordinary prose.
 
-    Yalang'och so'z ("grafana", "gitlab", "minio") esa uchrashi mumkin —
-    shuning uchun u faqat IDENTIFIKATSIYA beradi; "admin panel" xulosasi uchun
-    qo'shimcha dalil (auth / login sarlavhasi / 401) talab qilinadi.
+    A bare word ("grafana", "gitlab", "minio") on the other hand can — so it
+    only yields IDENTIFICATION; the "admin panel" verdict additionally requires
+    corroborating evidence (auth / a login title / a 401).
     """
     return not pattern.isalnum()
 
 
 def _match_fingerprint(fp: Fingerprint, body: str, headers_blob: str) -> tuple[str, bool] | None:
-    """Iz mos keldimi — `(mos kelgan naqsh, kuchlimi)` yoki `None`.
+    """Did the fingerprint match — `(matched pattern, is it strong)` or `None`.
 
-    Body naqshi FAQAT tanada, header naqshi FAQAT header matnida izlanadi.
-    Header mosligi doim kuchli deb hisoblanadi: header "kalit:qiymat" —
-    server aytgan fakt, sahifadagi nasr emas.
+    A body pattern is searched ONLY in the body, a header pattern ONLY in the
+    header text. A header match is always considered strong: a header is a
+    "key:value" — a fact stated by the server, not prose on a page.
     """
     best: tuple[str, bool] | None = None
 
@@ -287,20 +291,21 @@ def _match_fingerprint(fp: Fingerprint, body: str, headers_blob: str) -> tuple[s
 
 
 def _fingerprint_rank(item: tuple[int, Fingerprint, str, bool]) -> tuple[int, int, int, int]:
-    """Bir nechta iz mos kelganda tanlov tartibi (kichigi — yaxshisi).
+    """The selection order when several fingerprints match (smaller is better).
 
-    Ilgari birinchi moslikda `break` bor edi va ro'yxatda yuqoriroq turgan
-    SOXTA moslik to'g'ri mahsulotni SOYALAB qo'yardi (masalan sahifadagi
-    "asterisk" so'zi Proxmox'ni bosib ketardi). Endi barcha mosliklar yig'ilib,
-    eng ishonchlisi tanlanadi: avval `admin` sinfi, keyin kuchli naqsh, keyin
-    uzunroq (aniqroq) naqsh, oxirida e'lon tartibi.
+    Previously there was a `break` on the first match, and a FALSE match sitting
+    higher in the list would SHADOW the correct product (for example the word
+    "asterisk" on a page would override Proxmox). Now all matches are collected
+    and the most trustworthy one is chosen: the `admin` class first, then a
+    strong pattern, then a longer (more specific) pattern, and finally the
+    declaration order.
     """
     idx, fp, pattern, strong = item
     return (0 if fp.klass == "admin" else 1, 0 if strong else 1, -len(pattern), idx)
 
 
 def extract_title(body: str) -> str | None:
-    """HTML'dan <title> ni oladi (bo'sh joylar siqiladi, 120 belgigacha)."""
+    """Takes the <title> out of the HTML (whitespace collapsed, up to 120 chars)."""
     m = _TITLE_RE.search(body)
     if not m:
         return None
@@ -314,31 +319,32 @@ def classify(
     status: int | None = None,
     scheme: str = "http",
 ) -> AdminVerdict:
-    """Javob mazmunidan admin panel ekanini aniqlaydi — SOF funksiya.
+    """Decides from the response content whether this is an admin panel — a PURE function.
 
-    Ball tizimi (jami >= 2 bo'lsa admin panel deb hisoblanadi):
-      +3  WWW-Authenticate header (Basic/Digest) — bu aniq himoyalangan panel
-      +2  parol maydoni bor (`<input type=password>`)
-      +2  "admin" sinfidagi mahsulot izi (Kerio/Hikvision/Proxmox...)
-      +0  "infra" sinfidagi iz (nginx/Apache/Caddy) — faqat identifikatsiya
-      +1  sarlavhada admin/login kaliti
-      +1  401/403 status (autentifikatsiya talab qiladi)
+    The scoring system (a total of >= 2 counts as an admin panel):
+      +3  a WWW-Authenticate header (Basic/Digest) — this is clearly a protected panel
+      +2  a password field is present (`<input type=password>`)
+      +2  a product fingerprint of the "admin" class (Kerio/Hikvision/Proxmox...)
+      +0  a fingerprint of the "infra" class (nginx/Apache/Caddy) — identification only
+      +1  an admin/login keyword in the title
+      +1  a 401/403 status (it demands authentication)
 
-    Qo'shimcha shart (TASDIQ): 2 ball faqat ZAIF mahsulot izidan (yalang'och
-    so'z) kelgan bo'lsa, `is_admin` **berilmaydi**. Aynan shu holat bitta so'z
-    to'qnashuvini ("dominion" -> MinIO) xavfsizlik topilmasiga aylantirardi.
-    Kuchli iz (yo'l/fayl/header tokeni/ko'p so'zli ibora) o'zicha yetarli.
+    An extra condition (CORROBORATION): if the 2 points come only from a WEAK
+    product fingerprint (a bare word), `is_admin` is **not** granted. That exact
+    situation turned a single word collision ("dominion" -> MinIO) into a
+    security finding. A strong fingerprint (path/file/header token/multi-word
+    phrase) is enough on its own.
 
-    Tarmoqqa chiqmaydi, shuning uchun offline test qilinadi.
+    Does not touch the network, and is therefore tested offline.
     """
     headers = {k.lower(): v for k, v in (headers or {}).items()}
     low = body.lower()
     verdict = AdminVerdict()
 
-    # --- mahsulot barmoq izi (body va header ALOHIDA izlanadi) ---
-    # Header'lar "kalit:qiymat" ko'rinishida birlashtiriladi, shunda
-    # "server:nginx" kabi naqshlar aniq mos keladi (bo'sh joysiz). Body bilan
-    # ARALASHTIRILMAYDI: header tokeni sahifa matnida "topilib" qolmasin.
+    # --- product fingerprint (body and header searched SEPARATELY) ---
+    # The headers are joined in "key:value" form so that patterns such as
+    # "server:nginx" match exactly (with no whitespace). They are NOT MIXED with
+    # the body: a header token must not get "found" inside the page text.
     headers_blob = "\n".join(f"{k}:{v}".lower() for k, v in headers.items())
     matches = [
         (idx, fp, hit[0], hit[1])
@@ -353,12 +359,12 @@ def classify(
         if fp.klass == "admin":
             verdict.score += 2
             strong_product = strong
-            verdict.reasons.append(f"boshqaruv mahsuloti: {fp.product}")
+            verdict.reasons.append(f"management product: {fp.product}")
         else:
             verdict.reasons.append(f"web server: {fp.product}")
 
-    # --- autentifikatsiya turi ---
-    corroborated = False  # mahsulot izidan BOSHQA dalil bormi
+    # --- authentication type ---
+    corroborated = False  # is there evidence OTHER than the product fingerprint
     www_auth = headers.get("www-authenticate", "")
     if www_auth:
         scheme_name = www_auth.split()[0].lower() if www_auth.split() else "unknown"
@@ -368,28 +374,28 @@ def classify(
             else ("digest" if "digest" in scheme_name else scheme_name)
         )
         verdict.score += 3
-        verdict.reasons.append(f"HTTP autentifikatsiya: {verdict.auth_type}")
+        verdict.reasons.append(f"HTTP authentication: {verdict.auth_type}")
         corroborated = True
     elif _PASSWORD_RE.search(body):
         verdict.auth_type = "form"
         verdict.score += 2
-        verdict.reasons.append("parol maydoni bor (login formasi)")
+        verdict.reasons.append("password field present (login form)")
         corroborated = True
 
-    # --- sarlavha kalitlari ---
+    # --- title keywords ---
     title = extract_title(body)
     if title:
         tl = title.lower()
         hit_word = next((w for w in _ADMIN_WORDS if w in tl), None)
         if hit_word:
             verdict.score += 1
-            verdict.reasons.append(f"sarlavhada '{hit_word}'")
+            verdict.reasons.append(f"'{hit_word}' in the title")
             corroborated = True
 
     # --- status ---
     if status in (401, 403):
         verdict.score += 1
-        verdict.reasons.append(f"status {status} — autentifikatsiya talab qiladi")
+        verdict.reasons.append(f"status {status} — it demands authentication")
         corroborated = True
 
     verdict.is_admin = verdict.score >= 2 and (corroborated or strong_product)
@@ -403,13 +409,13 @@ async def probe_service(
     timeout: float = 4.0,
     max_bytes: int = 65536,
 ) -> WebService:
-    """Bitta host:port ga HTTP so'rov yuborib xizmatni aniqlaydi.
+    """Sends an HTTP request to a single host:port and identifies the service.
 
-    Istisno ko'tarmaydi — xato `error` maydonida qaytadi. Faqat javobning
-    boshidan `max_bytes` o'qiladi (katta sahifalarni to'liq yuklamaslik uchun).
-    TLS sertifikati **tekshirilmaydi** (`verify=False`): LAN qurilmalarida
-    deyarli har doim self-signed sertifikat bo'ladi va maqsad inventarizatsiya,
-    ishonch emas.
+    Raises no exception — errors come back in the `error` field. Only
+    `max_bytes` are read from the start of the response (so that large pages are
+    not fetched in full). The TLS certificate is **not verified**
+    (`verify=False`): LAN devices almost always carry a self-signed certificate
+    and the goal is inventory, not trust.
     """
     scheme = scheme or WEB_PORTS.get(port, "http")
     svc = WebService(ip=ip, port=port, scheme=scheme)
@@ -425,11 +431,11 @@ async def probe_service(
             body = resp.text[:max_bytes] if resp.content else ""
     except httpx.HTTPError as exc:
         svc.elapsed_ms = (time.perf_counter() - start) * 1000.0
-        svc.error = f"so'rov xatosi: {type(exc).__name__}"
+        svc.error = f"request error: {type(exc).__name__}"
         return svc
     except (OSError, ValueError) as exc:
         svc.elapsed_ms = (time.perf_counter() - start) * 1000.0
-        svc.error = f"ulanish xatosi: {type(exc).__name__}"
+        svc.error = f"connection error: {type(exc).__name__}"
         return svc
 
     svc.elapsed_ms = (time.perf_counter() - start) * 1000.0
@@ -456,13 +462,14 @@ async def discover_web(
     delay: float = 0.0,
     admin_only: bool = False,
 ) -> list[WebService]:
-    """Berilgan hostlarda web xizmatlarni topadi va admin panellarni belgilaydi.
+    """Finds the web services on the given hosts and flags the admin panels.
 
-    `concurrency` ataylab past (16) — yuqoridagi anti-scan izohiga qarang.
-    `delay` har so'rovdan keyin pauza (sekund); IPS'li tarmoqda 0.2-0.5 bering.
-    `admin_only=True` bo'lsa faqat admin panel deb topilganlar qaytadi.
+    `concurrency` is deliberately low (16) — see the anti-scan note above.
+    `delay` is the pause after every request (seconds); on a network with an IPS
+    give it 0.2-0.5.
+    If `admin_only=True`, only the ones found to be admin panels come back.
 
-    Natija tartibi barqaror: host tartibi, keyin port.
+    The result order is stable: host order, then port.
     """
     port_list = sorted(set(ports)) if ports else sorted(WEB_PORTS)
     if not hosts or not port_list:
@@ -480,7 +487,7 @@ async def discover_web(
     tasks = [one(ip, p) for ip in hosts for p in port_list]
     results = await asyncio.gather(*tasks)
 
-    # Javob bermaganlarni tashlaymiz — ular "web xizmat yo'q" degani.
+    # Drop the ones that did not answer — they mean "no web service".
     live = [s for s in results if s.error is None]
     if admin_only:
         live = [s for s in live if s.is_admin]
@@ -491,7 +498,7 @@ async def discover_web(
 
 
 def summarize(services: list[WebService]) -> dict[str, int]:
-    """Natijalar bo'yicha qisqa statistika (CLI izohi uchun)."""
+    """Short statistics over the results (for the CLI footnote)."""
     return {
         "total": len(services),
         "admin": sum(1 for s in services if s.is_admin),

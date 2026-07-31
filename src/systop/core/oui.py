@@ -1,15 +1,15 @@
-"""MAC manzil -> vendor (ishlab chiqaruvchi) nomini aniqlash — offline.
+"""MAC address -> vendor (manufacturer) name resolution — offline.
 
-MAC manzilning birinchi 3 okteti (OUI — Organizationally Unique Identifier)
-ishlab chiqaruvchini bildiradi. Bu modul o'rnatilgan kichik jadval
-(:mod:`systop.data.oui_min`) bo'yicha vendor nomini qaytaradi — tarmoqqa
-chiqmasdan, qo'shimcha bog'liqliksiz.
+The first 3 octets of a MAC address (the OUI — Organizationally Unique
+Identifier) identify the manufacturer. This module returns the vendor name from
+a small built-in table (:mod:`systop.data.oui_min`) — without touching the
+network and with no extra dependency.
 
-Eslatma: jadval kichik (eng ko'p tarqalgan ~60 vendor), shuning uchun noma'lum
-OUI uchun ``None`` qaytadi. Bu kutilgan holat, xato emas.
+Note: the table is small (the ~60 most common vendors), so for an unknown OUI
+``None`` comes back. That is the expected situation, not an error.
 
-Lokal-administered (random) MAC'lar (ikkinchi nibble 2/6/A/E) ishlab
-chiqaruvchini OUI orqali bildirmaydi — bu holatda ham ``None`` qaytadi.
+Locally administered (random) MACs (second nibble 2/6/A/E) do not identify the
+manufacturer through the OUI — in that case ``None`` comes back as well.
 """
 
 from __future__ import annotations
@@ -18,15 +18,16 @@ import re
 
 from systop.data.oui_min import OUI_VENDORS
 
-# MAC ichidagi har qanday separator/oraliqdan tozalash uchun (": - . bo'sh joy").
+# For stripping any separator/spacing inside a MAC (": - . whitespace").
 _SEP_RE = re.compile(r"[^0-9A-Fa-f]")
 
 
 def normalize_oui(mac: str) -> str | None:
-    """MAC'dan OUI ni (birinchi 3 oktet, UPPER hex, separatorsiz) ajratadi.
+    """Extracts the OUI from a MAC (the first 3 octets, UPPER hex, no separators).
 
-    Turli formatlarni qabul qiladi: ``aa:bb:cc:dd:ee:ff``, ``AA-BB-CC-DD-EE-FF``,
-    ``aabb.ccdd.eeff`` (Cisco), ``aabbccddeeff``. Yetarli hex bo'lmasa ``None``.
+    It accepts various formats: ``aa:bb:cc:dd:ee:ff``, ``AA-BB-CC-DD-EE-FF``,
+    ``aabb.ccdd.eeff`` (Cisco), ``aabbccddeeff``. If there is not enough hex,
+    ``None``.
     """
     if not mac:
         return None
@@ -37,12 +38,12 @@ def normalize_oui(mac: str) -> str | None:
 
 
 def is_locally_administered(mac: str) -> bool:
-    """MAC lokal-administered (random/virtual) bo'lsa True qaytaradi.
+    """Returns True if the MAC is locally administered (random/virtual).
 
-    Birinchi oktetning eng past bitidan bittasi (U/L bit, qiymati 0x02) yoqilgan
-    bo'lsa — manzil global emas, lokal tayinlangan; OUI vendorni bildirmaydi.
-    Bunday MAC'lar (masalan iOS/Android maxfiylik randomizatsiyasi) odatda
-    jadvalda topilmaydi.
+    If one of the lowest bits of the first octet (the U/L bit, value 0x02) is
+    set — the address is not global but locally assigned; the OUI says nothing
+    about the vendor. Such MACs (the iOS/Android privacy randomisation, for
+    instance) are normally not found in the table.
     """
     oui = normalize_oui(mac)
     if oui is None:
@@ -52,9 +53,10 @@ def is_locally_administered(mac: str) -> bool:
 
 
 def lookup_vendor(mac: str | None) -> str | None:
-    """MAC manzil bo'yicha vendor nomini qaytaradi (topilmasa ``None``).
+    """Returns the vendor name for a MAC address (``None`` if it is not found).
 
-    O'rnatilgan :data:`systop.data.oui_min.OUI_VENDORS` jadvalidan qidiradi.
+    It looks the value up in the built-in
+    :data:`systop.data.oui_min.OUI_VENDORS` table.
     """
     if not mac:
         return None

@@ -1,26 +1,25 @@
-"""DHCP server aniqlash — "rogue DHCP" ni topish. Root kerak emas (chegarasi bilan).
+"""DHCP server detection — finding a "rogue DHCP". No root required (with limits).
 
-Nima uchun sysadmin uchun muhim: tarmoqda **ikkinchi DHCP server** paydo
-bo'lishi eng ko'p uchraydigan va eng chalg'ituvchi uzilish sabablaridan biri —
+Why this matters for a sysadmin: a **second DHCP server** appearing on the
+network is one of the most common and most misleading causes of an outage —
 
-  * kimdir uy routerini LAN portiga ulab qo'yadi va u DHCP bera boshlaydi;
-  * qurilmalar tasodifiy ravishda **noto'g'ri gateway/DNS** oladi;
-  * alomat: "ba'zi kompyuterlarda internet bor, ba'zilarida yo'q", qayta
-    ulanganda tuzalib qoladi — chunki qaysi server tezroq javob bergani
-    tasodifiy;
-  * ping/DNS diagnostikasi buni ko'rsatmaydi, chunki muammo **konfiguratsiya
-    manbasida**, ulanishda emas.
+  * someone plugs a home router into a LAN port and it starts handing out DHCP;
+  * devices randomly pick up the **wrong gateway/DNS**;
+  * the symptom: "some computers have internet, others don't", and reconnecting
+    fixes it — because which server answers first is random;
+  * ping/DNS diagnostics do not show this, because the problem is in the
+    **configuration source**, not in connectivity.
 
-## Halol chegara (root'siz)
+## The honest limitation (without root)
 
-To'g'ri DHCP mijozi 68-portga bog'lanadi, lekin 1024 dan kichik port root
-talab qiladi. Shuning uchun bu modul **ephemeral portdan** `255.255.255.255:67`
-ga DISCOVER yuboradi (`dhcping` shu usulni ishlatadi). Ko'p server (ISC dhcpd,
-dnsmasq, Kerio, Windows DHCP) javobni **so'rov kelgan portga** qaytaradi va biz
-uni ko'ramiz. Ammo qat'iy RFC 2131 xulqidagi server javobni faqat 68-portga
-yuboradi — bunda javob ko'rinmaydi. Ya'ni: **javob kelsa ishonchli, kelmasa
-"server yo'q" degani EMAS.** Natijada shu holat aniq ajratiladi
-(`replies` bo'sh + `partial=True`).
+A proper DHCP client binds to port 68, but a port below 1024 requires root.
+This module therefore sends its DISCOVER to `255.255.255.255:67` **from an
+ephemeral port** (`dhcping` uses the same technique). Most servers (ISC dhcpd,
+dnsmasq, Windows DHCP) return the reply **to the port the request came from**
+and we see it. A server that follows RFC 2131 strictly, however, sends the
+reply only to port 68 — and then we see nothing. In other words: **a reply is
+conclusive, the absence of one does NOT mean "no server".** That state is
+reported distinctly (`replies` empty + `partial=True`).
 """
 
 from __future__ import annotations
@@ -41,7 +40,7 @@ DHCP_SERVER_PORT = 67
 BOOTP_REPLY = 2
 MAGIC_COOKIE = b"\x63\x82\x53\x63"
 
-# Bizga kerakli DHCP opsiyalari (RFC 2132).
+# The DHCP options we care about (RFC 2132).
 OPT_SUBNET_MASK = 1
 OPT_ROUTER = 3
 OPT_DNS = 6
@@ -58,10 +57,10 @@ _MSG_NAMES = {1: "DISCOVER", 2: "OFFER", 3: "REQUEST", 5: "ACK", 6: "NAK"}
 
 @dataclass(slots=True)
 class DhcpOffer:
-    """Bitta DHCP serverdan kelgan taklif."""
+    """An offer received from a single DHCP server."""
 
-    server_ip: str  # paket kelgan manzil
-    server_id: str | None = None  # option 54 (haqiqiy server identifikatori)
+    server_ip: str  # the address the packet came from
+    server_id: str | None = None  # option 54 (the real server identifier)
     offered_ip: str | None = None
     subnet_mask: str | None = None
     routers: list[str] = field(default_factory=list)
@@ -73,22 +72,22 @@ class DhcpOffer:
 
     @property
     def identity(self) -> str:
-        """Serverni ajratish kaliti — server_id bo'lsa u, aks holda manba IP."""
+        """The key that distinguishes servers — server_id if present, else source IP."""
         return self.server_id or self.server_ip
 
 
 @dataclass(slots=True)
 class DhcpReport:
-    """Barcha javoblar + xulosa."""
+    """All replies plus the conclusion."""
 
     offers: list[DhcpOffer] = field(default_factory=list)
     listened_s: float = 0.0
-    partial: bool = False  # javob kelmadi, lekin bu "server yo'q" degani emas
+    partial: bool = False  # no reply arrived, but that does not mean "no server"
     error: str | None = None
 
     @property
     def servers(self) -> list[str]:
-        """Takrorsiz server identifikatorlari."""
+        """Unique server identifiers."""
         out: list[str] = []
         for o in self.offers:
             if o.identity not in out:
@@ -97,19 +96,18 @@ class DhcpReport:
 
     @property
     def is_rogue_suspected(self) -> bool:
-        """Bir nechta turli server javob bergan bo'lsa — rogue DHCP ehtimoli."""
+        """If several different servers replied — a rogue DHCP is likely."""
         return len(self.servers) > 1
 
 
 def build_discover(mac: bytes | None = None, xid: int | None = None) -> tuple[bytes, int]:
-    """DHCPDISCOVER paketini yasaydi. Qaytaradi: `(paket, xid)` — SOF funksiya.
+    """Build a DHCPDISCOVER packet. Returns `(packet, xid)` — pure function.
 
-    `xid` — tranzaksiya identifikatori; javobni o'zimizniki ekanini tekshirish
-    uchun kerak (boshqa mijozning broadcast javobini o'zimizga hisoblab
-    qo'ymaslik uchun).
+    `xid` is the transaction identifier; it is needed to check that a reply is
+    ours (so that another client's broadcast reply is not counted as our own).
     """
     if mac is None:
-        # Lokal-tayinlangan tasodifiy MAC (birinchi bayt: unicast + local bit).
+        # A locally-administered random MAC (first byte: unicast + local bit).
         mac = bytes([0x02]) + bytes(random.randrange(256) for _ in range(5))
     if xid is None:
         xid = random.randrange(1, 0xFFFFFFFF)
@@ -124,17 +122,17 @@ def build_discover(mac: bytes | None = None, xid: int | None = None) -> tuple[by
     pkt += b"\x00" * 128  # file
     pkt += MAGIC_COOKIE
     pkt += bytes([OPT_MSG_TYPE, 1, MSG_DISCOVER])
-    # Qaysi opsiyalarni so'raymiz (option 55).
+    # Which options we ask for (option 55).
     pkt += bytes([55, 4, OPT_SUBNET_MASK, OPT_ROUTER, OPT_DNS, OPT_DOMAIN])
     pkt += b"\xff"  # END
     return bytes(pkt), xid
 
 
 def parse_offer(data: bytes, source_ip: str, expect_xid: int | None = None) -> DhcpOffer | None:
-    """DHCP javob paketini parse qiladi — SOF funksiya (offline test).
+    """Parse a DHCP reply packet — pure function (offline test).
 
-    `expect_xid` berilsa va mos kelmasa `None` qaytadi (boshqa mijozning
-    javobini o'zimizga hisoblab qo'ymaslik uchun).
+    If `expect_xid` is given and does not match, `None` is returned (so that
+    another client's reply is not counted as our own).
     """
     if len(data) < 240 or data[0] != BOOTP_REPLY:
         return None
@@ -186,11 +184,11 @@ def parse_offer(data: bytes, source_ip: str, expect_xid: int | None = None) -> D
 
 
 async def discover_servers(listen_s: float = 4.0) -> DhcpReport:
-    """DHCPDISCOVER yuborib, kelgan barcha javoblarni yig'adi.
+    """Send a DHCPDISCOVER and collect every reply that arrives.
 
-    Bir nechta javob kelsa — tarmoqda bir nechta DHCP server bor (rogue
-    ehtimoli). Javob kelmasa `partial=True` — modul docstring'idagi chegaraga
-    qarang, bu "server yo'q" degani emas.
+    If several replies arrive there are several DHCP servers on the network (a
+    rogue is likely). If no reply arrives, `partial=True` — see the limitation
+    in the module docstring, that does not mean "no server".
     """
     report = DhcpReport(listened_s=listen_s)
     loop = asyncio.get_running_loop()
@@ -199,7 +197,7 @@ async def discover_servers(listen_s: float = 4.0) -> DhcpReport:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(("", 0))  # ephemeral port — 68 root talab qiladi
+        sock.bind(("", 0))  # an ephemeral port — 68 would require root
         sock.setblocking(False)
 
         packet, xid = build_discover()
@@ -222,7 +220,7 @@ async def discover_servers(listen_s: float = 4.0) -> DhcpReport:
                 offer.elapsed_ms = (time.perf_counter() - start) * 1000.0
                 report.offers.append(offer)
     except OSError as exc:
-        report.error = f"socket xatosi: {exc.strerror or exc}"
+        report.error = f"socket error: {exc.strerror or exc}"
         return report
     finally:
         if sock is not None:
@@ -233,22 +231,23 @@ async def discover_servers(listen_s: float = 4.0) -> DhcpReport:
 
 
 # ===========================================================================
-# Faol lease'ni o'qish — root'siz ISHONCHLI yo'l
+# Reading the active lease — the RELIABLE route without root
 # ===========================================================================
 #
-# Broadcast probe (yuqorida) qat'iy RFC 2131 serverida javob olmaydi. Ammo
-# OS'ning O'ZI allaqachon DHCP'dan manzil olgan va **qaysi server** bergani
-# lease ma'lumotida saqlangan. Uni o'qish root talab qilmaydi.
+# The broadcast probe (above) gets no reply from a strict RFC 2131 server. But
+# the OS ITSELF has already taken an address from DHCP, and **which server**
+# gave it is stored in the lease data. Reading that does not require root.
 #
-# Amaliy foyda: "men kutgan serverdan manzil oldimmi?" — rogue DHCP'ning eng
-# muhim alomati aynan shu. Bu javob bermagan rogue serverni topmaydi, lekin
-# manzilni ALLAQACHON noto'g'ri server berganini aniq ko'rsatadi.
+# The practical benefit: "did I get my address from the server I expected?" —
+# that is the single most important sign of a rogue DHCP. It will not find a
+# rogue server that stayed silent, but it does show precisely when the address
+# ALREADY came from the wrong server.
 
 _GETPACKET_RE = re.compile(r"^\s*(\w+)\s*(?:\([^)]*\))?\s*[:=]\s*(.+?)\s*$")
 
 
 def parse_ipconfig_getpacket(text: str) -> DhcpOffer | None:
-    """macOS `ipconfig getpacket <iface>` chiqishini parse qiladi — SOF funksiya."""
+    """Parse macOS `ipconfig getpacket <iface>` output — pure function."""
     fields: dict[str, str] = {}
     for line in text.splitlines():
         m = _GETPACKET_RE.match(line)
@@ -280,14 +279,15 @@ def parse_ipconfig_getpacket(text: str) -> DhcpOffer | None:
         dns=_ips(fields.get("domain_name_server")),
         domain=fields.get("domain_name") or None,
         lease_seconds=lease,
-        msg_type="ACK (faol lease)",
+        msg_type="ACK (active lease)",
     )
 
 
 def parse_dhclient_lease(text: str) -> DhcpOffer | None:
-    """Linux `dhclient.leases` faylidan ENG OXIRGI lease'ni oladi — SOF funksiya.
+    """Take the MOST RECENT lease from a Linux `dhclient.leases` file — pure function.
 
-    Fayl lease bloklarini ketma-ket yozadi, oxirgisi joriy hisoblanadi.
+    The file appends lease blocks one after another; the last one counts as
+    current.
     """
     blocks = re.findall(r"lease\s*\{(.*?)\}", text, re.DOTALL)
     if not blocks:
@@ -312,16 +312,16 @@ def parse_dhclient_lease(text: str) -> DhcpOffer | None:
         dns=re.findall(r"\d+\.\d+\.\d+\.\d+", opt("domain-name-servers") or ""),
         domain=(opt("domain-name") or "").strip('"') or None,
         lease_seconds=int(lease_raw) if lease_raw and lease_raw.isdigit() else None,
-        msg_type="ACK (faol lease)",
+        msg_type="ACK (active lease)",
     )
 
 
 async def current_lease(interface: str | None = None) -> DhcpOffer | None:
-    """Bu host manzilni QAYSI DHCP serverdan olganini aytadi (root kerak emas).
+    """Tell WHICH DHCP server this host got its address from (no root needed).
 
-    macOS: `ipconfig getpacket <iface>`. Linux: dhclient lease fayllari.
-    Windows: `ipconfig /all` da "DHCP Server" qatori.
-    Topilmasa None (statik IP yoki lease ma'lumoti yo'q).
+    macOS: `ipconfig getpacket <iface>`. Linux: dhclient lease files.
+    Windows: the "DHCP Server" line of `ipconfig /all`.
+    None if nothing is found (a static IP, or no lease data).
     """
     if interface is None:
         from systop.core import netinfo
@@ -341,21 +341,21 @@ async def current_lease(interface: str | None = None) -> DhcpOffer | None:
             return None
         m = re.search(r"DHCP Server[^\d]*(\d+\.\d+\.\d+\.\d+)", out)
         return (
-            DhcpOffer(server_ip=m.group(1), server_id=m.group(1), msg_type="ACK (faol lease)")
+            DhcpOffer(server_ip=m.group(1), server_id=m.group(1), msg_type="ACK (active lease)")
             if m
             else None
         )
 
-    # Linux — keng tarqalgan lease yo'llari.
+    # Linux — the widely used lease paths.
     for path in (
         "/var/lib/dhcp/dhclient.leases",
         f"/var/lib/dhcp/dhclient.{interface}.leases",
         "/var/lib/dhclient/dhclient.leases",
     ):
         try:
-            # Fayl o'qish bloklaydi — event loop'ni ushlab qolmaslik uchun
-            # thread'da bajaramiz (lease fayllari kichik, lekin sekin diskda
-            # ham loop to'xtamasligi kerak).
+            # Reading a file blocks — we do it in a thread so the event loop is
+            # not held up (lease files are small, but the loop must not stall
+            # on a slow disk either).
             text = await asyncio.to_thread(
                 lambda p=path: Path(p).read_text(encoding="utf-8", errors="replace")
             )

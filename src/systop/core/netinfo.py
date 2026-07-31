@@ -1,7 +1,7 @@
-"""Lokal tarmoq haqida ma'lumot: interfeyslar, default gateway, public IP.
+"""Information about the local network: interfaces, default gateway, public IP.
 
-`psutil` interfeyslarni beradi; gateway uchun OS marshrutlash jadvalini
-o'qiymiz (psutil'da gateway yo'q). Public IP HTTP orqali aniqlanadi.
+`psutil` gives us the interfaces; for the gateway we read the OS routing table
+(psutil has no gateway). The public IP is determined over HTTP.
 """
 
 from __future__ import annotations
@@ -23,22 +23,22 @@ _IS_WINDOWS_NETINFO = platform.system() == "Windows"
 
 @dataclass(slots=True)
 class Interface:
-    """Bitta tarmoq interfeysi."""
+    """A single network interface."""
 
     name: str
     ipv4: str | None = None
     netmask: str | None = None
     mac: str | None = None
     is_up: bool = False
-    speed_mbps: int = 0  # 0 => noma'lum
-    # IPv6: `(manzil, prefiks_uzunligi)` juftliklari. Ro'yxat, chunki bitta
-    # interfeysda bir vaqtda link-local + global + ULA + vaqtinchalik (privacy)
-    # manzillar bo'lishi normal holat.
+    speed_mbps: int = 0  # 0 => unknown
+    # IPv6: `(address, prefix_length)` pairs. A list, because it is perfectly
+    # normal for one interface to hold a link-local + a global + a ULA +
+    # temporary (privacy) address all at the same time.
     ipv6: list[tuple[str, int]] = field(default_factory=list)
 
     @property
     def cidr(self) -> str | None:
-        """`192.168.1.0/24` ko'rinishidagi IPv4 tarmoq (ipv4 + netmask bo'lsa)."""
+        """The IPv4 network in `192.168.1.0/24` form (if ipv4 + netmask exist)."""
         if not self.ipv4 or not self.netmask:
             return None
         try:
@@ -49,11 +49,11 @@ class Interface:
 
     @property
     def prefixlen(self) -> int | None:
-        """IPv4 prefiks uzunligi (`/24`). Maska bo'lmasa None.
+        """The IPv4 prefix length (`/24`). None if there is no mask.
 
-        Gateway yonida ko'rsatish uchun kerak: `10.0.0.1/24` bir qarashda
-        tarmoq hajmini aytadi (254 host), `/23` esa 510 — bu skan hajmini va
-        DHCP pool kattaligini baholashda darhol ma'no beradi.
+        Needed for display next to the gateway: `10.0.0.1/24` tells you the size
+        of the network at a glance (254 hosts), whereas `/23` means 510 — which
+        immediately means something when sizing up a scan or a DHCP pool.
         """
         if not self.ipv4 or not self.netmask:
             return None
@@ -64,7 +64,7 @@ class Interface:
 
     @property
     def host_count(self) -> int | None:
-        """Tarmoqdagi maksimal host soni (tarmoq/broadcast chiqarilgan)."""
+        """The maximum number of hosts on the network (network/broadcast excluded)."""
         plen = self.prefixlen
         if plen is None:
             return None
@@ -72,7 +72,7 @@ class Interface:
 
     @property
     def ipv6_global(self) -> list[str]:
-        """Global/ULA IPv6 manzillar (link-local emas) — routerdan o'tadiganlar."""
+        """Global/ULA IPv6 addresses (not link-local) — the ones that pass the router."""
         out: list[str] = []
         for addr, _plen in self.ipv6:
             try:
@@ -85,13 +85,13 @@ class Interface:
 
     @property
     def ipv6_link_local(self) -> list[str]:
-        """fe80::/10 manzillar — faqat shu segmentda ishlaydi."""
+        """fe80::/10 addresses — they only work within this segment."""
         glob = set(self.ipv6_global)
         return [a for a, _ in self.ipv6 if a not in glob]
 
     @property
     def ipv6_cidrs(self) -> list[str]:
-        """Global IPv6 tarmoqlar (`2001:db8:1::/64`) — link-local chiqarib tashlangan."""
+        """Global IPv6 networks (`2001:db8:1::/64`) — link-local ones filtered out."""
         out: list[str] = []
         for addr, plen in self.ipv6:
             bare = addr.split("%")[0]
@@ -108,16 +108,17 @@ class Interface:
 
     @property
     def has_dual_stack(self) -> bool:
-        """IPv4 va global IPv6 ikkalasi ham bormi (to'liq dual-stack)."""
+        """Are both IPv4 and a global IPv6 present (a full dual stack)?"""
         return bool(self.ipv4) and bool(self.ipv6_global)
 
 
 def _v6_prefixlen(netmask: str | None) -> int:
-    """IPv6 maskani prefiks uzunligiga aylantiradi — SOF funksiya.
+    """Converts an IPv6 mask into a prefix length — a pure function.
 
-    psutil platformaga qarab turlicha beradi: `ffff:ffff:ffff:ffff::` (mask)
-    yoki `64` (uzunlik) yoki `None`. Aniqlanmasa 64 qaytadi — bu IPv6'da
-    amaldagi standart segment o'lchami.
+    psutil gives it differently depending on the platform:
+    `ffff:ffff:ffff:ffff::` (a mask) or `64` (a length) or `None`. If it cannot
+    be determined, 64 is returned — that is the de facto standard segment size
+    in IPv6.
     """
     if not netmask:
         return 64
@@ -141,7 +142,7 @@ def _v6_prefixlen(netmask: str | None) -> int:
 
 
 def list_interfaces(include_loopback: bool = False) -> list[Interface]:
-    """Tizimdagi tarmoq interfeyslarini IPv4 ma'lumoti bilan qaytaradi."""
+    """Returns the system's network interfaces together with their IPv4 details."""
     addrs = psutil.net_if_addrs()
     stats = psutil.net_if_stats()
     result: list[Interface] = []
@@ -156,8 +157,8 @@ def list_interfaces(include_loopback: bool = False) -> list[Interface]:
                 iface.ipv4 = addr.address
                 iface.netmask = addr.netmask
             elif addr.family == socket.AF_INET6:
-                # psutil IPv6 maskani `ffff:ffff:...` yoki prefiks-uzunlik
-                # sifatida berishi mumkin — ikkalasini ham qabul qilamiz.
+                # psutil may give the IPv6 mask either as `ffff:ffff:...` or as
+                # a prefix length — we accept both.
                 iface.ipv6.append((addr.address, _v6_prefixlen(addr.netmask)))
             elif addr.family == psutil.AF_LINK:
                 iface.mac = addr.address
@@ -166,8 +167,8 @@ def list_interfaces(include_loopback: bool = False) -> list[Interface]:
             iface.is_up = stats[name].isup
             iface.speed_mbps = stats[name].speed
 
-        # IPv4 YOKI IPv6 manzili bo'lsa qabul qilamiz. Faqat IPv4 talab qilish
-        # IPv6-only tarmoqni butunlay ko'rinmas qilardi.
+        # We accept an interface if it has an IPv4 OR an IPv6 address. Requiring
+        # IPv4 made an IPv6-only network completely invisible.
         if iface.ipv4 or iface.ipv6:
             result.append(iface)
 
@@ -175,7 +176,7 @@ def list_interfaces(include_loopback: bool = False) -> list[Interface]:
 
 
 def default_gateway() -> str | None:
-    """Default gateway IP manzilini OS marshrut jadvalidan oladi."""
+    """Takes the default gateway IP address from the OS routing table."""
     system = platform.system()
     try:
         if system == "Windows":
@@ -202,7 +203,7 @@ def default_gateway() -> str | None:
         if m:
             return m.group(1)
 
-        # Universal zaxira: netstat marshrut jadvali
+        # A universal fallback: the netstat routing table
         raw = subprocess.run(["netstat", "-rn"], capture_output=True, timeout=3).stdout
         out = _platform.decode_console(raw)
         for line in out.splitlines():
@@ -216,14 +217,16 @@ def default_gateway() -> str | None:
 
 
 def _default_gateway_windows() -> str | None:
-    """Windows default gateway: bir nechta zaxira bilan (route print -> netsh).
+    """The Windows default gateway: with several fallbacks (route print -> netsh).
 
-    1) `route print -4` IPv4 marshrut jadvalidagi `0.0.0.0 0.0.0.0 <gw>` qatori
-       — eng ishonchli va lokalizatsiyaga eng kam bog'liq.
-    2) Zaxira: `Get-NetRoute -DestinationPrefix 0.0.0.0/0` (PowerShell) NextHop.
+    1) The `0.0.0.0 0.0.0.0 <gw>` line in the IPv4 routing table of
+       `route print -4` — the most reliable and the least dependent on the
+       system locale.
+    2) Fallback: the NextHop of `Get-NetRoute -DestinationPrefix 0.0.0.0/0`
+       (PowerShell).
 
-    Har qadam xatosi (buyruq yo'q / timeout) keyingisiga o'tkazadi; hech narsa
-    topilmasa None.
+    An error at any step (command missing / timeout) moves on to the next one;
+    if nothing is found, None.
     """
     # 1) route print -4
     try:
@@ -240,7 +243,7 @@ def _default_gateway_windows() -> str | None:
     except (subprocess.SubprocessError, OSError):
         pass
 
-    # 2) Zaxira: PowerShell Get-NetRoute (faqat NextHop ustunini chiqaramiz).
+    # 2) Fallback: PowerShell Get-NetRoute (we print the NextHop column only).
     try:
         raw = subprocess.run(
             [
@@ -266,11 +269,11 @@ def _default_gateway_windows() -> str | None:
 
 
 def _is_apipa(ipv4: str | None) -> bool:
-    """IPv4 manzil APIPA/link-local (169.254.0.0/16) yoki noto'g'ri bo'lsa True.
+    """True if the IPv4 address is APIPA/link-local (169.254.0.0/16) or invalid.
 
-    APIPA — DHCP javob bermaganda Windows o'zi tayinlaydigan "ulanmagan" manzil;
-    bunday interfeys asosiy (primary) bo'la olmaydi. `None`/buzuq IP ham primary
-    sifatida yaramaydi (True qaytaradi).
+    APIPA is the "not connected" address Windows assigns itself when DHCP does
+    not answer; such an interface cannot be the primary one. A `None`/broken IP
+    is no good as a primary either (it returns True too).
     """
     if not ipv4:
         return True
@@ -282,11 +285,12 @@ def _is_apipa(ipv4: str | None) -> bool:
 
 
 def default_gateway_v6() -> str | None:
-    """IPv6 default gateway (link-local bo'lsa zonasi bilan). Topilmasa None.
+    """The IPv6 default gateway (with its zone if it is link-local). None if not found.
 
-    IPv4 gateway'dan alohida kerak: dual-stack tarmoqda ular boshqa qurilma
-    bo'lishi mumkin, va IPv6 marshruti buzilgani IPv4 ishlab turganda
-    ko'rinmaydi — aynan shu holat "ba'zi saytlar sekin" sababidir.
+    It is needed separately from the IPv4 gateway: on a dual-stack network they
+    may be different devices, and a broken IPv6 route is invisible while IPv4
+    still works — that exact situation is the reason behind "some sites are
+    slow".
     """
     try:
         out = subprocess.run(
@@ -309,16 +313,16 @@ def default_gateway_v6() -> str | None:
 
 
 def primary_interface() -> Interface | None:
-    """Default gateway bilan bir tarmoqda turgan asosiy interfeys.
+    """The primary interface — the one on the same network as the default gateway.
 
-    Tanlash tartibi:
-      1. Gateway IP'si kiradigan tarmoqdagi interfeys (eng ishonchli);
-      2. Aks holda — birinchi NON-APIPA (169.254.x emas, link-local emas)
-         interfeys (Hyper-V vEthernet APIPA / ulanmagan adapterlardan qochish);
-      3. Hech narsa topilmasa — birinchi interfeys (oxirgi zaxira).
+    The selection order:
+      1. The interface whose network contains the gateway IP (the most reliable);
+      2. Otherwise — the first NON-APIPA interface (not 169.254.x, not
+         link-local) (to avoid Hyper-V vEthernet APIPA / disconnected adapters);
+      3. If nothing is found — the first interface (the last resort).
 
-    `list_interfaces` o'zgarmaydi (u barcha interfeyslarni beradi) — filtr faqat
-    shu yerda, primary tanlashda qo'llanadi.
+    `list_interfaces` is unchanged (it returns every interface) — the filter
+    applies only here, when picking the primary one.
     """
     gw = default_gateway()
     ifaces = list_interfaces()
@@ -326,23 +330,24 @@ def primary_interface() -> Interface | None:
         try:
             gw_addr: ipaddress.IPv4Address | ipaddress.IPv6Address | None = ipaddress.ip_address(gw)
         except ValueError:
-            # Buzuq/kutilmagan gateway satri — APIPA-filtrli fallback'ga tushamiz.
+            # A broken/unexpected gateway string — fall through to the
+            # APIPA-filtered fallback.
             gw_addr = None
         if gw_addr is not None:
             for iface in ifaces:
                 cidr = iface.cidr
                 if cidr and gw_addr in ipaddress.ip_network(cidr):
                     return iface
-    # Gateway mos kelmadi -> birinchi NON-APIPA interfeysni afzal ko'ramiz.
+    # The gateway did not match -> we prefer the first NON-APIPA interface.
     for iface in ifaces:
         if not _is_apipa(iface.ipv4):
             return iface
-    # Hammasi APIPA/buzuq bo'lsa — oxirgi zaxira sifatida birinchisi.
+    # If everything is APIPA/broken — the first one, as a last resort.
     return ifaces[0] if ifaces else None
 
 
 async def public_ip(timeout: float = 5.0) -> str | None:
-    """Tashqi (public) IP manzilni HTTP orqali aniqlaydi."""
+    """Determines the external (public) IP address over HTTP."""
     services = (
         ("https://api.ipify.org", None),
         ("https://ifconfig.me/ip", None),
@@ -365,7 +370,7 @@ async def public_ip(timeout: float = 5.0) -> str | None:
 
 @dataclass(slots=True)
 class NetSummary:
-    """Lokal tarmoq holatining yig'ma ko'rinishi."""
+    """An aggregate view of the local network state."""
 
     interfaces: list[Interface] = field(default_factory=list)
     gateway: str | None = None
@@ -373,7 +378,7 @@ class NetSummary:
 
 
 async def gather_summary() -> NetSummary:
-    """Interfeyslar, gateway va public IP'ni bitta obyektga yig'adi."""
+    """Collects the interfaces, the gateway and the public IP into one object."""
     return NetSummary(
         interfaces=list_interfaces(),
         gateway=default_gateway(),

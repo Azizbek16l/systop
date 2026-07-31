@@ -1,4 +1,4 @@
-"""Yordam ekrani — `?` tugmasi bilan ochiladigan modal oyna (o'zbekcha)."""
+"""The help screen — a modal window opened with the `?` key."""
 
 from __future__ import annotations
 
@@ -11,52 +11,52 @@ from systop.widgets._glyphs import unicode_ok
 
 
 def _help_text() -> str:
-    """Yordam matnini quradi — strelka belgilari terminalga moslangan.
+    """Builds the help text — the arrow symbols are adapted to the terminal.
 
-    Legacy konsol (Unicode'siz) ↑/↓ strelkalarini mojibake qilishi mumkin —
-    bunday holatda so'z bilan ("Yuqori / Past") ko'rsatamiz. Matn import emas,
-    chaqiruvda quriladi (konsol holati shu paytda aniq)."""
-    arrows = "↑ / ↓" if unicode_ok() else "Yuqori / Past"
+    A legacy console (without Unicode) may turn the ↑/↓ arrows into mojibake —
+    in that case we spell them out in words ("Up / Down"). The text is not built
+    at import time but on the call (the console state is known by then)."""
+    arrows = "↑ / ↓" if unicode_ok() else "Up / Down"
     return f"""\
-[b]systop[/] — sysadminlar uchun terminal tarmoq tooli.
+[b]systop[/] — a terminal network tool for sysadmins.
 
-[b $accent]Panellar[/]
-  [b]Internet tezligi[/]   download / upload / latency o'lchovi (Cloudflare)
-  [b]Ping[/]               gateway + global DNS serverlarini davriy ping
-  [b]Topologiya[/]         LAN hostlar (skan) va global yo'l (traceroute)
+[b $accent]Panels[/]
+  [b]Internet speed[/]     download / upload / latency measurement (Cloudflare)
+  [b]Ping[/]               periodic ping of the gateway + the global DNS servers
+  [b]Topology[/]           LAN hosts (scan) and the global path (traceroute)
 
-[b $accent]Tugmalar[/]
-  [b $secondary]s[/]   Tezlik testini boshlash
-  [b $secondary]r[/]   Ping jadvalini yangilash
-  [b $secondary]l[/]   LAN ni skanerlash
-  [b $secondary]t[/]   Traceroute maydoniga o'tish
-  [b $secondary]d[/]   Temani almashtirish (qorong'i / yorug')
-  [b $secondary]?[/]   Ushbu yordam oynasini ochish
-  [b $secondary]q[/]   Chiqish
+[b $accent]Keys[/]
+  [b $secondary]s[/]   Start the speed test
+  [b $secondary]r[/]   Refresh the ping table
+  [b $secondary]l[/]   Scan the LAN
+  [b $secondary]t[/]   Move to the traceroute field
+  [b $secondary]d[/]   Switch the theme (dark / light)
+  [b $secondary]?[/]   Open this help window
+  [b $secondary]q[/]   Quit
 
-[b $accent]Navigatsiya[/]
-  [b $secondary]Tab / Shift+Tab[/]   panellar va elementlar orasida
-  [b $secondary]{arrows}[/]            jadval qatorlari bo'ylab
-  [b $secondary]Ctrl+P[/]           buyruqlar palitrasi (command palette)
-  [b $secondary]Esc[/]              ushbu oynani yopish
+[b $accent]Navigation[/]
+  [b $secondary]Tab / Shift+Tab[/]   between panels and elements
+  [b $secondary]{arrows}[/]            along the table rows
+  [b $secondary]Ctrl+P[/]           the command palette
+  [b $secondary]Esc[/]              close this window
 
-[dim]Yopish uchun Esc yoki ? bosing.[/]\
+[dim]Press Esc or ? to close.[/]\
 """
 
 
 class HelpScreen(ModalScreen):
-    """Markazlashgan modal yordam oynasi."""
+    """The centred modal help window."""
 
     BINDINGS = [
-        ("escape", "dismiss", "Yopish"),
-        ("question_mark", "dismiss", "Yopish"),
-        ("q", "dismiss", "Yopish"),
+        ("escape", "dismiss", "Close"),
+        ("question_mark", "dismiss", "Close"),
+        ("q", "dismiss", "Close"),
     ]
 
     def compose(self) -> ComposeResult:
         with Center(id="help-wrap"):
             with VerticalScroll(id="help-box"):
-                yield Static(" Yordam — systop ", id="help-title")
+                yield Static(" Help — systop ", id="help-title")
                 yield Static(_help_text(), id="help-body")
 
     def action_dismiss(self) -> None:  # type: ignore[override]

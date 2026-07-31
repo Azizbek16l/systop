@@ -1,9 +1,10 @@
-"""`core/mtu.py` uchun offline testlar — tarmoqqa chiqmaydi.
+"""Offline tests for `core/mtu.py` — nothing here touches the network.
 
-Ping ham, DNS ham soxtalashtiriladi: `mtu.resolve_host` (umumiy resolver) va
-`mtu._probe` (bitta DF-ping) monkeypatch qilinadi. Shu tufayli path MTU
-mantiqining o'zi — oila tanlash, qayta urinish, ikkilik qidiruv va chegarani
-tasdiqlash — tarmoqsiz to'liq sinaladi (loyihaning "testlar offline" qoidasi).
+Both ping and DNS are faked: `mtu.resolve_host` (the shared resolver) and
+`mtu._probe` (a single DF-ping) are monkeypatched. That makes the path MTU
+logic itself — family selection, retries, the binary search and the boundary
+verification — fully testable without a network (the project's "tests are
+offline" rule).
 """
 
 from __future__ import annotations
@@ -20,17 +21,18 @@ from systop.core.mtu import (
 )
 
 # --------------------------------------------------------------------------- #
-# Soxta muhit
+# The fake environment
 # --------------------------------------------------------------------------- #
 
 
 class FakeNet:
-    """Soxta tarmoq: `limit` baytgacha payload o'tadi, kattasi o'tmaydi.
+    """A fake network: payloads up to `limit` bytes pass, larger ones do not.
 
-    `over` — chegaradan katta paketga javob: `too_big` (yo'lda ICMP xabari
-    qaytadi) yoki `no_reply` (PMTUD qora tuynugi — hech narsa qaytmaydi).
-    `drop_once` — shu payload'lar BIR MARTA yo'qoladi (tasodifiy paket
-    yo'qolishini modellashtiradi), keyingi urinishda normal javob beradi.
+    `over` — the answer to a packet above the limit: `too_big` (an ICMP message
+    comes back from the path) or `no_reply` (a PMTUD black hole — nothing comes
+    back at all).
+    `drop_once` — these payloads are lost EXACTLY ONCE (modelling random packet
+    loss); the next attempt answers normally.
     """
 
     def __init__(
@@ -64,13 +66,13 @@ class FakeNet:
         return [p for _, p, _ in self.calls]
 
     def immediate_repeats(self) -> list[tuple[int, str]]:
-        """Ketma-ket bir xil payload = QAYTA URINISH (retry) belgisi."""
+        """The same payload twice in a row = the sign of a RETRY."""
         pairs = list(zip(self.payloads, self.results, strict=True))
         return [(p1, v1) for (p1, v1), (p2, _) in zip(pairs, pairs[1:], strict=False) if p1 == p2]
 
 
 def _install(monkeypatch, net: FakeNet, address: str = "1.1.1.1", family: str = "ipv4"):
-    """Resolver va probe'ni soxta versiyalar bilan almashtiradi."""
+    """Replace the resolver and the probe with fake versions."""
 
     async def fake_resolve(host: str, fam: str = "auto") -> tuple[str | None, str | None]:
         return address, family
@@ -81,7 +83,7 @@ def _install(monkeypatch, net: FakeNet, address: str = "1.1.1.1", family: str = 
 
 
 # --------------------------------------------------------------------------- #
-# classify_ping_output — sof funksiya
+# classify_ping_output — a pure function
 # --------------------------------------------------------------------------- #
 
 
@@ -90,7 +92,7 @@ def test_classify_ok_reply():
 
 
 def test_classify_macos_message_too_long():
-    """macOS `ping` buni STDERR ga yozadi — shuning uchun stderr ham o'qiladi."""
+    """macOS `ping` writes this to STDERR — which is why stderr is read too."""
     assert classify_ping_output("ping: sendto: Message too long") == "too_big"
 
 
@@ -113,22 +115,22 @@ def test_classify_empty_output_is_no_reply():
 
 
 def test_classify_too_big_wins_over_reply_text():
-    """Chiqishda ikkalasi ham bo'lsa 'juda katta' ustun — u aniq sabab."""
+    """When the output holds both, 'too big' wins — it is the definite cause."""
     text = "64 bytes from 1.1.1.1: ttl=57\nping: sendto: Message too long"
     assert classify_ping_output(text) == "too_big"
 
 
 # --------------------------------------------------------------------------- #
-# Manzil oilasi RESOLVE dan olinadi (host satridan emas)
+# The address family comes from the RESOLVE (not from the host string)
 # --------------------------------------------------------------------------- #
 
 
 async def test_family_from_resolver_not_from_hostname(monkeypatch):
-    """AAAA-only nomda ikki nuqta yo'q — oila baribir IPv6 bo'lishi kerak.
+    """An AAAA-only name has no colon in it — the family must still be IPv6.
 
-    Ilgari `":" in host` ishlatilardi: `ipv6.google.com` IPv4 deb belgilanib,
-    natijada `--json` da `"family": "ipv4"` va SOXTA "host o'lik yoki ICMP
-    bloklangan" xulosasi chiqardi.
+    `":" in host` used to be used: `ipv6.google.com` was labelled IPv4, which
+    produced `"family": "ipv4"` in `--json` and the FALSE conclusion "the host
+    is dead or ICMP is blocked".
     """
     net = _install(monkeypatch, FakeNet(), address="2a00:1450:4001:80f::200e", family="ipv6")
     res = await discover_path_mtu("ipv6.google.com")
@@ -136,7 +138,7 @@ async def test_family_from_resolver_not_from_hostname(monkeypatch):
     assert res.family == "ipv6"
     assert res.error is None
     assert res.address == "2a00:1450:4001:80f::200e"
-    # Sarlavha qo'shimchasi ham oiladan kelib chiqadi: 1500 - 48 = 1452.
+    # The header overhead follows from the family too: 1500 - 48 = 1452.
     assert res.max_payload == 1500 - IP6_ICMP_OVERHEAD
     assert res.path_mtu == 1500
     assert all(is_v6 for _, _, is_v6 in net.calls)
@@ -153,7 +155,7 @@ async def test_ipv4_uses_28_byte_overhead(monkeypatch):
 
 
 async def test_ipv6_literal_host_still_v6(monkeypatch):
-    """Xom IPv6 manzil ham resolver orqali o'tadi (zona saqlanadi)."""
+    """A raw IPv6 address goes through the resolver as well (the zone is preserved)."""
     net = _install(monkeypatch, FakeNet(), address="fe80::1%en0", family="ipv6")
     res = await discover_path_mtu("fe80::1%en0")
 
@@ -163,16 +165,16 @@ async def test_ipv6_literal_host_still_v6(monkeypatch):
 
 
 async def test_probe_targets_resolved_address_not_hostname(monkeypatch):
-    """Ping RESOLVE qilingan IP ga ketadi — har probe'da qayta DNS bo'lmasin."""
+    """The ping goes to the RESOLVED IP — no fresh DNS lookup on every probe."""
     net = _install(monkeypatch, FakeNet(limit=1300), address="93.184.216.34")
     await discover_path_mtu("example.com")
 
-    assert net.calls, "hech qanday probe yuborilmadi"
+    assert net.calls, "no probe was sent at all"
     assert {host for host, _, _ in net.calls} == {"93.184.216.34"}
 
 
 async def test_liveness_probe_also_uses_resolved_address(monkeypatch):
-    """56 baytli 'tirikmi?' probe'i ham o'sha manzilga ketadi."""
+    """The 56-byte 'is it alive?' probe goes to that same address."""
     net = _install(monkeypatch, FakeNet(limit=1000, over="no_reply"), address="10.0.0.1")
     await discover_path_mtu("router.lan")
 
@@ -180,7 +182,7 @@ async def test_liveness_probe_also_uses_resolved_address(monkeypatch):
 
 
 async def test_resolve_failure_returns_error(monkeypatch):
-    """Resolve bo'lmasa — mazmunli xato, 0 MTU emas va bitta ham probe yo'q."""
+    """If the resolve fails — a meaningful error, not a 0 MTU, and not one probe."""
 
     async def no_resolve(host: str, fam: str = "auto") -> tuple[str | None, str | None]:
         return None, None
@@ -189,16 +191,16 @@ async def test_resolve_failure_returns_error(monkeypatch):
     monkeypatch.setattr(mtu, "resolve_host", no_resolve)
     monkeypatch.setattr(mtu, "_probe", net.probe)
 
-    res = await discover_path_mtu("mavjud-emas.invalid")
+    res = await discover_path_mtu("does-not-exist.invalid")
     assert res.path_mtu is None
     assert res.error is not None
-    assert "mavjud-emas.invalid" in res.error
+    assert "does-not-exist.invalid" in res.error
     assert res.probes == 0
     assert net.calls == []
 
 
 async def test_forced_family_passed_to_resolver(monkeypatch):
-    """`family="ipv6"` resolverga uzatiladi (majburan AAAA)."""
+    """`family="ipv6"` is handed to the resolver (AAAA is forced)."""
     seen: list[str] = []
 
     async def fake_resolve(host: str, fam: str = "auto") -> tuple[str | None, str | None]:
@@ -214,27 +216,27 @@ async def test_forced_family_passed_to_resolver(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# Qayta urinish: FAQAT `no_reply`
+# Retries: ONLY on `no_reply`
 # --------------------------------------------------------------------------- #
 
 
 async def test_lost_echo_is_retried(monkeypatch):
-    """Bitta yo'qolgan echo natijani pasaytirmasligi kerak."""
+    """A single lost echo must not lower the result."""
     net = _install(monkeypatch, FakeNet(drop_once={1472}))
     res = await discover_path_mtu("1.1.1.1")
 
-    assert res.path_mtu == 1500  # qayta urinish tiklandi
-    assert res.probes == 2  # yo'qolgani + qaytasi
+    assert res.path_mtu == 1500  # the retry recovered it
+    assert res.probes == 2  # the lost one plus the retry
     assert net.payloads == [1472, 1472]
 
 
 async def test_too_big_is_never_retried(monkeypatch):
-    """`too_big` — yo'ldagi qurilmaning ANIQ javobi, takrorlash ortiqcha.
+    """`too_big` is the DEFINITIVE answer of a device along the path; repeating is waste.
 
-    (Qayta urinish faqat javobsizlikni tuzatadi; "juda katta" o'zgarmaydi va
-    har bir qayta urinish skanni sekinlashtiradi.)
+    (A retry only fixes a missing answer; "too big" will not change, and every
+    retry slows the scan down.)
     """
-    net = _install(monkeypatch, FakeNet(limit=1392))  # haqiqiy MTU 1420
+    net = _install(monkeypatch, FakeNet(limit=1392))  # the real MTU is 1420
     res = await discover_path_mtu("1.1.1.1")
 
     assert res.path_mtu == 1420
@@ -242,7 +244,7 @@ async def test_too_big_is_never_retried(monkeypatch):
 
 
 async def test_no_reply_verdict_is_the_only_retried_one(monkeypatch):
-    """Qayta urinish AYNAN javobsiz probe'dan keyin bo'ladi."""
+    """The retry happens after EXACTLY the unanswered probe."""
     net = _install(monkeypatch, FakeNet(drop_once={1472}))
     await discover_path_mtu("1.1.1.1")
 
@@ -250,21 +252,21 @@ async def test_no_reply_verdict_is_the_only_retried_one(monkeypatch):
 
 
 async def test_retries_zero_costs_a_full_search(monkeypatch):
-    """`retries=0` — eski xatti-harakat: bitta yo'qotish butun qidiruvni keltiradi."""
+    """`retries=0` — the old behaviour: one loss drags in a whole search."""
     net = _install(monkeypatch, FakeNet(drop_once={1472}))
     res = await discover_path_mtu("1.1.1.1", retries=0)
 
     assert res.path_mtu == 1500
-    assert res.probes > 2  # qayta urinish o'rniga ~10 probe
+    assert res.probes > 2  # ~10 probes instead of one retry
     assert net.immediate_repeats() == []
 
 
 async def test_single_loss_at_boundary_does_not_underreport(monkeypatch):
-    """Qora tuynukda chegara payload'i yo'qolsa ham MTU pasayib ketmaydi.
+    """Even if the boundary payload is lost in a black hole, the MTU does not drop.
 
-    Ilgari har probe aynan bir marta yuborilardi: shu bitta yo'qolgan echo
-    MTU ni 143 baytgacha past ko'rsatib, `doctor` xulosasini medium'dan
-    high'ga sakratardi.
+    Each probe used to be sent exactly once: that single lost echo
+    under-reported the MTU by up to 143 bytes and pushed the `doctor` verdict
+    from medium to high.
     """
     _install(monkeypatch, FakeNet(limit=1392, over="no_reply", drop_once={1392}))
     res = await discover_path_mtu("1.1.1.1")
@@ -279,12 +281,12 @@ async def test_probes_counted_including_retries(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# Ikkilik qidiruv va chegarani tasdiqlash (`best + 1`)
+# Binary search and boundary verification (`best + 1`)
 # --------------------------------------------------------------------------- #
 
 
 async def test_high_passes_in_one_probe(monkeypatch):
-    """Eng ko'p uchraydigan holat: 1500 o'tadi — bitta probe yetarli."""
+    """The most common case: 1500 gets through — one probe is enough."""
     net = _install(monkeypatch, FakeNet())
     res = await discover_path_mtu("1.1.1.1")
     assert res.probes == 1
@@ -293,16 +295,16 @@ async def test_high_passes_in_one_probe(monkeypatch):
 
 
 async def test_binary_search_finds_tunnel_mtu(monkeypatch):
-    """WireGuard tunneli ortidagi 1420 aniq topiladi."""
+    """The 1420 behind a WireGuard tunnel is found exactly."""
     _install(monkeypatch, FakeNet(limit=1420 - IP_ICMP_OVERHEAD))
     res = await discover_path_mtu("1.1.1.1")
     assert res.path_mtu == 1420
     assert res.max_payload == 1392
-    assert res.likely_cause == "WireGuard (tipik)"
+    assert res.likely_cause == "WireGuard (typical)"
 
 
 async def test_black_hole_still_measured_when_host_alive(monkeypatch):
-    """ICMP xabari yo'q (qora tuynuk), lekin kichik paket o'tadi — MTU topiladi."""
+    """No ICMP message (a black hole), but small packets pass — the MTU is found."""
     _install(monkeypatch, FakeNet(limit=1372, over="no_reply"))
     res = await discover_path_mtu("1.1.1.1")
     assert res.error is None
@@ -310,39 +312,39 @@ async def test_black_hole_still_measured_when_host_alive(monkeypatch):
 
 
 async def test_boundary_reverified_at_best_plus_one(monkeypatch):
-    """Chegara `best + 1` bilan tasdiqlanadi — `best` ni sinash no-op edi.
+    """The boundary is verified with `best + 1` — testing `best` was a no-op.
 
-    Bu yerda haqiqiy chegara payload = 1400, lekin AYNAN 1400 baytli probe bir
-    marta yo'qoladi va (`retries=0` da) qidiruv 1399 da tugaydi. `best + 1`
-    qayta sinalgani uchun natija 1400 ga tiklanadi.
+    Here the real boundary payload is 1400, but the probe of EXACTLY 1400 bytes
+    is lost once and (with `retries=0`) the search finishes at 1399. Because
+    `best + 1` is re-tested, the result is restored to 1400.
     """
     net = _install(monkeypatch, FakeNet(limit=1400, drop_once={1400}))
     res = await discover_path_mtu("1.1.1.1", retries=0)
 
     assert res.max_payload == 1400
     assert res.path_mtu == 1400 + IP_ICMP_OVERHEAD
-    assert net.payloads.count(1400) == 2, "best+1 qayta sinalmagan"
+    assert net.payloads.count(1400) == 2, "best+1 was not re-tested"
 
 
 async def test_reverify_does_not_run_when_best_is_high(monkeypatch):
-    """`best` allaqachon yuqori chegara bo'lsa qo'shimcha probe kerak emas."""
+    """When `best` is already the upper bound no extra probe is needed."""
     net = _install(monkeypatch, FakeNet())
     await discover_path_mtu("1.1.1.1")
-    assert net.payloads == [1472]  # ortiqcha tasdiqlash probe'i yo'q
+    assert net.payloads == [1472]  # no superfluous verification probe
 
 
 async def test_dead_host_gives_error_not_zero_mtu(monkeypatch):
-    """Host javob bermasa — mazmunli xato; MTU 0 emas."""
+    """If the host does not answer — a meaningful error; not an MTU of 0."""
     _install(monkeypatch, FakeNet(dead=True))
     res = await discover_path_mtu("1.1.1.1")
 
     assert res.path_mtu is None
     assert res.error is not None
-    assert "javob bermayapti" in res.error
+    assert "is not answering pings" in res.error
 
 
 async def test_all_sizes_too_big_gives_error(monkeypatch):
-    """Hatto `low` ham o'tmasa — 'MTU low dan kichik' xatosi."""
+    """If not even `low` gets through — the 'MTU is below low' error."""
     _install(monkeypatch, FakeNet(limit=100))
     res = await discover_path_mtu("1.1.1.1", low=1200, high=1500)
 
@@ -352,7 +354,7 @@ async def test_all_sizes_too_big_gives_error(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# Buyruq qurish va MtuResult property'lari
+# Command building and the MtuResult properties
 # --------------------------------------------------------------------------- #
 
 
@@ -408,22 +410,22 @@ def test_likely_cause_unknown_mtu():
 
 
 def test_default_family_field_is_ipv4():
-    """Resolve bo'lmagan (xato) natijada ham maydon aniq qiymatga ega."""
+    """Even in a failed (unresolved) result the field has a definite value."""
     assert MtuResult(host="h").family == "ipv4"
 
 
 # --------------------------------------------------------------------------- #
-# Resolve yiqilganda ROSTGO'Y sabab
+# The TRUTHFUL reason when a resolve fails
 # --------------------------------------------------------------------------- #
 
 
-async def test_aaaa_bor_lekin_ipv6_yoq_dns_ayblanmaydi(monkeypatch):
-    """SOXTA DIAGNOZ REGRESSIYASI.
+async def test_aaaa_exists_but_no_ipv6_so_dns_is_not_blamed(monkeypatch):
+    """FALSE-DIAGNOSIS REGRESSION.
 
-    `ipv6.google.com` da AAAA yozuvi DNS'da BOR, lekin hostda global IPv6
-    manzil bo'lmasa OS uni `getaddrinfo` dan butunlay olib tashlaydi
-    (RFC 6724). Eski xabar "DNS yozuvi yo'q" derdi va sysadmin DNS'ni
-    tuzatgani ketardi — muammo esa IPv6 ulanishida edi.
+    For `ipv6.google.com` the AAAA record DOES exist in DNS, but if the host has
+    no global IPv6 address the OS removes it from `getaddrinfo` altogether
+    (RFC 6724). The old message said "no DNS record" and the sysadmin went off
+    to fix DNS — while the problem was IPv6 connectivity.
     """
     from systop.core import mtu as mtu_mod
 
@@ -434,31 +436,31 @@ async def test_aaaa_bor_lekin_ipv6_yoq_dns_ayblanmaydi(monkeypatch):
     monkeypatch.setattr("systop.core.dns._query_aaaa", fake_aaaa)
     monkeypatch.setattr(
         "systop.core.netinfo.list_interfaces",
-        lambda: [],  # global IPv6 yo'q
+        lambda: [],  # no global IPv6
     )
     msg = await mtu_mod._resolve_failure_reason("ipv6.google.com", "auto")
-    assert "DNS ayb EMAS" in msg
+    assert "DNS is NOT to blame" in msg
     assert "2a00:1450:4025:800::8b" in msg
     assert "RFC 6724" in msg
 
 
-async def test_haqiqatan_yoq_nom_dns_deb_aytiladi(monkeypatch):
-    """AAAA ham, A ham bo'lmasa — bu CHINDAN DNS muammosi."""
+async def test_a_genuinely_missing_name_is_reported_as_dns(monkeypatch):
+    """With neither an AAAA nor an A record — this REALLY is a DNS problem."""
     from systop.core import mtu as mtu_mod
 
-    async def yoq(name, tool, timeout=3.0):
+    async def none_found(name, tool, timeout=3.0):
         return []
 
     monkeypatch.setattr("systop.core.dns._pick_tool", lambda: "dig")
-    monkeypatch.setattr("systop.core.dns._query_aaaa", yoq)
-    msg = await mtu_mod._resolve_failure_reason("yoq.invalid", "auto")
-    assert "DNS yozuvi yo'q" in msg
+    monkeypatch.setattr("systop.core.dns._query_aaaa", none_found)
+    msg = await mtu_mod._resolve_failure_reason("nothing.invalid", "auto")
+    assert "there is no DNS record" in msg
 
 
-async def test_dig_bolmasa_eski_xabar(monkeypatch):
-    """`dig`/`nslookup` yo'q bo'lsa ajratib bo'lmaydi — ehtiyotkor xabar."""
+async def test_without_dig_the_cautious_message_is_used(monkeypatch):
+    """Without `dig`/`nslookup` the two cannot be told apart — a cautious message."""
     from systop.core import mtu as mtu_mod
 
     monkeypatch.setattr("systop.core.dns._pick_tool", lambda: None)
     msg = await mtu_mod._resolve_failure_reason("host.example", "auto")
-    assert "DNS yozuvi yo'q" in msg
+    assert "there is no DNS record" in msg

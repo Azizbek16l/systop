@@ -1,12 +1,12 @@
-"""CLI testlari — OFFLINE.
+"""CLI tests — OFFLINE.
 
-``systop --version`` va ``--help`` ni subprocess orqali (tarmoqqa chiqmaydi,
-tez), hamda argparse dispatch mantig'ini ``main()`` ni in-process chaqirib
-(tarmoq funksiyalari mock qilinib) sinaydi.
+``systop --version`` and ``--help`` are exercised through a subprocess (no
+network, fast), and the argparse dispatch logic by calling ``main()`` in-process
+with the network functions mocked out.
 
-Cross-platform (Windows/POSIX C-lokal) konsol himoyasi ham shu yerda sinaladi:
-ASCII kodlashli oqimda ham CLI yiqilmasligi (UnicodeEncodeError bermasligi)
-kerak — bu Windows cp1252/cp866 va `LANG=C` POSIX uchun bir xil muammo.
+The cross-platform (Windows/POSIX C-locale) console guard is tested here too:
+the CLI must not fall over on an ASCII-encoded stream (no UnicodeEncodeError) —
+the same problem on Windows cp1252/cp866 and under POSIX `LANG=C`.
 """
 
 from __future__ import annotations
@@ -22,12 +22,12 @@ from systop import __version__
 
 
 def _run_cli(*args: str, env: dict | None = None) -> subprocess.CompletedProcess:
-    """systop CLI'ni alohida jarayonda ishga tushiradi (tarmoqsiz buyruqlar).
+    """Runs the systop CLI in a separate process (network-free commands).
 
-    Bola jarayon stdout'ni UTF-8 yozadi (systop konsol himoyasi). Ota jarayon
-    ham UTF-8 (`errors="replace"`) bilan dekodlaydi — aks holda ota jarayon
-    ASCII lokalda (`LANG=C`) bola UTF-8 baytlarini DEKODLAY olmay yiqilardi
-    (bu test harness artefakti, systop xatosi emas).
+    The child writes stdout as UTF-8 (the systop console guard). The parent
+    decodes as UTF-8 too (`errors="replace"`) — otherwise a parent in an ASCII
+    locale (`LANG=C`) could not DECODE the child's UTF-8 bytes and crashed (a
+    test-harness artefact, not a systop bug).
     """
     return subprocess.run(
         [sys.executable, "-m", "systop", *args],
@@ -64,20 +64,20 @@ def test_cli_trace_help_has_host_arg():
 def test_cli_unknown_command_errors():
     proc = _run_cli("nonsense-command")
     assert proc.returncode != 0
-    # argparse xatoni stderr'ga yozadi.
+    # argparse writes the error to stderr.
     assert "nonsense-command" in proc.stderr or "invalid choice" in proc.stderr
 
 
-# --- main() dispatch (in-process, tarmoq mock) ------------------------------
+# --- main() dispatch (in-process, network mocked) ---------------------------
 
 
 def test_main_default_runs_dashboard(monkeypatch):
-    """Argument berilmasa -> dashboard ishga tushadi."""
+    """With no arguments -> the dashboard starts."""
     import systop.cli as cli
 
     called = {"dashboard": False}
 
-    # `from systop.app import run as run_dashboard` ni ushlash uchun app modulini mock.
+    # Mock the app module to intercept `from systop.app import run as run_dashboard`.
     import systop.app as app
 
     def fake_run():
@@ -90,9 +90,9 @@ def test_main_default_runs_dashboard(monkeypatch):
 
 
 def _main_expect_exit(cli, code: int = 0) -> None:
-    """`main()` endi mazmunli exit kod bilan `sys.exit` chaqiradi (skriptlar uchun).
+    """`main()` now calls `sys.exit` with a meaningful exit code (for scripts).
 
-    Default handler'lar muvaffaqiyatda 0 qaytaradi; test fake'lari ham shunday.
+    The real handlers return 0 on success; so do the fakes in these tests.
     """
     with pytest.raises(SystemExit) as excinfo:
         cli.main()
@@ -136,10 +136,10 @@ def test_main_trace_default_host(monkeypatch):
     ],
 )
 def test_main_dispatches_noarg_commands(monkeypatch, command, handler_name):
-    """Argumentsiz buyruqlar (info) to'g'ri handler'ga yo'naltirilsin.
+    """Argument-free commands (info) must reach the right handler.
 
-    `lan` (0.4.0) va `speed` (0.9.0) bayroq oladi, shuning uchun ular bu
-    ro'yxatdan chiqarilib, o'z testlariga ko'chirildi.
+    `lan` (0.4.0) and `speed` (0.9.0) take flags, so they were dropped from this
+    list and moved to tests of their own.
     """
     import systop.cli as cli
 
@@ -156,7 +156,7 @@ def test_main_dispatches_noarg_commands(monkeypatch, command, handler_name):
 
 
 def test_main_dispatches_ping_with_flags(monkeypatch):
-    """`ping --ipv6 --watch` bayroqlari _cmd_ping'ga to'g'ri uzatilsin."""
+    """The `ping --ipv6 --watch` flags must reach _cmd_ping correctly."""
     import systop.cli as cli
 
     captured = {}
@@ -190,15 +190,15 @@ def test_main_dispatches_ping_defaults(monkeypatch):
     assert captured == {"ipv6": False, "watch": False, "targets_arg": None}
 
 
-# --- main() exit kodlarini handler'dan o'tkazadi (skript-do'st) --------------
+# --- main() passes the handler's exit code through (script-friendly) --------
 
 
 @pytest.mark.parametrize("rc", [0, 1, 2])
 def test_main_propagates_handler_exit_code(monkeypatch, rc):
-    """Handler qaytargan exit kod `sys.exit` orqali aynan o'tishi kerak.
+    """The exit code a handler returns must pass through `sys.exit` unchanged.
 
-    Windows uchun muhim: ruscha konsolda ping noto'g'ri "o'lik" deb topilsa
-    EXIT_UNREACHABLE (2) qaytadi — skript buni 0 dan farqlay olishi shart.
+    This matters on Windows: if ping is wrongly read as "dead" on a localised
+    console, EXIT_UNREACHABLE (2) comes back — a script has to tell that from 0.
     """
     import systop.cli as cli
 
@@ -211,10 +211,10 @@ def test_main_propagates_handler_exit_code(monkeypatch, rc):
 
 
 def test_main_calls_init_console(monkeypatch):
-    """main() ishga tushganda `_platform.init_console` chaqirilishi shart.
+    """`_platform.init_console` must be called when main() runs.
 
-    Windows konsolini UTF-8/VT ga o'tkazadi (TUI/Rich Unicode uchun). POSIX'da
-    no-op, ammo chaqiruv baribir bo'lishi kerak (regressiya himoyasi).
+    It switches the Windows console to UTF-8/VT (for TUI/Rich Unicode). On POSIX
+    it is a no-op, but the call must happen anyway (regression guard).
     """
     import systop.cli as cli
 
@@ -234,7 +234,7 @@ def test_main_calls_init_console(monkeypatch):
     assert called["init"] >= 1
 
 
-# --- Konsol kodlash himoyasi (Windows cp866 / POSIX LANG=C) -----------------
+# --- Console encoding guard (Windows cp866 / POSIX LANG=C) ------------------
 
 
 @pytest.mark.parametrize(
@@ -244,15 +244,15 @@ def test_main_calls_init_console(monkeypatch):
         ("UTF-8", True),
         ("utf8", True),
         ("ascii", False),
-        ("ANSI_X3.4-1968", False),  # POSIX C lokal nomi
-        ("cp1252", False),  # Windows G'arbiy
-        ("cp866", False),  # Windows RUS konsoli
-        (None, False),  # kodlash noma'lum -> himoyalaymiz
+        ("ANSI_X3.4-1968", False),  # the POSIX C locale's name for it
+        ("cp1252", False),  # Windows Western
+        ("cp866", False),  # a Windows Cyrillic console
+        (None, False),  # encoding unknown -> play it safe
         ("", False),
     ],
 )
 def test_stream_encoding_is_safe(encoding, expected):
-    """ASCII/OEM kodlash xavfsiz EMAS deb aniqlansin (reconfigure kerak)."""
+    """ASCII/OEM encodings must be detected as NOT safe (reconfigure needed)."""
     import systop.cli as cli
 
     class _FakeStream:
@@ -264,10 +264,10 @@ def test_stream_encoding_is_safe(encoding, expected):
 
 
 def test_safe_write_survives_non_ascii_on_ascii_stream():
-    """ASCII kodlashli oqimga non-ASCII yozish yiqitmasligi kerak (LANG=C).
+    """Writing non-ASCII to an ASCII stream must not crash (LANG=C).
 
-    `print` to'g'ridan-to'g'ri UnicodeEncodeError bergan bo'lardi; `_safe_write`
-    esa `errors="replace"` bilan buffer'ga yozadi.
+    A plain `print` would have raised UnicodeEncodeError; `_safe_write` writes to
+    the buffer with `errors="replace"` instead.
     """
     import systop.cli as cli
 
@@ -280,31 +280,31 @@ def test_safe_write_survives_non_ascii_on_ascii_stream():
             self.buffer = raw
 
         def write(self, text: str) -> int:
-            # Haqiqiy ASCII oqim kabi non-ASCII'da yiqiladi.
+            # Fails on non-ASCII, exactly like a real ASCII stream.
             text.encode("ascii")
             raw.write(text.encode("ascii"))
             return len(text)
 
     stream = _AsciiStream()
-    # O'zbekcha + kirill + emoji — hammasi non-ASCII.
-    cli._safe_write(stream, "Tezlik o'lchandi — Ответ 🟢\n")
+    # Accented Latin + Cyrillic + emoji — all of it non-ASCII.
+    cli._safe_write(stream, "Speed measured — Ответ 🟢\n")
     out = raw.getvalue()
-    assert out  # nimadir yozildi
-    # ASCII'ga sig'maydigan belgilar '?' ga aylangan, ammo istisno YO'Q.
+    assert out  # something was written
+    # Characters that do not fit ASCII became '?', but there is NO exception.
     assert b"?" in out
 
 
 def test_safe_write_plain_ascii_passthrough():
-    """Sof ASCII matn o'zgarmasdan yoziladi (oddiy `write` muvaffaqiyatli)."""
+    """Pure ASCII text is written unchanged (the plain `write` succeeds)."""
     import systop.cli as cli
 
-    buf = io.StringIO()  # StringIO non-ASCII'ni ham qabul qiladi, xato bermaydi
+    buf = io.StringIO()  # StringIO accepts non-ASCII too and never errors
     cli._safe_write(buf, "hello\n")
     assert buf.getvalue() == "hello\n"
 
 
 def test_harden_console_streams_idempotent(monkeypatch):
-    """`_harden_console_streams` UTF oqimga tegmaydi, ASCII'ni reconfigure qiladi."""
+    """`_harden_console_streams` leaves a UTF stream alone and reconfigures ASCII."""
     import systop.cli as cli
 
     calls: list[tuple[str, str]] = []
@@ -324,44 +324,44 @@ def test_harden_console_streams_idempotent(monkeypatch):
 
     cli._harden_console_streams()
 
-    # UTF oqim reconfigure QILINMADI; ASCII oqim UTF-8 + replace'ga o'tkazildi.
+    # The UTF stream was NOT reconfigured; the ASCII one moved to UTF-8 + replace.
     assert ("utf-8", "replace") in calls
-    assert len(calls) == 1  # faqat ascii_stream
+    assert len(calls) == 1  # ascii_stream only
 
 
-# --- emit_json / emit_csv ASCII lokalda ham yiqilmaydi ----------------------
+# --- emit_json / emit_csv survive an ASCII locale too -----------------------
 
 
 def test_emit_json_writes_valid_json_via_safe_path(monkeypatch, capsys):
-    """emit_json sof, o'qish mumkin JSON beradi (non-ASCII saqlanadi)."""
+    """emit_json produces clean, readable JSON (non-ASCII is preserved)."""
     import systop.cli as cli
 
     monkeypatch.setattr(cli, "_FORMAT", "json")
-    cli.emit_json({"label": "Gateway (lokal)", "javob": "Ответ"})
+    cli.emit_json({"label": "Gateway (local)", "answer": "Ответ"})
     out = capsys.readouterr().out
     parsed = json.loads(out)
-    assert parsed["label"] == "Gateway (lokal)"
-    assert parsed["javob"] == "Ответ"
+    assert parsed["label"] == "Gateway (local)"
+    assert parsed["answer"] == "Ответ"
 
 
 def test_error_machine_mode_goes_to_stderr(monkeypatch, capsys):
-    """Machine (json) rejimida xato STDERR'ga (stdout toza qoladi)."""
+    """In machine (json) mode errors go to STDERR (stdout stays clean)."""
     import systop.cli as cli
 
     monkeypatch.setattr(cli, "_FORMAT", "json")
-    cli.error("host o'lik — Узел недоступен")
+    cli.error("host is dead — Узел недоступен")
     captured = capsys.readouterr()
-    assert captured.out == ""  # stdout toza (mashina o'qishi buzilmaydi)
+    assert captured.out == ""  # stdout is clean (machine parsing is not broken)
     assert "Узел недоступен" in captured.err
 
 
-# --- Integratsiya: C/ASCII lokalda (LANG=C) CLI yiqilmaydi (offline buyruq) --
+# --- Integration: the CLI survives a C/ASCII locale (LANG=C), offline command
 #
-# `config --show` tarmoqqa CHIQMAYDI, ammo o'zbekcha + kirill + emoji chiqaradi.
-# `PYTHONUTF8=0`+`PYTHONCOERCECLOCALE=0`+`LC_ALL=C` stdout'ni `ascii` codec'ga
-# majburlaydi (Windows cp866/cp1252 muammosining POSIX ekvivalenti). Himoyasiz
-# bu `UnicodeEncodeError` + exit 1 berardi; `_harden_console_streams` tufayli
-# endi toza ishlaydi.
+# `config --show` does NOT touch the network, yet it prints non-ASCII text.
+# `PYTHONUTF8=0`+`PYTHONCOERCECLOCALE=0`+`LC_ALL=C` forces stdout onto the
+# `ascii` codec (the POSIX equivalent of the Windows cp866/cp1252 problem).
+# Unguarded that gave `UnicodeEncodeError` + exit 1; thanks to
+# `_harden_console_streams` it now runs cleanly.
 
 
 def _ascii_locale_env() -> dict:
@@ -377,16 +377,16 @@ def _ascii_locale_env() -> dict:
             "PYTHONIOENCODING": "",
         }
     )
-    # NO_COLOR — Rich markup'siz, sof matn (tekshirish barqaror bo'lsin).
+    # NO_COLOR — no Rich markup, plain text (so the assertions stay stable).
     env["NO_COLOR"] = "1"
     return env
 
 
 def _python_uses_ascii_stdout(env: dict) -> bool:
-    """Berilgan muhitda Python stdout'ni ascii codec bilan ochadimi (tekshiramiz).
+    """Does Python open stdout on the ascii codec in this environment?
 
-    macOS/Linux: forced env ascii beradi. Windows: codec boshqacha bo'lishi
-    mumkin — bu test faqat ascii lokal haqiqatan reproduksiya bo'lsa ma'noli.
+    macOS/Linux: the forced env yields ascii. Windows: the codec may differ — this
+    test only means anything when the ascii locale is genuinely reproduced.
     """
     probe = subprocess.run(
         [sys.executable, "-c", "import sys; print(sys.stdout.encoding)"],
@@ -399,36 +399,36 @@ def _python_uses_ascii_stdout(env: dict) -> bool:
 
 
 def test_cli_json_survives_ascii_locale(tmp_path):
-    """`config --show --json` ASCII lokalda ham toza JSON + exit 0 berishi shart."""
+    """`config --show --json` must give clean JSON + exit 0 in an ASCII locale too."""
     env = _ascii_locale_env()
     if not _python_uses_ascii_stdout(env):
-        pytest.skip("bu platformada ascii lokal reproduksiya bo'lmadi (PEP 540 UTF-8 rejimi)")
+        pytest.skip("the ascii locale could not be reproduced here (PEP 540 UTF-8 mode)")
     proc = _run_cli("config", "--show", "--json", env=env)
     assert proc.returncode == 0, f"stderr: {proc.stderr!r}"
-    assert proc.stderr == ""  # toza stderr (UnicodeEncodeError yo'q)
-    data = json.loads(proc.stdout)  # to'liq, yaroqli JSON
+    assert proc.stderr == ""  # clean stderr (no UnicodeEncodeError)
+    data = json.loads(proc.stdout)  # complete, valid JSON
     assert "ping_targets" in data
 
 
 def test_cli_table_survives_ascii_locale():
-    """`config --show` (o'zbekcha matn) ASCII lokalda yiqilmasligi kerak."""
+    """`config --show` (non-ASCII glyphs) must not crash in an ASCII locale."""
     env = _ascii_locale_env()
     if not _python_uses_ascii_stdout(env):
-        pytest.skip("bu platformada ascii lokal reproduksiya bo'lmadi (PEP 540 UTF-8 rejimi)")
+        pytest.skip("the ascii locale could not be reproduced here (PEP 540 UTF-8 mode)")
     proc = _run_cli("config", "--show", env=env)
     assert proc.returncode == 0, f"stderr: {proc.stderr!r}"
-    # Chiqishda nimadir bor (jadval), traceback YO'Q.
+    # There is some output (the table) and NO traceback.
     assert "Traceback" not in proc.stderr
     assert "UnicodeEncodeError" not in proc.stderr
 
 
 # --------------------------------------------------------------------------- #
-# 0.4.0: lan bayroqlari + web/doctor buyruqlari
+# 0.4.0: lan flags + the web/doctor commands
 # --------------------------------------------------------------------------- #
 
 
 def test_main_dispatches_lan_with_flags(monkeypatch):
-    """`lan -6 --global-only` bayroqlari _cmd_lan'ga to'g'ri uzatilsin."""
+    """The `lan -6 --global-only` flags must reach _cmd_lan correctly."""
     import systop.cli as cli
 
     captured = {}
@@ -444,7 +444,7 @@ def test_main_dispatches_lan_with_flags(monkeypatch):
 
 
 def test_main_dispatches_lan_defaults(monkeypatch):
-    """Bayroqsiz `lan` — hammasi False (eski xulq saqlanadi)."""
+    """`lan` with no flags — everything False (the old behaviour is preserved)."""
     import systop.cli as cli
 
     captured = {}
@@ -479,7 +479,7 @@ def test_main_dispatches_web_with_hosts(monkeypatch):
 
 
 def test_web_http80_shortcut_sets_port_80(monkeypatch):
-    """`--http80` — 80-portni topishning qisqa yo'li."""
+    """`--http80` — the shortcut for finding port 80."""
     import systop.cli as cli
 
     captured = {}
@@ -511,7 +511,7 @@ def test_main_dispatches_doctor(monkeypatch):
 
 
 def test_scan_family_flags_are_mutually_exclusive():
-    """`-4` va `-6` birga berilmasligi kerak (argparse xato bersin)."""
+    """`-4` and `-6` must not be given together (argparse should error)."""
     import systop.cli as cli
 
     parser = cli._build_parser()
@@ -530,7 +530,7 @@ def test_scan_family_from_args():
 
 
 def test_to_dict_includes_webservice_properties():
-    """`url`/`risk` property'lari JSON'ga tushishi SHART (jim yo'qolmasin)."""
+    """The `url`/`risk` properties MUST land in the JSON (no silent loss)."""
     import systop.cli as cli
     from systop.core.webscan import WebService
 
@@ -549,7 +549,7 @@ def test_to_dict_includes_lanhost_is_link_local():
 
 
 # --------------------------------------------------------------------------- #
-# 0.5.0: scan sweep (nmap uslubi) + nc buyrug'i
+# 0.5.0: scan sweep (nmap style) + the nc command
 # --------------------------------------------------------------------------- #
 
 
@@ -577,7 +577,7 @@ def test_main_dispatches_scan_with_multiple_targets(monkeypatch):
 
 
 def test_scan_single_target_still_works(monkeypatch):
-    """Eski chaqiruv shakli (`scan HOST`) buzilmasligi kerak."""
+    """The old invocation form (`scan HOST`) must keep working."""
     import systop.cli as cli
 
     captured = {}
@@ -633,7 +633,7 @@ def test_nc_family_flag(monkeypatch):
 
 
 def test_to_dict_includes_ncresult_properties():
-    """`received` bytes JSON'da muammo qilmasligi va xossalar kirishi kerak."""
+    """`received` bytes must survive JSON encoding, and the properties must be included."""
     import systop.cli as cli
     from systop.core.netcat import NcResult
 
@@ -644,7 +644,7 @@ def test_to_dict_includes_ncresult_properties():
 
 
 def test_main_dispatches_speed_with_local_flags(monkeypatch):
-    """`speed --local-url URL` bayroqlari _cmd_speed'ga uzatilsin."""
+    """The `speed --local-url URL` flags must reach _cmd_speed."""
     import systop.cli as cli
 
     captured = {}

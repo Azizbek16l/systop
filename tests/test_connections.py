@@ -1,8 +1,8 @@
-"""connections testlari — OFFLINE.
+"""connections tests — OFFLINE.
 
-``psutil.net_connections`` va ``psutil.Process`` monkeypatch qilinib,
-``list_connections`` ning format/filtr mantig'i, jarayon nomi keshlash va
-``AccessDenied`` yutilishi sinaladi. Hech qanday haqiqiy socket o'qilmaydi.
+``psutil.net_connections`` and ``psutil.Process`` are monkeypatched, and the
+formatting/filtering logic of ``list_connections``, the process-name caching
+and the swallowing of ``AccessDenied`` are exercised. No real socket is read.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ def test_fmt_addr_empty():
 
 
 def test_fmt_addr_ip_without_port():
-    # port=0 (psutil ba'zan UDP'da 0 qaytaradi) -> `0 or "" == ""` => faqat ip.
+    # port=0 (psutil sometimes returns 0 for UDP) -> `0 or "" == ""` => ip only.
     assert _fmt_addr(FakeAddr(ip="10.0.0.1", port=0)) == "10.0.0.1"
 
 
@@ -93,7 +93,7 @@ def test_list_connections_maps_and_sorts(monkeypatch):
 
     result = list_connections()
     assert len(result) == 2
-    # tartib: proto, keyin laddr -> tcp avval, tcp6 keyin.
+    # order: proto, then laddr -> tcp first, tcp6 after.
     assert result[0].proto == "tcp"
     assert result[0].laddr == "127.0.0.1:8000"
     assert result[0].raddr == "1.2.3.4:443"
@@ -119,7 +119,7 @@ def test_list_connections_state_filter(monkeypatch):
     monkeypatch.setattr(psutil, "net_connections", lambda kind="inet": conns)
     monkeypatch.setattr(psutil, "Process", lambda pid: FakeProcess(pid))
 
-    # katta-kichik harf farqsiz: 'listen' -> faqat LISTEN qatori.
+    # case-insensitive: 'listen' -> only the LISTEN row.
     result = list_connections(states=["listen"])
     assert len(result) == 1
     assert result[0].status == "LISTEN"
@@ -127,7 +127,7 @@ def test_list_connections_state_filter(monkeypatch):
 
 
 def test_list_connections_none_status_normalized(monkeypatch):
-    """CONN_NONE / bo'sh status -> "" (UDP socketlar)."""
+    """CONN_NONE / empty status -> "" (UDP sockets)."""
     conns = [
         FakeConn(
             socket.AF_INET, socket.SOCK_DGRAM, FakeAddr("0.0.0.0", 68), None, psutil.CONN_NONE, None
@@ -143,7 +143,7 @@ def test_list_connections_none_status_normalized(monkeypatch):
 
 
 def test_list_connections_process_name_cached(monkeypatch):
-    """Bir xil PID bir necha bor uchrasa, Process faqat bir marta qurilishi kerak."""
+    """If the same PID appears several times, Process must be built only once."""
     conns = [
         FakeConn(
             socket.AF_INET, socket.SOCK_STREAM, FakeAddr("127.0.0.1", 1000 + i), None, "LISTEN", 99
@@ -162,10 +162,10 @@ def test_list_connections_process_name_cached(monkeypatch):
     result = list_connections()
     assert len(result) == 3
     assert all(r.process == "cached" for r in result)
-    assert build_count["n"] == 1  # kesh: PID 99 uchun bir marta
+    assert build_count["n"] == 1  # cache: only once for PID 99
 
 
-# --- AccessDenied / xato yutilishi ------------------------------------------
+# --- AccessDenied / error swallowing ----------------------------------------
 
 
 def test_list_connections_access_denied_returns_empty(monkeypatch):
@@ -173,7 +173,7 @@ def test_list_connections_access_denied_returns_empty(monkeypatch):
         raise psutil.AccessDenied()
 
     monkeypatch.setattr(psutil, "net_connections", boom)
-    # macOS'da root'siz odatdagi holat — bo'sh ro'yxat, xato YO'Q.
+    # The normal situation on macOS without root — empty list, NO exception.
     assert list_connections() == []
 
 
@@ -186,7 +186,7 @@ def test_list_connections_oserror_returns_empty(monkeypatch):
 
 
 def test_list_connections_process_access_denied_keeps_conn(monkeypatch):
-    """Bitta socket egasini o'qib bo'lmasa ham, ulanishning o'zi qaytariladi."""
+    """Even if a socket's owner cannot be read, the connection itself is returned."""
     conns = [
         FakeConn(
             socket.AF_INET, socket.SOCK_STREAM, FakeAddr("127.0.0.1", 80), None, "LISTEN", 500
@@ -201,11 +201,11 @@ def test_list_connections_process_access_denied_keeps_conn(monkeypatch):
     result = list_connections()
     assert len(result) == 1
     assert result[0].pid == 500
-    assert result[0].process is None  # nom noma'lum, lekin yiqilmaydi
+    assert result[0].process is None  # name unknown, but it does not crash
 
 
 def test_list_connections_process_no_such_process(monkeypatch):
-    """PID o'lib qolgan bo'lsa (NoSuchProcess) -> process None, xato yo'q."""
+    """If the PID has died (NoSuchProcess) -> process None, no exception."""
     conns = [
         FakeConn(
             socket.AF_INET, socket.SOCK_STREAM, FakeAddr("127.0.0.1", 80), None, "LISTEN", 12345
@@ -227,7 +227,7 @@ def test_list_connections_empty_table(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# netstat zaxira yo'li (macOS/BSD — psutil root'siz AccessDenied beradi)
+# netstat fallback path (macOS/BSD — psutil raises AccessDenied without root)
 # --------------------------------------------------------------------------- #
 
 from systop.core.connections import (  # noqa: E402
@@ -236,7 +236,7 @@ from systop.core.connections import (  # noqa: E402
     parse_netstat_listeners,
 )
 
-# Haqiqiy macOS chiqishi — oxirgi ustun (state) bor va yo'q qatorlar aralash.
+# Real macOS output — a mix of lines with and without the last (state) column.
 NETSTAT_BSD = """Active Internet connections (including servers)
 Proto Recv-Q Send-Q  Local Address          Foreign Address        (state)
 tcp4       0      0  192.168.11.43.49207    160.79.104.10.443      ESTABLISHED
@@ -249,11 +249,11 @@ udp4       0      0  *.5353                 *.*
 """
 
 
-def test_netstat_port_ajratgichi_nuqta_ikki_nuqta_emas():
-    """`::1.8443` — BSD portni NUQTA bilan ajratadi.
+def test_netstat_port_separator_is_dot_not_colon():
+    """`::1.8443` — BSD separates the port with a DOT.
 
-    `rpartition(":")` bu yerda `("::", "1.8443")` beradi va IPv6 tinglovchini
-    butunlay yo'q qiladi. Aynan shuning uchun alohida `_split_bsd_addr` bor.
+    Here `rpartition(":")` yields `("::", "1.8443")` and wipes out the IPv6
+    listener entirely. That is exactly why a separate `_split_bsd_addr` exists.
     """
     rows = parse_netstat_listeners(NETSTAT_BSD, states=["LISTEN"])
     v6 = [r for r in rows if r.laddr == "[::1]:8443"]
@@ -261,64 +261,64 @@ def test_netstat_port_ajratgichi_nuqta_ikki_nuqta_emas():
     assert v6[0].proto == "tcp6"
 
 
-def test_netstat_wildcard_oilaga_qarab_kengaytiriladi():
-    """`*` IPv4'da 0.0.0.0, IPv6'da :: bo'lishi kerak.
+def test_netstat_wildcard_expanded_by_family():
+    """`*` must become 0.0.0.0 for IPv4 and :: for IPv6.
 
-    `evaluate_listeners` "wildcard'ga bog'langanmi" ni shu manzil bo'yicha
-    hal qiladi — `*` holicha qolsa hech bir xavfli xizmat aniqlanmaydi.
+    `evaluate_listeners` decides "is it bound to a wildcard" from that address —
+    if `*` is left as it is, no risky service is ever detected.
     """
     rows = parse_netstat_listeners(NETSTAT_BSD, states=["LISTEN"])
     assert "0.0.0.0:6379" in [r.laddr for r in rows]
     assert "[::]:49152" in [r.laddr for r in rows]
 
 
-def test_netstat_tcp46_ikki_stekli_deb_belgilanadi():
-    """`tcp46` — dual-stack socket, ta'sir doirasi kengroq: tcp6 deb olinadi."""
+def test_netstat_tcp46_marked_as_dual_stack():
+    """`tcp46` — a dual-stack socket with a wider blast radius: taken as tcp6."""
     rows = parse_netstat_listeners(NETSTAT_BSD, states=["LISTEN"])
     dual = [r for r in rows if r.laddr == "[::]:56577"]
     assert len(dual) == 1
     assert dual[0].proto == "tcp6"
 
 
-def test_netstat_state_filtri_ishlaydi():
-    """ESTABLISHED qatori LISTEN so'ralganda kelmasligi kerak."""
+def test_netstat_state_filter_works():
+    """The ESTABLISHED row must not come back when LISTEN is requested."""
     rows = parse_netstat_listeners(NETSTAT_BSD, states=["LISTEN"])
     assert all(r.status == "LISTEN" for r in rows)
     assert not any("49207" in r.laddr for r in rows)
 
 
-def test_netstat_state_ustuni_yoq_qator_tashlanmaydi():
-    """UDP qatorida (state) ustuni umuman yo'q — filtrsiz u ham kelishi kerak.
+def test_netstat_line_without_state_column_is_not_dropped():
+    """The UDP line has no (state) column at all — without a filter it must come too.
 
-    Qat'iy regex aynan shunday qatorlarni jimgina yo'qotadi (routes.py da
-    93 qatordan 75 tasi shu sababdan yo'qolgandi).
+    A strict regex silently loses exactly these lines (in routes.py 75 out of
+    93 lines were lost for that very reason).
     """
     rows = parse_netstat_listeners(NETSTAT_BSD)
     assert "0.0.0.0:5353" in [r.laddr for r in rows]
 
 
-def test_netstat_sarlavha_qatorlari_otkazib_yuboriladi():
+def test_netstat_header_lines_are_skipped():
     rows = parse_netstat_listeners(NETSTAT_BSD)
     assert all(r.proto.startswith(("tcp", "udp")) for r in rows)
 
 
-def test_netstat_yulduzcha_port_tashlanadi():
-    """Masofaviy manzil `*.*` — port raqam emas, qator buzilmasligi kerak."""
+def test_netstat_asterisk_port_is_dropped():
+    """The remote address `*.*` — the port is not a number, the line must not break."""
     rows = parse_netstat_listeners("tcp4 0 0 *.* *.* LISTEN")
     assert rows == []
 
 
-def test_connscan_default_ruxsat_berilgan():
-    """Bo'sh ro'yxat != ruxsat yo'q. Ikkisi ATAYLAB ajratilgan."""
+def test_connscan_defaults_to_permitted():
+    """An empty list != no permission. The two are DELIBERATELY kept apart."""
     assert ConnScan().permitted is True
     assert ConnScan(permitted=False).conns == []
 
 
 # --------------------------------------------------------------------------- #
-# Uchala OS formati — bir parser
+# All three OS formats — a single parser
 # --------------------------------------------------------------------------- #
 
-# Linux `netstat -an`: port IKKI NUQTA bilan, IPv6 wildcard `:::8443`.
+# Linux `netstat -an`: port after a COLON, IPv6 wildcard `:::8443`.
 NETSTAT_LINUX = """Active Internet connections (servers and established)
 Proto Recv-Q Send-Q Local Address           Foreign Address         State
 tcp        0      0 0.0.0.0:6379            0.0.0.0:*               LISTEN
@@ -328,7 +328,7 @@ tcp        0      0 10.0.0.5:22             10.0.0.9:51234          ESTABLISHED
 udp        0      0 0.0.0.0:5353            0.0.0.0:*
 """
 
-# Windows `netstat -an`: 4 ustun, holat `LISTENING`, IPv6 kvadrat qavsda.
+# Windows `netstat -an`: 4 columns, state `LISTENING`, IPv6 in square brackets.
 NETSTAT_WINDOWS = """
 Active Connections
 
@@ -341,8 +341,8 @@ Active Connections
 """
 
 
-def test_manzil_ajratgich_uchala_shaklni_tushunadi():
-    """BSD nuqta, Linux/Windows ikki nuqta, Windows kvadrat qavs."""
+def test_address_splitter_understands_all_three_shapes():
+    """BSD dot, Linux/Windows colon, Windows square brackets."""
     assert _split_listen_addr("127.0.0.1.7265") == ("127.0.0.1", 7265)  # BSD
     assert _split_listen_addr("::1.8443") == ("::1", 8443)  # BSD IPv6
     assert _split_listen_addr("0.0.0.0:6379") == ("0.0.0.0", 6379)  # Linux
@@ -351,22 +351,22 @@ def test_manzil_ajratgich_uchala_shaklni_tushunadi():
     assert _split_listen_addr("*.6379") == ("*", 6379)  # BSD wildcard
 
 
-def test_manzil_ajratgich_portsizni_rad_etadi():
+def test_address_splitter_rejects_tokens_without_a_port():
     for tok in ("*.*", "*:*", "0", "LISTEN", ""):
         assert _split_listen_addr(tok) is None
 
 
-def test_linux_formati_parse_qilinadi():
+def test_linux_format_is_parsed():
     rows = parse_netstat_listeners(NETSTAT_LINUX, states=["LISTEN"])
     laddrs = [r.laddr for r in rows]
     assert "0.0.0.0:6379" in laddrs
     assert "127.0.0.1:7265" in laddrs
     assert "[::]:8443" in laddrs
-    assert not any("10.0.0.9" in r.raddr for r in rows)  # ESTABLISHED tashlandi
+    assert not any("10.0.0.9" in r.raddr for r in rows)  # ESTABLISHED was dropped
 
 
-def test_windows_formati_parse_qilinadi():
-    """Windows'da 4 ustun va holat `LISTENING` — ikkalasi ham normallashtiriladi."""
+def test_windows_format_is_parsed():
+    """On Windows there are 4 columns and the state is `LISTENING` — both are normalised."""
     rows = parse_netstat_listeners(NETSTAT_WINDOWS, states=["LISTEN"])
     laddrs = [r.laddr for r in rows]
     assert "0.0.0.0:6379" in laddrs
@@ -374,18 +374,18 @@ def test_windows_formati_parse_qilinadi():
     assert all(r.status == "LISTEN" for r in rows)
 
 
-def test_windows_oila_manzildan_aniqlanadi():
-    """Windows proto'da 4/6 ko'rsatilmaydi — `[::]` dan tcp6 chiqishi kerak."""
+def test_windows_family_is_derived_from_the_address():
+    """Windows does not show 4/6 in the proto — `[::]` must produce tcp6."""
     rows = parse_netstat_listeners(NETSTAT_WINDOWS, states=["LISTEN"])
     v6 = [r for r in rows if r.laddr == "[::]:8443"]
     assert v6 and v6[0].proto == "tcp6"
 
 
-def test_uchala_os_bir_xil_natija_beradi():
-    """Bir xil tinglovchilar — uchala OS chiqishidan bir xil to'plam.
+def test_all_three_os_give_the_same_result():
+    """The same listeners — an identical set from all three OS outputs.
 
-    Bu toolning asosiy va'dasi: `doctor` xulosasi OS'ga qarab o'zgarmasligi
-    kerak. Parser farqi shu yerda ushlanadi.
+    This is the core promise of the tool: the `doctor` verdict must not change
+    depending on the OS. Parser differences get caught right here.
     """
 
     def listen_set(text):
@@ -394,9 +394,9 @@ def test_uchala_os_bir_xil_natija_beradi():
     bsd = listen_set(NETSTAT_BSD)
     linux = listen_set(NETSTAT_LINUX)
     windows = listen_set(NETSTAT_WINDOWS)
-    umumiy = {("0.0.0.0:6379", "tcp"), ("127.0.0.1:7265", "tcp")}
-    assert umumiy <= bsd
-    assert umumiy <= linux
-    assert umumiy <= windows
+    common = {("0.0.0.0:6379", "tcp"), ("127.0.0.1:7265", "tcp")}
+    assert common <= bsd
+    assert common <= linux
+    assert common <= windows
     assert ("[::]:8443", "tcp6") in linux
     assert ("[::]:8443", "tcp6") in windows

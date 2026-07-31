@@ -1,8 +1,8 @@
-"""topology testlari — OFFLINE.
+"""topology tests — OFFLINE.
 
-``_ARP_RE`` / ``_NEIGH_RE`` regexlari real-dunyo qatorlari bilan, ``_parse_arp_table``
-``subprocess`` monkeypatch bilan, ``discover_lan`` esa ``async_multiping`` mock
-qilinib sinaladi. Hech qanday tarmoq chaqiruvi bo'lmaydi.
+The ``_ARP_RE`` / ``_NEIGH_RE`` regexes are exercised against real-world lines,
+``_parse_arp_table`` with a ``subprocess`` monkeypatch, and ``discover_lan``
+with ``async_multiping`` mocked out. No network call is ever made.
 """
 
 from __future__ import annotations
@@ -56,8 +56,9 @@ def test_arp_re_macos_lines(line, ip, mac):
 
 
 def test_arp_re_linux_arp_n():
-    # Linux `arp -n` chiqishi ham qavs ichidagi IP bermaydi -> _ARP_RE mos kelmaydi.
-    # Lekin `arp -a` Linux'da: "host (10.0.0.5) at 11:22:33:44:55:66 [ether] on eth0"
+    # Linux `arp -n` output does not put the IP in brackets either -> _ARP_RE
+    # does not match. But `arp -a` on Linux does:
+    #   "host (10.0.0.5) at 11:22:33:44:55:66 [ether] on eth0"
     line = "? (10.0.0.5) at 11:22:33:44:55:66 [ether] on eth0"
     m = _ARP_RE.search(line)
     assert m is not None
@@ -66,7 +67,7 @@ def test_arp_re_linux_arp_n():
 
 
 def test_arp_re_incomplete_entry_no_match():
-    # `arp -a` da javob bermagan host: MAC o'rnida "(incomplete)".
+    # A host in `arp -a` that never answered: "(incomplete)" instead of a MAC.
     line = "? (192.168.1.99) at (incomplete) on en0 ifscope [ethernet]"
     assert _ARP_RE.search(line) is None
 
@@ -94,7 +95,7 @@ def test_neigh_re_states(line, ip, mac):
 
 
 def test_neigh_re_failed_or_incomplete_no_match():
-    # lladdr bo'lmagan yozuvlar (FAILED / INCOMPLETE) mos kelmasligi kerak.
+    # Entries without an lladdr (FAILED / INCOMPLETE) must not match.
     assert _NEIGH_RE.search("192.168.1.50 dev eth0  FAILED") is None
     assert _NEIGH_RE.search("192.168.1.51 dev eth0  INCOMPLETE") is None
 
@@ -118,10 +119,10 @@ def test_parse_arp_table_macos(monkeypatch):
     table = _parse_arp_table()
     assert table == {
         "192.168.1.1": "a4:b1:c2:d3:e4:f5",
-        # MAC lowercase ga keltiriladi.
+        # The MAC is lower-cased.
         "192.168.1.42": "aa:bb:cc:dd:ee:ff",
     }
-    assert "192.168.1.99" not in table  # incomplete o'tkazib yuboriladi
+    assert "192.168.1.99" not in table  # incomplete is skipped
 
 
 def test_parse_arp_table_falls_back_to_ip_neigh(monkeypatch):
@@ -133,7 +134,7 @@ def test_parse_arp_table_falls_back_to_ip_neigh(monkeypatch):
 
     def fake_run(cmd, **kwargs):
         if cmd[:1] == ["arp"]:
-            # arp mavjud emas / bo'sh chiqish -> `ip -4 neigh` ga o'tadi.
+            # arp missing / empty output -> falls through to `ip -4 neigh`.
             return FakeCompletedProcess(stdout="")
         if cmd[:1] == ["ip"]:
             return FakeCompletedProcess(stdout=neigh_out)
@@ -148,7 +149,7 @@ def test_parse_arp_table_falls_back_to_ip_neigh(monkeypatch):
 
 
 def test_parse_arp_table_arp_missing_raises_oserror(monkeypatch):
-    """`arp` buyrug'i topilmasa (OSError) -> `ip -4 neigh` ga o'tishi kerak."""
+    """If the `arp` command is missing (OSError) -> it has to fall back to `ip -4 neigh`."""
     neigh_out = "192.168.1.1 dev eth0 lladdr a4:b1:c2:d3:e4:f5 REACHABLE\n"
 
     def fake_run(cmd, **kwargs):
@@ -169,12 +170,12 @@ def test_parse_arp_table_both_fail_returns_empty(monkeypatch):
     assert _parse_arp_table() == {}
 
 
-# --- discover_lan: async_multiping + ARP birlashtirish ----------------------
+# --- discover_lan: merging async_multiping + ARP ----------------------------
 
 
 async def test_discover_lan_merges_ping_and_arp(monkeypatch):
-    """Tirik hostlar ping'dan, MAC esa ARP jadvalidan kelishi kerak."""
-    cidr = "192.168.1.0/30"  # hostlar: .1, .2
+    """The alive hosts have to come from the ping, and the MAC from the ARP table."""
+    cidr = "192.168.1.0/30"  # hosts: .1, .2
 
     async def fake_multiping(hosts, **kwargs):
         return [
@@ -196,7 +197,7 @@ async def test_discover_lan_merges_ping_and_arp(monkeypatch):
 
 
 async def test_discover_lan_adds_arp_only_hosts(monkeypatch):
-    """ARP'da bor, lekin ping'ga javob bermagan host ham qo'shilishi kerak."""
+    """A host that is in ARP but did not answer the ping must be added too."""
     cidr = "192.168.1.0/24"
 
     async def fake_multiping(hosts, **kwargs):
@@ -208,16 +209,16 @@ async def test_discover_lan_adds_arp_only_hosts(monkeypatch):
         "_parse_arp_table",
         lambda: {
             "192.168.1.10": "aa:aa:aa:aa:aa:aa",
-            "192.168.1.20": "bb:bb:bb:bb:bb:bb",  # faqat ARP'da
-            "10.9.9.9": "cc:cc:cc:cc:cc:cc",  # tarmoqdan tashqarida -> tashlanadi
+            "192.168.1.20": "bb:bb:bb:bb:bb:bb",  # only in ARP
+            "10.9.9.9": "cc:cc:cc:cc:cc:cc",  # outside the network -> dropped
         },
     )
     monkeypatch.setattr(topology.netinfo, "default_gateway", lambda: None)
 
     hosts = await discover_lan(cidr=cidr)
     ips = [h.ip for h in hosts]
-    assert ips == ["192.168.1.10", "192.168.1.20"]  # IP bo'yicha tartiblangan
-    # Tarmoqdan tashqaridagi ARP yozuvi qo'shilmaydi.
+    assert ips == ["192.168.1.10", "192.168.1.20"]  # sorted by IP
+    # An ARP entry from outside the network is not added.
     assert "10.9.9.9" not in ips
 
 
@@ -237,7 +238,7 @@ async def test_discover_lan_sorts_by_ip(monkeypatch):
 
     hosts = await discover_lan(cidr=cidr)
     ips = [h.ip for h in hosts]
-    # Leksikografik emas, sonli (ip_address) tartibda bo'lishi kerak.
+    # The order has to be numeric (ip_address), not lexicographic.
     assert ips == ["192.168.1.2", "192.168.1.50", "192.168.1.100"]
 
 
@@ -282,13 +283,13 @@ async def test_discover_lan_uses_primary_interface_cidr(monkeypatch):
 
     monkeypatch.setattr(topology, "async_multiping", fake_multiping)
     await discover_lan(cidr=None)
-    # primary_interface CIDR'idan hostlar yaratilgan bo'lishi kerak.
+    # The hosts have to have been built from the primary_interface CIDR.
     assert "192.168.5.1" in captured["hosts"]
     assert "192.168.5.254" in captured["hosts"]
 
 
 async def test_discover_lan_respects_max_hosts(monkeypatch):
-    cidr = "10.0.0.0/24"  # 254 host, lekin max_hosts=5 cheklaydi
+    cidr = "10.0.0.0/24"  # 254 hosts, but max_hosts=5 caps it
 
     captured = {}
 
@@ -305,10 +306,10 @@ async def test_discover_lan_respects_max_hosts(monkeypatch):
 
 
 async def test_discover_lan_slash31_no_usable_hosts(monkeypatch):
-    """/31 tarmoq -> ``network.hosts()`` ikkita manzilni beradi (RFC 3021).
+    """A /31 network -> ``network.hosts()`` gives two addresses (RFC 3021).
 
-    ``ipaddress`` /31 va /32 ni maxsus ishlaydi: /31 ikkala manzilni host deb
-    qaytaradi, shuning uchun multiping CHAQIRILADI. Bu xatti-harakatni hujjatlaymiz.
+    ``ipaddress`` treats /31 and /32 specially: for a /31 it returns both
+    addresses as hosts, so multiping IS called. We document that behaviour here.
     """
     captured = {}
 
@@ -322,7 +323,7 @@ async def test_discover_lan_slash31_no_usable_hosts(monkeypatch):
 
     result = await discover_lan(cidr="192.168.1.4/31")
     assert result == []
-    # /31 -> .4 va .5 host sifatida qaytariladi.
+    # /31 -> .4 and .5 are returned as hosts.
     assert captured["hosts"] == ["192.168.1.4", "192.168.1.5"]
 
 
@@ -371,7 +372,7 @@ async def test_traceroute_skips_dns_when_resolve_false(monkeypatch):
 
 
 async def test_traceroute_handles_missing_hop_address(monkeypatch):
-    """Hop manzili None bo'lsa (* * *), reverse DNS chaqirilmaydi va xato bo'lmaydi."""
+    """When the hop address is None (* * *), reverse DNS is not called and nothing errors."""
     raw = [FakeRawHop(distance=1, address=None, avg_rtt=0.0, is_alive=False)]
     monkeypatch.setattr(topology, "_sync_traceroute", lambda address, **k: raw)
 
@@ -407,12 +408,12 @@ def test_arp_win_re_lines(line, ip, mac):
 
 
 def test_arp_win_re_header_no_match():
-    # Sarlavha qatori mos kelmasligi kerak.
+    # The header line must not match.
     assert _ARP_WIN_RE.search("  Internet Address      Physical Address      Type") is None
 
 
 def test_arp_win_re_interface_line_no_match():
-    # "Interface: 192.168.1.50 --- 0xN" qatori — MAC yo'q, mos kelmaydi.
+    # The "Interface: 192.168.1.50 --- 0xN" line — no MAC, so no match.
     assert _ARP_WIN_RE.search("Interface: 192.168.1.50 --- 0xc") is None
 
 
@@ -438,11 +439,11 @@ def test_parse_arp_table_windows(monkeypatch):
 
     monkeypatch.setattr(topology.subprocess, "run", fake_run)
     table = _parse_arp_table()
-    # MAC tiredan ':' ga, kichik harfga normallashtiriladi.
+    # The MAC is normalised from dashes to ':' and to lower case.
     assert table["192.168.1.1"] == "00:11:22:33:44:55"
     assert table["192.168.1.42"] == "a4:b1:c2:d3:e4:f5"
-    # Broadcast/multicast yozuvlar ham regex'ga tushadi (filtrlash discover_lan'da
-    # tarmoq a'zoligi bo'yicha bo'ladi) — lekin sarlavha tushmaydi.
+    # Broadcast/multicast entries match the regex too (they are filtered in
+    # discover_lan by network membership) — but the header does not.
     assert "Physical" not in table
 
 
@@ -457,10 +458,11 @@ def test_parse_arp_table_windows_command_missing(monkeypatch):
 
 
 def test_win_arp_mac_lookup_vendor_accepts_dash():
-    """oui.lookup_vendor tire-formatli MAC'ni ham qabul qilishini tasdiqlash."""
+    """Asserting that oui.lookup_vendor also accepts a dash-formatted MAC."""
     from systop.core import oui
 
-    # Apple OUI (jadvalda bor deb hisoblamaymiz — normalize ikkala formatda bir xil).
+    # An Apple OUI (we do not assume it is in the table — normalize is the same
+    # for both formats).
     colon = oui.normalize_oui("a4:b1:c2:d3:e4:f5")
     dashed = oui.normalize_oui("a4-b1-c2-d3-e4-f5")
     assert colon == dashed
@@ -483,12 +485,12 @@ _WIN_TRACERT_OUT = (
 
 async def test_win_traceroute_maps_hops(monkeypatch):
     monkeypatch.setattr(topology._platform, "IS_WINDOWS", True)
-    # tracert.exe parse yo'lini deterministik sinash uchun IcmpSendEcho'ni o'chiramiz.
+    # Switch IcmpSendEcho off so the tracert.exe parse path is tested deterministically.
     monkeypatch.setattr(topology._platform, "win_icmp_traceroute", lambda *a, **k: None)
 
     async def fake_run_command(cmd, timeout):
         assert cmd[0] == "tracert"
-        assert "-d" in cmd  # raqamli (resolve'siz) rejim
+        assert "-d" in cmd  # numeric mode (no resolution)
         return _WIN_TRACERT_OUT
 
     monkeypatch.setattr(topology._platform, "run_command", fake_run_command)
@@ -498,12 +500,12 @@ async def test_win_traceroute_maps_hops(monkeypatch):
     assert raw[0].address == "192.168.1.1"
     assert raw[0].avg_rtt == pytest.approx(1.0)
     assert raw[0].is_alive is True
-    assert raw[2].address is None  # timeout hop
+    assert raw[2].address is None  # a timeout hop
     assert raw[2].is_alive is False
 
 
 async def test_win_traceroute_uses_icmpsendecho_when_available(monkeypatch):
-    """ILDIZ yo'l: _win_traceroute IcmpSendEcho natijasini (tracert.exe EMAS) oladi."""
+    """The PRIMARY path: _win_traceroute takes the IcmpSendEcho result, NOT tracert.exe."""
     monkeypatch.setattr(topology._platform, "IS_WINDOWS", True)
 
     def fake_icmp_trace(address, max_hops, timeout):
@@ -517,7 +519,7 @@ async def test_win_traceroute_uses_icmpsendecho_when_available(monkeypatch):
     monkeypatch.setattr(topology._platform, "win_icmp_traceroute", fake_icmp_trace)
 
     async def boom(cmd, timeout):
-        raise AssertionError("IcmpSendEcho mavjud bo'lsa tracert.exe chaqirilmasligi kerak")
+        raise AssertionError("when IcmpSendEcho is available tracert.exe must not be called")
 
     monkeypatch.setattr(topology._platform, "run_command", boom)
 
@@ -525,13 +527,13 @@ async def test_win_traceroute_uses_icmpsendecho_when_available(monkeypatch):
     assert [h.distance for h in raw] == [1, 2, 3]
     assert raw[0].address == "192.168.1.1"
     assert raw[0].avg_rtt == pytest.approx(1.0)
-    assert raw[1].address is None  # timeout hop
+    assert raw[1].address is None  # a timeout hop
     assert raw[1].is_alive is False
     assert raw[2].address == "8.8.8.8"
 
 
 async def test_win_traceroute_falls_back_to_parse_when_icmp_none(monkeypatch):
-    """IcmpSendEcho None -> tracert.exe parse zaxirasiga o'tadi."""
+    """IcmpSendEcho None -> falls back to the tracert.exe parse path."""
     monkeypatch.setattr(topology._platform, "IS_WINDOWS", True)
     monkeypatch.setattr(topology._platform, "win_icmp_traceroute", lambda *a, **k: None)
 
@@ -547,13 +549,13 @@ async def test_win_traceroute_falls_back_to_parse_when_icmp_none(monkeypatch):
 
 
 async def test_traceroute_windows_branch(monkeypatch):
-    """traceroute() Windows'da icmplib EMAS, tracert ishlatishini tasdiqlash."""
+    """Asserting that on Windows traceroute() uses tracert, NOT icmplib."""
     monkeypatch.setattr(topology._platform, "IS_WINDOWS", True)
-    # Bu test ping.exe/tracert.exe parse yo'lini tekshiradi -> IcmpSendEcho'ni o'chiramiz.
+    # This test checks the ping.exe/tracert.exe parse path -> switch IcmpSendEcho off.
     monkeypatch.setattr(topology._platform, "win_icmp_traceroute", lambda *a, **k: None)
 
     def boom(*a, **k):
-        raise AssertionError("icmplib traceroute Windows'da chaqirilmasligi kerak")
+        raise AssertionError("icmplib traceroute must not be called on Windows")
 
     monkeypatch.setattr(topology, "_sync_traceroute", boom)
 
@@ -571,19 +573,19 @@ async def test_traceroute_windows_branch(monkeypatch):
     assert [h.index for h in hops] == [1, 2, 3, 4]
     assert hops[0].address == "192.168.1.1"
     assert hops[0].hostname == "host-192.168.1.1"
-    # timeout hop'da reverse DNS chaqirilmaydi.
+    # Reverse DNS is not called for a timeout hop.
     assert hops[2].address is None
     assert hops[2].hostname is None
 
 
 async def test_trace_path_windows_empty_sets_error(monkeypatch):
-    """Windows tracert bo'sh chiqsa -> TraceResult.error to'ldiriladi (o'zbekcha)."""
+    """When Windows tracert comes back empty -> TraceResult.error is filled in."""
     monkeypatch.setattr(topology._platform, "IS_WINDOWS", True)
-    # IcmpSendEcho ham yo'q -> tracert.exe ham bo'sh -> xato to'ldiriladi.
+    # No IcmpSendEcho either -> tracert.exe is empty too -> the error is filled in.
     monkeypatch.setattr(topology._platform, "win_icmp_traceroute", lambda *a, **k: None)
 
     async def fake_run_command(cmd, timeout):
-        return ""  # buyruq yo'q / timeout
+        return ""  # command missing / timeout
 
     monkeypatch.setattr(topology._platform, "run_command", fake_run_command)
     result = await trace_path("8.8.8.8", resolve=False)
@@ -592,13 +594,13 @@ async def test_trace_path_windows_empty_sets_error(monkeypatch):
 
 
 async def test_trace_stream_windows_branch(monkeypatch):
-    """trace_stream Windows'da _win_traceroute orqali probe qilishini tasdiqlash."""
+    """Asserting that on Windows trace_stream probes through _win_traceroute."""
     monkeypatch.setattr(topology._platform, "IS_WINDOWS", True)
-    # tracert.exe parse yo'lini sinaymiz -> IcmpSendEcho'ni o'chiramiz.
+    # We are testing the tracert.exe parse path -> switch IcmpSendEcho off.
     monkeypatch.setattr(topology._platform, "win_icmp_traceroute", lambda *a, **k: None)
 
     def boom(*a, **k):
-        raise AssertionError("icmplib Windows'da chaqirilmasligi kerak")
+        raise AssertionError("icmplib must not be called on Windows")
 
     monkeypatch.setattr(topology, "_sync_traceroute", boom)
 
@@ -620,18 +622,18 @@ async def test_trace_stream_windows_branch(monkeypatch):
 
 
 async def test_discover_lan_windows_uses_win_sweep(monkeypatch):
-    """Windows'da discover_lan async_multiping EMAS, `ping` sweep ishlatadi."""
+    """On Windows discover_lan uses a `ping` sweep, NOT async_multiping."""
     monkeypatch.setattr(topology._platform, "IS_WINDOWS", True)
-    cidr = "192.168.1.0/30"  # hostlar: .1, .2
+    cidr = "192.168.1.0/30"  # hosts: .1, .2
 
     async def boom(*a, **k):
-        raise AssertionError("async_multiping Windows'da chaqirilmasligi kerak")
+        raise AssertionError("async_multiping must not be called on Windows")
 
     monkeypatch.setattr(topology, "async_multiping", boom)
-    # Sweep ping.exe parse yo'lini sinaymiz -> IcmpSendEcho'ni o'chiramiz.
+    # The sweep tests the ping.exe parse path -> switch IcmpSendEcho off.
     monkeypatch.setattr(topology._platform, "win_icmp_ping", lambda *a, **k: None)
 
-    # `ping` sweep: faqat .1 javob beradi.
+    # The `ping` sweep: only .1 answers.
     async def fake_run_command(cmd, timeout):
         addr = cmd[-1]
         if addr == "192.168.1.1":
@@ -654,7 +656,7 @@ async def test_discover_lan_windows_uses_win_sweep(monkeypatch):
     assert h.rtt_ms == pytest.approx(2.0)
 
 
-# --- dataclass defaultlari --------------------------------------------------
+# --- dataclass defaults -----------------------------------------------------
 
 
 def test_hop_defaults():
@@ -672,11 +674,11 @@ def test_lanhost_defaults():
     assert h.vendor is None
 
 
-# --- HopStat: update() / loss_pct matematikasi ------------------------------
+# --- HopStat: the update() / loss_pct arithmetic ----------------------------
 
 
 def test_hopstat_loss_pct_no_probes():
-    # Hech narsa yuborilmagan -> 0% (0/0 division'siz).
+    # Nothing was sent -> 0% (with no 0/0 division).
     assert HopStat(index=1).loss_pct == 0.0
 
 
@@ -698,13 +700,13 @@ def test_hopstat_update_alive_accumulates_stats():
 def test_hopstat_update_counts_loss():
     s = HopStat(index=2)
     s.update("10.0.0.2", alive=True, rtt=5.0)
-    s.update(None, alive=False, rtt=0.0)  # javobsiz probe
+    s.update(None, alive=False, rtt=0.0)  # an unanswered probe
     s.update("10.0.0.2", alive=True, rtt=7.0)
     s.update(None, alive=False, rtt=0.0)
     assert s.sent == 4
     assert s.recv == 2
     assert s.loss_pct == pytest.approx(50.0)
-    # Javobsiz probe'lar rtt statistikasiga ta'sir qilmaydi.
+    # Unanswered probes have no effect on the rtt statistics.
     assert s.best_rtt == 5.0
     assert s.worst_rtt == 7.0
     assert s.avg_rtt == pytest.approx(6.0)
@@ -721,33 +723,33 @@ def test_hopstat_update_dead_probe_only_increments_sent():
 
 
 def test_hopstat_update_zero_rtt_treated_as_no_response():
-    """alive=True bo'lsa ham rtt<=0 -> javob hisoblanmaydi (timeout probe)."""
+    """Even with alive=True, rtt<=0 -> it does not count as an answer (a timeout probe)."""
     s = HopStat(index=1)
     s.update("10.0.0.1", alive=True, rtt=0.0)
     assert s.sent == 1
     assert s.recv == 0
-    assert s.address == "10.0.0.1"  # manzil baribir yoziladi
+    assert s.address == "10.0.0.1"  # the address is recorded anyway
 
 
 def test_hopstat_update_sets_address_once():
     s = HopStat(index=1)
     s.update("10.0.0.1", alive=True, rtt=5.0)
-    s.update("10.0.0.99", alive=True, rtt=6.0)  # boshqa manzil — e'tiborsiz
+    s.update("10.0.0.99", alive=True, rtt=6.0)  # a different address — ignored
     assert s.address == "10.0.0.1"
 
 
 def test_hopstat_best_rtt_initial_from_zero():
-    """best_rtt boshlang'ich 0.0 — birinchi haqiqiy rtt uni o'rnatishi kerak."""
+    """best_rtt starts at 0.0 — the first real rtt has to set it."""
     s = HopStat(index=1)
     s.update("10.0.0.1", alive=True, rtt=15.0)
-    assert s.best_rtt == 15.0  # 0.0 emas
+    assert s.best_rtt == 15.0  # not 0.0
 
 
-# --- trace_stream: mock _sync_traceroute, cheklangan sikllar ----------------
+# --- trace_stream: a mocked _sync_traceroute, a bounded number of cycles ----
 
 
 async def test_trace_stream_two_cycles_accumulates(monkeypatch):
-    """Ikki sikl -> sent=2, recv=2 har hop uchun; ro'yxat index bo'yicha tartibli."""
+    """Two cycles -> sent=2, recv=2 for every hop; the list is ordered by index."""
     raw = [
         FakeRawHop(distance=1, address="192.168.1.1", avg_rtt=1.0, is_alive=True),
         FakeRawHop(distance=2, address="8.8.8.8", avg_rtt=10.0, is_alive=True),
@@ -764,14 +766,14 @@ async def test_trace_stream_two_cycles_accumulates(monkeypatch):
         snapshots.append([(s.index, s.sent, s.recv, s.hostname) for s in stats])
 
     assert len(snapshots) == 2
-    # Birinchi sikldan keyin har hop 1 marta probe qilingan.
+    # After the first cycle every hop has been probed once.
     assert snapshots[0] == [(1, 1, 1, "host-192.168.1.1"), (2, 1, 1, "host-8.8.8.8")]
-    # Ikkinchi sikldan keyin jamlanma 2 ga yetadi (statistika to'planadi).
+    # After the second cycle the totals reach 2 (the statistics accumulate).
     assert snapshots[1] == [(1, 2, 2, "host-192.168.1.1"), (2, 2, 2, "host-8.8.8.8")]
 
 
 async def test_trace_stream_resolve_once_per_address(monkeypatch):
-    """Reverse DNS faqat birinchi marta ko'rilgan manzil uchun chaqiriladi."""
+    """Reverse DNS is only called for an address the first time it is seen."""
     raw = [FakeRawHop(distance=1, address="192.168.1.1", avg_rtt=1.0, is_alive=True)]
     monkeypatch.setattr(topology, "_sync_traceroute", lambda address, **k: raw)
 
@@ -785,7 +787,7 @@ async def test_trace_stream_resolve_once_per_address(monkeypatch):
 
     async for _ in trace_stream("192.168.1.1", cycles=3, interval=0.0, resolve=True):
         pass
-    # 3 sikl bo'lsa ham manzil o'zgarmagani uchun reverse DNS bir marta.
+    # Even with 3 cycles the address never changed, so reverse DNS runs once.
     assert dns_calls["n"] == 1
 
 
@@ -807,11 +809,11 @@ async def test_trace_stream_no_resolve_skips_dns(monkeypatch):
 
 
 async def test_trace_stream_probe_error_yields_empty(monkeypatch):
-    """Ikkala probe yo'li ham xato bersa -> bo'sh ro'yxat, oqim uzilmaydi.
+    """When both probe paths error -> an empty list, and the stream is not broken.
 
-    0.5.1 dan beri `icmplib` ruxsat bermasa tizim `traceroute` binariga
-    o'tiladi, shuning uchun test ikkinchi yo'lni HAM mock qilishi shart —
-    aks holda offline test haqiqiy tarmoqqa chiqib ketadi.
+    Since 0.5.1, if `icmplib` is refused permission we fall back to the system
+    `traceroute` binary, so the test MUST mock the second path as well —
+    otherwise an offline test would reach out to the real network.
     """
     from icmplib.exceptions import ICMPLibError
 
@@ -827,13 +829,13 @@ async def test_trace_stream_probe_error_yields_empty(monkeypatch):
     snapshots = []
     async for stats in trace_stream("8.8.8.8", cycles=2, interval=0.0, resolve=False):
         snapshots.append(stats)
-    # Ikki sikl ham ishladi, har biri bo'sh (hop topilmadi).
+    # Both cycles ran, each of them empty (no hop was found).
     assert len(snapshots) == 2
     assert snapshots == [[], []]
 
 
 async def test_trace_stream_tracks_loss_across_cycles(monkeypatch):
-    """Bir sikl javob beradi, ikkinchisi yo'q -> loss_pct hisoblanadi."""
+    """One cycle answers and the other does not -> loss_pct is computed."""
     seq = [
         [FakeRawHop(distance=1, address="10.0.0.1", avg_rtt=5.0, is_alive=True)],
         [FakeRawHop(distance=1, address="10.0.0.1", avg_rtt=0.0, is_alive=False)],
@@ -858,7 +860,7 @@ async def test_trace_stream_tracks_loss_across_cycles(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# IPv6 qo'shni (NDP) jadvali — 0.4.0 da qo'shilgan
+# The IPv6 neighbour (NDP) table — added in 0.4.0
 # --------------------------------------------------------------------------- #
 
 from systop.core.topology import ALL_NODES_MULTICAST, parse_ndp_output  # noqa: E402
@@ -889,13 +891,13 @@ def test_parse_ndp_macos():
 
 
 def test_parse_ndp_macos_zero_pads_short_octets():
-    """macOS qisqa oktet beradi ("0:1c:42:3:4:5") — normallashtirilishi kerak."""
+    """macOS gives short octets ("0:1c:42:3:4:5") — they have to be normalised."""
     t = parse_ndp_output(_MACOS_NDP)
     assert t["fe80::c0a:1234%en0"] == "00:1c:42:03:04:05"
 
 
 def test_parse_ndp_preserves_zone():
-    """Zona (%en0) saqlanishi SHART — link-local manzil zonasiz ishlatilmaydi."""
+    """The zone (%en0) MUST be preserved — a link-local address is unusable without it."""
     assert any("%en0" in ip for ip in parse_ndp_output(_MACOS_NDP))
 
 
@@ -905,7 +907,7 @@ def test_parse_ndp_linux():
 
 
 def test_parse_ndp_linux_skips_incomplete():
-    """MAC'siz (INCOMPLETE) yozuv tashlanadi."""
+    """An entry with no MAC (INCOMPLETE) is dropped."""
     assert "fe80::dead" not in parse_ndp_output(_LINUX_NEIGH)
 
 
@@ -925,7 +927,7 @@ def test_parse_ndp_empty_input():
 
 
 def test_parse_ndp_ignores_ipv4_lines():
-    """IPv4 ARP qatorlari IPv6 parserga tushmasligi kerak."""
+    """IPv4 ARP lines must not get through to the IPv6 parser."""
     assert parse_ndp_output("192.168.1.1 dev eth0 lladdr aa:bb:cc:dd:ee:ff REACHABLE") == {}
 
 
@@ -946,7 +948,7 @@ def test_lan_host_defaults_to_ipv4():
 
 
 # --------------------------------------------------------------------------- #
-# ARP parsing regressiyasi (0.4.0) — MAC/vendor bo'sh chiqishi bugi
+# An ARP parsing regression (0.4.0) — the bug where MAC/vendor came out empty
 # --------------------------------------------------------------------------- #
 
 from systop.core.oui import lookup_vendor  # noqa: E402
@@ -954,7 +956,7 @@ from systop.core.topology import _normalize_mac  # noqa: E402
 
 
 def test_normalize_mac_zero_pads_macos_short_octets():
-    """macOS `arp` qisqa oktet beradi — to'ldirilmasa OUI hech qachon topilmaydi."""
+    """macOS `arp` gives short octets — without padding the OUI is never found."""
     assert _normalize_mac("0:15:5d:27:40:3") == "00:15:5d:27:40:03"
     assert _normalize_mac("c0:6:c3:2:63:55") == "c0:06:c3:02:63:55"
 
@@ -968,18 +970,18 @@ def test_normalize_mac_leaves_full_form_unchanged():
 
 
 def test_short_mac_resolves_vendor_after_normalization():
-    """Bug: qisqa MAC vendor topilmasdi. Normalizatsiyadan keyin topilishi kerak."""
+    """The bug: a short MAC found no vendor. After normalisation it has to be found."""
     assert lookup_vendor(_normalize_mac("c0:6:c3:2:63:55")) == "TP-Link"
 
 
 def test_arp_regex_skips_incomplete_entries():
-    """`(incomplete)` yozuvda MAC yo'q — mos kelmasligi kerak."""
+    """An `(incomplete)` entry has no MAC — it must not match."""
     line = "? (192.168.10.3) at (incomplete) on en0 ifscope [ethernet]"
     assert _ARP_RE.search(line) is None
 
 
 def test_arp_regex_matches_macos_numeric_output():
-    """`arp -an` chiqishi (kod shu buyruqni ishlatadi — `arp -a` sekin)."""
+    """`arp -an` output (the code uses that command — `arp -a` is slow)."""
     line = "? (192.168.10.2) at c0:6:c3:2:63:55 on en0 ifscope [ethernet]"
     m = _ARP_RE.search(line)
     assert m is not None
@@ -994,7 +996,7 @@ def test_arp_regex_matches_named_host_line():
 
 
 def test_hyperv_oui_detected():
-    """Hyper-V VM prefiksi — infratuzilmada eng ko'p uchraydigani."""
+    """The Hyper-V VM prefix — the one seen most often in infrastructure."""
     assert "Hyper-V" in lookup_vendor("00:15:5d:38:01:02")
 
 
@@ -1008,7 +1010,7 @@ def test_virtual_nic_ouis_present():
 
 
 # --------------------------------------------------------------------------- #
-# POSIX traceroute zaxira yo'li (0.5.1) — icmplib macOS'da raw socket talab qiladi
+# The POSIX traceroute fallback (0.5.1) — on macOS icmplib demands a raw socket
 # --------------------------------------------------------------------------- #
 
 from systop.core.topology import parse_posix_traceroute  # noqa: E402
@@ -1039,7 +1041,7 @@ def test_parse_posix_traceroute_marks_unanswered_hop():
 
 
 def test_parse_posix_traceroute_linux_multiple_probes():
-    """Linux har hop uchun 3 probe chiqaradi — birinchisi olinadi."""
+    """Linux prints 3 probes per hop — the first one is taken."""
     hops = parse_posix_traceroute(_LINUX_TR)
     assert hops[0] == (1, "10.0.0.1", 1.234, True)
     assert hops[1] == (2, None, 0.0, False)
@@ -1058,4 +1060,4 @@ def test_parse_posix_traceroute_ipv6_address():
 
 def test_parse_posix_traceroute_empty_and_garbage():
     assert parse_posix_traceroute("") == []
-    assert parse_posix_traceroute("hech qanday hop yo'q\n") == []
+    assert parse_posix_traceroute("no hops at all here\n") == []

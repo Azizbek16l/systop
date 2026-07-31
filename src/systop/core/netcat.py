@@ -1,16 +1,17 @@
-"""ncat/netcat uslubidagi xom TCP/TLS mijoz — qo'lda xizmat tekshirish uchun.
+"""An ncat/netcat-style raw TCP/TLS client — for checking a service by hand.
 
-Nima uchun: `scan` "port ochiq" deydi, `web` HTTP tekshiradi. Lekin ba'zan
-portga **xom ulanib**, o'zingiz nima yuborishni va nima kelishini ko'rish kerak
-bo'ladi — SMTP salomlashishi, Redis `PING`, xom HTTP so'rovi, TLS handshake.
-`nc` shu ishni qiladi.
+Why: `scan` says "the port is open" and `web` checks HTTP. But sometimes you
+need to connect to a port **raw** and see for yourself what you send and what
+comes back — an SMTP greeting, a Redis `PING`, a raw HTTP request, a TLS
+handshake. `nc` does that job.
 
-nmap/ncat'dan farqi (halol chegara): bu **mijoz**, server rejimi (`-l` listen)
-yo'q va root talab qiladigan xom paket funksiyalari yo'q. Faqat TCP connect +
-ixtiyoriy TLS.
+How it differs from nmap/ncat (the honest boundary): this is a **client**; there
+is no server mode (`-l` listen) and no raw-packet feature that would need root.
+TCP connect plus optional TLS, and nothing else.
 
-IPv6 to'liq qo'llab-quvvatlanadi: `family` bilan majburan tanlash mumkin, xom
-IPv6 manzil qavssiz beriladi (`asyncio.open_connection` shunday kutadi).
+IPv6 is fully supported: the family can be forced with `family`, and a raw IPv6
+address is given without brackets (that is what `asyncio.open_connection`
+expects).
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from dataclasses import dataclass
 
 from systop.core.ports import FAMILY_AUTO, _resolve
 
-# `\r\n`, `\t`, `\x41`, `\\` kabi ketma-ketliklar.
+# Sequences such as `\r\n`, `\t`, `\x41`, `\\`.
 _ESCAPE_RE = re.compile(r"\\(r|n|t|0|\\|x[0-9a-fA-F]{2})")
 
 _ESCAPES: dict[str, bytes] = {
@@ -37,13 +38,14 @@ _ESCAPES: dict[str, bytes] = {
 
 
 def unescape(text: str) -> bytes:
-    """Matndagi `\\r\\n` kabi ketma-ketliklarni haqiqiy baytlarga aylantiradi.
+    """Turns sequences such as `\\r\\n` in the text into the real bytes.
 
-    SOF funksiya (offline sinaladi). Kerak, chunki shellda `--send "GET /
-    HTTP/1.0\\r\\n\\r\\n"` yozganda `\\r\\n` **matn** sifatida keladi, xizmat esa
-    haqiqiy CRLF kutadi — aks holda HTTP so'rovi hech qachon yakunlanmaydi.
+    A pure function (tested offline). It is needed because when you type
+    `--send "GET / HTTP/1.0\\r\\n\\r\\n"` in a shell, the `\\r\\n` arrives as
+    **text**, whereas the service expects a real CRLF — otherwise the HTTP
+    request is never terminated.
 
-    Tanilmagan ketma-ketlik (`\\q`) o'z holida qoldiriladi.
+    An unrecognised sequence (`\\q`) is left as it is.
     """
     out = bytearray()
     pos = 0
@@ -60,7 +62,7 @@ def unescape(text: str) -> bytes:
 
 
 def to_hexdump(data: bytes, width: int = 16) -> str:
-    """Baytlarni `hexdump -C` uslubida ko'rsatadi (ikkilik javob uchun)."""
+    """Shows the bytes in `hexdump -C` style (for a binary answer)."""
     lines: list[str] = []
     for off in range(0, len(data), width):
         chunk = data[off : off + width]
@@ -72,7 +74,7 @@ def to_hexdump(data: bytes, width: int = 16) -> str:
 
 @dataclass(slots=True)
 class NcResult:
-    """Bitta `nc` ulanishi natijasi."""
+    """The result of a single `nc` connection."""
 
     host: str
     port: int
@@ -82,11 +84,11 @@ class NcResult:
     tls: bool = False
     tls_version: str | None = None
     tls_cipher: str | None = None
-    # Sertifikat SHA-256 fingerprint'i. `subject` EMAS: bu yerda tekshiruv
-    # o'chirilgan (`CERT_NONE`) va o'shanda `getpeercert()` bo'sh lug'at
-    # qaytaradi — subject'ni ko'rsatib bo'lmaydi. Fingerprint esa DER'dan
-    # to'g'ridan-to'g'ri hisoblanadi va qurilmani aniqlash uchun yetarli.
-    # To'liq sertifikat tahlili uchun: `systop tls HOST`.
+    # The certificate's SHA-256 fingerprint. NOT the `subject`: verification is
+    # switched off here (`CERT_NONE`) and in that case `getpeercert()` returns an
+    # empty dict — the subject cannot be shown. The fingerprint, on the other
+    # hand, is computed straight from the DER and is enough to identify a device.
+    # For a full certificate analysis: `systop tls HOST`.
     peer_cert_sha256: str | None = None
     sent_bytes: int = 0
     received: bytes = b""
@@ -95,7 +97,7 @@ class NcResult:
 
     @property
     def received_text(self) -> str:
-        """Javobni matn sifatida (dekodlanmasa `?` bilan)."""
+        """The answer as text (undecodable bytes become `?`)."""
         return self.received.decode("utf-8", errors="replace")
 
     @property
@@ -104,7 +106,7 @@ class NcResult:
 
     @property
     def is_binary(self) -> bool:
-        """Javob ikkilikmi (chop etilmaydigan bayt ulushi yuqorimi)?"""
+        """Is the answer binary (is the share of non-printable bytes high)?"""
         if not self.received:
             return False
         printable = sum(1 for b in self.received if 32 <= b < 127 or b in (9, 10, 13))
@@ -112,12 +114,12 @@ class NcResult:
 
 
 def _tls_context() -> ssl.SSLContext:
-    """LAN qurilmalari uchun TLS konteksti — sertifikat TEKSHIRILMAYDI.
+    """The TLS context for LAN devices — the certificate is NOT VERIFIED.
 
-    Sabab: router/NVR/kamera panellarida deyarli har doim self-signed
-    sertifikat bo'ladi va bu tool'ning maqsadi inventarizatsiya/diagnostika,
-    ishonch zanjirini tasdiqlash emas. Sertifikat sifatini tekshirish uchun
-    alohida `systop tls` buyrug'i bor.
+    The reason: router/NVR/camera panels almost always carry a self-signed
+    certificate, and the purpose of this tool is inventory/diagnostics, not
+    validating a chain of trust. There is a separate `systop tls` command for
+    checking certificate quality.
     """
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
@@ -135,19 +137,19 @@ async def connect(
     read_bytes: int = 8192,
     wait_read: float | None = None,
 ) -> NcResult:
-    """Portga xom TCP (yoki TLS) ulanadi, ixtiyoriy payload yuboradi, javob o'qiydi.
+    """Connects raw TCP (or TLS) to a port, optionally sends a payload, reads the answer.
 
-    Istisno ko'tarmaydi — xato `error` maydonida qaytadi.
+    It never raises — the error comes back in the `error` field.
 
-    `wait_read` — javobni qancha kutish (None bo'lsa `timeout` ishlatiladi).
-    Salomlashmaydigan xizmatda (masalan `send=None` bilan HTTP) javob kelmasa
-    bu vaqt bekorga ketadi, shuning uchun qisqaroq qiymat berish mumkin.
+    `wait_read` — how long to wait for the answer (when None, `timeout` is used).
+    With a service that does not greet (HTTP with `send=None`, say) no answer
+    arrives and that time is spent for nothing, so a shorter value can be given.
     """
     result = NcResult(host=host, port=port, tls=tls)
     resolved, fam = await _resolve(host, family)
     if resolved is None:
-        result.error = f"'{host}' resolve bo'lmadi" + (
-            " (IPv6 manzil yo'q?)" if family == "ipv6" else ""
+        result.error = f"'{host}' did not resolve" + (
+            " (no IPv6 address?)" if family == "ipv6" else ""
         )
         return result
     result.resolved_ip = resolved
@@ -157,7 +159,8 @@ async def connect(
     writer = None
     try:
         ctx = _tls_context() if tls else None
-        # server_hostname faqat TLS uchun va IP bo'lmagan nomda ma'noli.
+        # server_hostname only applies to TLS, and only means anything for a
+        # name that is not an IP.
         kwargs: dict[str, object] = {}
         if ctx is not None:
             kwargs["ssl"] = ctx
@@ -176,7 +179,7 @@ async def connect(
                 der = sslobj.getpeercert(binary_form=True)
                 if der:
                     digest = hashlib.sha256(der).hexdigest()
-                    # Ikki-ikki guruhlab o'qishli qilamiz (openssl uslubi).
+                    # Group it in pairs to make it readable (the openssl style).
                     result.peer_cert_sha256 = ":".join(
                         digest[i : i + 2] for i in range(0, len(digest), 2)
                     ).upper()
@@ -191,18 +194,19 @@ async def connect(
                 reader.read(read_bytes), timeout=wait_read if wait_read else timeout
             )
         except TimeoutError:
-            # Ulanish bo'ldi, lekin javob kelmadi — bu xato EMAS (ko'p xizmat
-            # so'rovsiz jim turadi). `connected=True` qoladi.
+            # The connection succeeded but no answer arrived — this is NOT an
+            # error (many services stay silent until asked). `connected=True`
+            # stands.
             pass
 
     except TimeoutError:
-        result.error = f"ulanish timeout ({timeout:.1f}s)"
+        result.error = f"connection timed out ({timeout:.1f}s)"
     except ssl.SSLError as exc:
-        result.error = f"TLS xatosi: {exc.reason or exc}"
+        result.error = f"TLS error: {exc.reason or exc}"
     except ConnectionRefusedError:
-        result.error = "ulanish rad etildi (port yopiq)"
+        result.error = "connection refused (the port is closed)"
     except OSError as exc:
-        result.error = f"ulanish xatosi: {exc.strerror or exc}"
+        result.error = f"connection error: {exc.strerror or exc}"
     finally:
         result.elapsed_ms = (time.perf_counter() - start) * 1000.0
         if writer is not None:

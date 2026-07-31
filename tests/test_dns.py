@@ -1,9 +1,9 @@
-"""dns testlari — OFFLINE.
+"""dns tests — OFFLINE.
 
-``_parse_dig`` / ``_parse_nslookup`` regexlari real-dunyo chiqishlari bilan,
-``_pick_tool`` ``shutil.which`` monkeypatch bilan, ``diagnose_dns`` esa
-``_system_resolve`` va ``_query_resolver`` mock qilinib sinaladi. Hech qanday
-DNS so'rovi yoki subprocess ishlamaydi.
+The ``_parse_dig`` / ``_parse_nslookup`` regexes are exercised against
+real-world output, ``_pick_tool`` with a ``shutil.which`` monkeypatch, and
+``diagnose_dns`` with ``_system_resolve`` and ``_query_resolver`` mocked out. No
+DNS query and no subprocess ever runs.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from systop.core.dns import (
     diagnose_dns,
 )
 
-# --- _parse_dig: `dig +nocomments` chiqishi ---------------------------------
+# --- _parse_dig: `dig +nocomments` output -----------------------------------
 
 
 def test_parse_dig_a_records():
@@ -39,7 +39,7 @@ def test_parse_dig_ignores_cname_and_question():
         "www.example.com.\t300\tIN\tCNAME\texample.com.\n"
         "example.com.\t236\tIN\tA\t93.184.216.34\n"
     )
-    # Faqat A/AAAA javoblari olinadi (CNAME e'tiborsiz).
+    # Only the A/AAAA answers are taken (CNAME is ignored).
     assert _parse_dig(out) == ["93.184.216.34"]
 
 
@@ -48,7 +48,7 @@ def test_parse_dig_empty():
     assert _parse_dig(";; no answers here\n") == []
 
 
-# --- _parse_nslookup: birinchi Address: serverning o'zi ---------------------
+# --- _parse_nslookup: the first Address: is the server itself ---------------
 
 
 def test_parse_nslookup_skips_server_address():
@@ -60,7 +60,7 @@ def test_parse_nslookup_skips_server_address():
         "Name:\texample.com\n"
         "Address: 93.184.216.34\n"
     )
-    # Birinchi "Address:" — server (8.8.8.8), keyingisi — javob.
+    # The first "Address:" is the server (8.8.8.8), the next one is the answer.
     assert _parse_nslookup(out) == ["93.184.216.34"]
 
 
@@ -72,7 +72,7 @@ def test_parse_nslookup_multiple_answers():
 
 
 def test_parse_nslookup_only_server_no_answer():
-    # Faqat server manzili bor (javob yo'q) -> bo'sh.
+    # Only the server address is present (no answer) -> empty.
     out = "Server:\t1.1.1.1\nAddress:\t1.1.1.1#53\n"
     assert _parse_nslookup(out) == []
 
@@ -101,11 +101,11 @@ def test_pick_tool_none_when_neither(monkeypatch):
     assert _pick_tool() is None
 
 
-# --- diagnose_dns: tizim resolve + serverlar (mock) -------------------------
+# --- diagnose_dns: system resolution + servers (mocked) ---------------------
 
 
 async def test_diagnose_dns_no_tool_only_system(monkeypatch):
-    """`dig`/`nslookup` yo'q -> faqat tizim resolve, resolverlar bo'sh."""
+    """No `dig`/`nslookup` -> only the system resolution, the resolvers are empty."""
 
     async def fake_system(name):
         return ["93.184.216.34"], None
@@ -122,7 +122,7 @@ async def test_diagnose_dns_no_tool_only_system(monkeypatch):
 
 
 async def test_diagnose_dns_queries_each_resolver(monkeypatch):
-    """Tool mavjud bo'lsa, har bir resolver uchun so'rov yuborilsin."""
+    """When a tool is available, a query must be sent to every resolver."""
 
     async def fake_system(name):
         return ["1.2.3.4"], None
@@ -139,8 +139,8 @@ async def test_diagnose_dns_queries_each_resolver(monkeypatch):
 
     monkeypatch.setattr(dns, "_query_resolver", fake_query)
 
-    # include_system=False — aks holda test mashinaning haqiqiy resolverini
-    # so'rab, offline bo'lmay qoladi.
+    # include_system=False — otherwise the test would ask the machine for its
+    # real resolvers and would no longer be offline.
     resolvers = {"A": "10.0.0.1", "B": "10.0.0.2"}
     result = await diagnose_dns("example.com", resolvers=resolvers, include_system=False)
     assert result.tool == "dig"
@@ -150,7 +150,7 @@ async def test_diagnose_dns_queries_each_resolver(monkeypatch):
 
 
 async def test_diagnose_dns_default_resolvers(monkeypatch):
-    """resolvers=None -> PUBLIC_RESOLVERS ishlatiladi."""
+    """resolvers=None -> PUBLIC_RESOLVERS is used."""
 
     async def fake_system(name):
         return [], None
@@ -171,7 +171,7 @@ async def test_diagnose_dns_default_resolvers(monkeypatch):
 
 async def test_diagnose_dns_propagates_system_error(monkeypatch):
     async def fake_system(name):
-        return [], "'nx.invalid' nomi resolve bo'lmadi (NXDOMAIN yoki DNS yo'q)."
+        return [], "The name 'nx.invalid' did not resolve (NXDOMAIN, or no DNS)."
 
     monkeypatch.setattr(dns, "_system_resolve", fake_system)
     monkeypatch.setattr(dns, "_pick_tool", lambda: None)
@@ -179,10 +179,10 @@ async def test_diagnose_dns_propagates_system_error(monkeypatch):
     result = await diagnose_dns("nx.invalid")
     assert result.system_addresses == []
     assert result.system_error is not None
-    assert "resolve bo'lmadi" in result.system_error
+    assert "did not resolve" in result.system_error
 
 
-# --- dataclass defaultlari --------------------------------------------------
+# --- dataclass defaults -----------------------------------------------------
 
 
 def test_resolver_result_defaults():
@@ -201,11 +201,11 @@ def test_dns_result_defaults():
     assert r.tool is None
 
 
-# --- _query_resolver: Windows OEM codepage (cp866) dekodlash ----------------
+# --- _query_resolver: decoding the Windows OEM codepage (cp866) -------------
 
 
 class _FakeProc:
-    """`asyncio.create_subprocess_exec` natijasining minimal o'rni (bytes stdout)."""
+    """A minimal stand-in for the `asyncio.create_subprocess_exec` result (bytes stdout)."""
 
     def __init__(self, stdout: bytes) -> None:
         self._stdout = stdout
@@ -215,17 +215,18 @@ class _FakeProc:
 
 
 async def test_query_resolver_decodes_oem_codepage(monkeypatch):
-    """RUS nslookup chiqishi cp866 baytlardan to'g'ri dekodlanib parse qilinadi.
+    """RUSSIAN nslookup output is decoded from cp866 bytes and parsed correctly.
 
-    Tasdiqlash: subprocess stdout BAYT sifatida olinadi va `_platform.
-    decode_console` orqali OEM codepage (cp866) bilan dekodlanadi — UTF-8 emas.
+    What this asserts: the subprocess stdout is taken as BYTES and decoded with
+    `_platform.decode_console` using the OEM codepage (cp866) — not as UTF-8.
     """
-    # Windows + cp866 konsol simulyatsiyasi.
+    # Simulating Windows + a cp866 console.
     monkeypatch.setattr(dns._platform, "IS_WINDOWS", True)
     monkeypatch.setattr(dns._platform, "_console_output_cp", lambda: 866)
 
-    # nslookup natijasi: server + javob manzili (ascii IP'lar), lekin atrofda
-    # kirill matn (cp866) — UTF-8 dekodlash mojibake qilardi.
+    # The nslookup result: the server plus the answer address (ascii IPs), but
+    # with Cyrillic text (cp866) around them — decoding as UTF-8 would produce
+    # mojibake.
     ns_out = (
         "Сервер:  dns.google\nAddress:  8.8.8.8\n\nИмя:     example.com\nAddress: 93.184.216.34\n"
     )
@@ -242,15 +243,15 @@ async def test_query_resolver_decodes_oem_codepage(monkeypatch):
 
     result = await dns._query_resolver("example.com", "8.8.8.8", "nslookup", timeout=2.0)
     assert result.ok is True
-    # Birinchi Address (server) tashlanadi, ikkinchisi javob.
+    # The first Address (the server) is dropped, the second one is the answer.
     assert result.addresses == ["93.184.216.34"]
-    # CREATE_NO_WINDOW (yoki 0) uzatilgan bo'lishi kerak (oyna miltillamasin).
+    # CREATE_NO_WINDOW (or 0) must have been passed (no window should flash up).
     assert captured["creationflags"] == dns._platform.subprocess_flags()
 
 
 # --------------------------------------------------------------------------- #
-# AAAA (IPv6) — 0.5.0. `getaddrinfo` global IPv6 yo'q bo'lsa AAAA'ni yashiradi,
-# shuning uchun haqiqiy AAAA dig/nslookup orqali olinadi.
+# AAAA (IPv6) — 0.5.0. `getaddrinfo` hides the AAAA when there is no global
+# IPv6, so the real AAAA is fetched via dig/nslookup.
 # --------------------------------------------------------------------------- #
 
 
@@ -268,7 +269,7 @@ def test_dns_result_stores_aaaa():
 
 
 def test_dig_regex_matches_aaaa_record():
-    """Mavjud dig regexi AAAA'ni ham tutishi kerak."""
+    """The existing dig regex has to catch AAAA as well."""
     from systop.core.dns import _parse_dig
 
     out = "cloudflare.com.\t300\tIN\tAAAA\t2606:4700::6810:84e5\n"
@@ -286,7 +287,8 @@ def test_dig_regex_matches_both_a_and_aaaa():
 
 
 # --------------------------------------------------------------------------- #
-# Tizim resolverlarini aniqlash — uchala OS (SOF parserlar, offline)
+# Detecting the system resolvers — all three operating systems
+# (pure parsers, offline)
 # --------------------------------------------------------------------------- #
 
 from systop.core.dns import (  # noqa: E402
@@ -299,7 +301,7 @@ RESOLV_CONF = """# Generated by NetworkManager
 search example.local
 nameserver 192.168.1.1
 nameserver 8.8.8.8
-# nameserver 1.1.1.1  (izohga olingan — hisobga olinmasin)
+# nameserver 1.1.1.1  (commented out — must not be counted)
 options edns0
 """
 
@@ -340,58 +342,58 @@ Ethernet adapter Ethernet:
 """
 
 
-def test_resolv_conf_izohlarni_tashlaydi():
+def test_resolv_conf_drops_comments():
     assert parse_resolv_conf(RESOLV_CONF) == ["192.168.1.1", "8.8.8.8"]
 
 
-def test_resolv_conf_bosh_fayl():
+def test_resolv_conf_empty_file():
     assert parse_resolv_conf("") == []
-    assert parse_resolv_conf("# faqat izoh\nsearch local\n") == []
+    assert parse_resolv_conf("# comment only\nsearch local\n") == []
 
 
-def test_scutil_takrorlarni_yigadi_tartib_saqlanadi():
-    """`scutil --dns` ro'yxatni IKKI marta beradi (scoped bo'limi) — takror emas.
+def test_scutil_dedupes_and_preserves_order():
+    """`scutil --dns` prints the list TWICE (the scoped section) — not a duplicate.
 
-    Birinchi resolver asosiysi, shuning uchun tartib muhim.
+    The first resolver is the primary one, so the order matters.
     """
     assert parse_scutil_dns(SCUTIL_DNS) == ["192.168.10.1", "192.168.10.2"]
 
 
-def test_scutil_mdns_blokidan_nameserver_olinmaydi():
-    """`domain: local` + `options: mdns` blokida nameserver yo'q — qo'shilmasin."""
+def test_scutil_takes_no_nameserver_from_mdns_block():
+    """The `domain: local` + `options: mdns` block has no nameserver — do not add one."""
     assert "local" not in parse_scutil_dns(SCUTIL_DNS)
 
 
-def test_ipconfig_yorliqsiz_davomiy_qatorlarni_oladi():
-    """Windows ikkinchi va uchinchi serverni YORLIQSIZ qatorda beradi.
+def test_ipconfig_takes_unlabelled_continuation_lines():
+    """Windows prints the second and third server on UNLABELLED lines.
 
-    Faqat `DNS Servers` qatorini o'qigan parser 3 tadan 2 tasini yo'qotadi.
+    A parser that only reads the `DNS Servers` line loses 2 of the 3.
     """
     got = parse_ipconfig_all_dns(IPCONFIG_ALL)
     assert got == ["192.168.1.1", "8.8.8.8", "fe80::1"]
 
 
-def test_ipconfig_royxat_keyingi_yorliqda_tugaydi():
-    """`NetBIOS over Tcpip` qatori ro'yxatga qo'shilib ketmasligi kerak."""
+def test_ipconfig_list_ends_at_the_next_label():
+    """The `NetBIOS over Tcpip` line must not get swept into the list."""
     got = parse_ipconfig_all_dns(IPCONFIG_ALL)
     assert all(not g.startswith("Enabled") for g in got)
     assert len(got) == 3
 
 
-def test_parserlar_ip_bolmagan_qiymatni_rad_etadi():
-    """Har uchala parser oxirida bir xil IP tekshiruvidan o'tadi."""
+def test_parsers_reject_non_ip_values():
+    """All three parsers end with the same IP check."""
     assert parse_resolv_conf("nameserver not-an-ip\n") == []
     assert parse_scutil_dns("  nameserver[0] : hostname.local\n") == []
 
 
 # --------------------------------------------------------------------------- #
-# Windows ipconfig — TILGA BOG'LIQ EMAS
+# Windows ipconfig — INDEPENDENT OF THE LANGUAGE
 # --------------------------------------------------------------------------- #
 
-# Bu bug ruscha Windows 10 serverida topildi: `systop doctor`
-# "Barcha DNS serverlar javob bermayapti" degan soxta HIGH bergan edi, chunki
-# `DNS Servers` yorlig'i topilmagan. v0.3.2 da ping'da AYNAN shu sabab RUS
-# Windows'da hamma nishonni "o'lik" ko'rsatgandi — bir xil xato ikkinchi marta.
+# This bug was found on a Russian Windows 10 server: `systop doctor` reported a
+# false HIGH, "No DNS server is responding", because the `DNS Servers` label was
+# never found. In v0.3.2 EXACTLY the same cause made ping show every target as
+# "dead" on a RUSSIAN Windows — the same mistake for the second time.
 
 IPCONFIG_RU = """
 Настройка протокола IP для Windows
@@ -412,31 +414,32 @@ IPCONFIG_DE = """   DNS-Suffixsuchliste . . . . . . . : example.local
 """
 
 
-def test_ruscha_windows_dns_topiladi():
-    """`DNS-серверы` — inglizcha yorliqni izlagan regex buni ko'rmaydi."""
+def test_russian_windows_dns_is_found():
+    """`DNS-серверы` — a regex looking for the English label never sees this."""
     assert parse_ipconfig_all_dns(IPCONFIG_RU) == ["192.168.10.1", "8.8.8.8"]
 
 
-def test_nemischa_windows_dns_topiladi():
+def test_german_windows_dns_is_found():
     assert parse_ipconfig_all_dns(IPCONFIG_DE) == ["192.168.1.1", "1.1.1.1"]
 
 
-def test_dns_suffiks_qatori_royxatni_boshlamaydi():
-    """`DNS-суффикс` yorlig'ida ham `DNS` bor, lekin qiymati IP emas.
+def test_dns_suffix_line_does_not_start_the_list():
+    """The `DNS-суффикс` label also contains `DNS`, but its value is not an IP.
 
-    Uni ro'yxat boshi deb olsak, keyingi `Основной шлюз` (gateway) DNS deb
-    yig'ilib ketardi — ya'ni gateway'ni resolver deb ko'rsatardik.
+    If we treated it as the start of the list, the following `Основной шлюз`
+    (the gateway) would be collected as DNS — that is, we would present the
+    gateway as a resolver.
     """
     got = parse_ipconfig_all_dns(IPCONFIG_RU)
     assert "corp.local" not in got
-    # 192.168.10.1 bu yerda HAM gateway, HAM DNS — lekin u DNS qatoridan
-    # olingan bo'lishi kerak, gateway qatoridan emas.
+    # 192.168.10.1 here is BOTH the gateway AND the DNS — but it has to come
+    # from the DNS line, not from the gateway line.
     assert got[0] == "192.168.10.1"
     assert len(got) == 2
 
 
-def test_uchala_til_bir_xil_ishlaydi():
-    """Tool xulosasi Windows TILIGA qarab o'zgarmasligi kerak."""
+def test_all_three_languages_behave_identically():
+    """The tool's verdict must not change with the Windows LANGUAGE."""
     en = parse_ipconfig_all_dns(IPCONFIG_ALL)
     ru = parse_ipconfig_all_dns(IPCONFIG_RU)
     de = parse_ipconfig_all_dns(IPCONFIG_DE)

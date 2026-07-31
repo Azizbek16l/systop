@@ -1,18 +1,18 @@
-"""Marshrut jadvali va next-hop yetishuvi. Root kerak emas.
+"""Route table and next-hop reachability. No root required.
 
-Nima uchun kerak: "internet ishlamayapti" shikoyatining bir qismi marshrut
-muammosi bo'ladi va u ping/DNS bilan ko'rinmaydi —
+Why this is needed: part of every "the internet is down" complaint is really a
+routing problem, and ping/DNS never show it —
 
-  * **default marshrut yo'q** — hamma narsa lokal LAN'da qoladi;
-  * **ikkita default marshrut** (masalan Wi-Fi + VPN yoki ikki NIC) — trafik
-    gohida bir yo'ldan, gohida boshqasidan ketadi. Alomat chalg'ituvchi:
-    "ba'zan ishlaydi, ba'zan yo'q";
-  * **next-hop o'lik** — jadval to'g'ri, lekin gateway javob bermaydi;
-  * **VPN hammasini o'ziga tortgan** (0.0.0.0/1 + 128.0.0.0/1 nayrangi) — LAN
-    resurslari yo'qoladi.
+  * **no default route** — everything stays on the local LAN;
+  * **two default routes** (Wi-Fi + VPN, or two NICs, for example) — traffic
+    goes one way sometimes and the other way at other times. The symptom is
+    misleading: "sometimes it works, sometimes it doesn't";
+  * **a dead next hop** — the table is correct but the gateway does not answer;
+  * **a VPN that grabbed everything** (the 0.0.0.0/1 + 128.0.0.0/1 trick) —
+    LAN resources disappear.
 
-Jadval OS buyrug'idan o'qiladi (`netstat -rn` / `ip route` / `route print`),
-parse'lar sof funksiya — offline sinaladi.
+The table is read from an OS command (`netstat -rn` / `ip route` /
+`route print`); the parsers are pure functions and are tested offline.
 """
 
 from __future__ import annotations
@@ -23,14 +23,14 @@ from dataclasses import dataclass, field
 
 from systop.core import _platform
 
-# macOS/BSD `netstat -rn` ustunlari:
+# macOS/BSD `netstat -rn` columns:
 #   Destination  Gateway  Flags  Netif  [Expire]
-# ATAYLAB regex EMAS, ustunlarga bo'lish: oxirgi "Expire" ustuni bo'sh, raqam
-# yoki `!` bo'lishi mumkin va qat'iy regex uni sig'dira olmasdi — natijada
-# 93 qatordan 75 tasi JIMGINA tashlanardi (marshrut jadvali deyarli bo'sh
-# ko'rinardi). Ustunlarga bo'lish bunday nozikliklarga chidamli.
+# Splitting on columns DELIBERATELY, not a regex: the trailing "Expire" column
+# may be empty, a number or `!`, and a strict regex could not accommodate that
+# — as a result 75 of 93 lines were SILENTLY dropped (the route table looked
+# almost empty). Splitting on columns tolerates such subtleties.
 
-# Gateway ustunidagi link-qatlam yozuvlari (haqiqiy next-hop emas):
+# Link-layer entries in the Gateway column (not a real next hop):
 #   "link#11", "0:15:5d:27:40:3" (MAC), "52:73:db:7e:48:af"
 _LINK_LAYER_RE = re.compile(r"^(link#\d+|[0-9a-fA-F]{1,2}(?::[0-9a-fA-F]{1,2}){5})$")
 # Linux `ip route`: "default via 10.0.0.1 dev eth0 proto dhcp metric 100"
@@ -41,7 +41,7 @@ _IPROUTE_RE = re.compile(
     r"\s+dev\s+(\S+)"
     r"(?:.*?\bmetric\s+(\d+))?"
 )
-# Windows `route print` IPv4 bo'limi:
+# The IPv4 section of Windows `route print`:
 #   "          0.0.0.0          0.0.0.0      192.168.1.1     192.168.1.50     25"
 _ROUTE_WIN_RE = re.compile(
     r"^\s*(\d+\.\d+\.\d+\.\d+)\s+(\d+\.\d+\.\d+\.\d+)\s+(\S+)\s+(\S+)\s+(\d+)\s*$"
@@ -50,10 +50,10 @@ _ROUTE_WIN_RE = re.compile(
 
 @dataclass(slots=True)
 class Route:
-    """Marshrut jadvalining bitta yozuvi."""
+    """A single entry of the route table."""
 
-    destination: str  # "default" yoki CIDR
-    gateway: str | None = None  # next-hop (link-local marshrutda None)
+    destination: str  # "default" or a CIDR
+    gateway: str | None = None  # next hop (None on a link-local route)
     interface: str | None = None
     metric: int | None = None
     family: str = "ipv4"
@@ -64,19 +64,19 @@ class Route:
 
     @property
     def is_vpn_split_hack(self) -> bool:
-        """`0.0.0.0/1` + `128.0.0.0/1` — VPN default'ni "engish" nayrangi.
+        """`0.0.0.0/1` + `128.0.0.0/1` — the VPN trick for "beating" the default.
 
-        Bu ikki marshrut birgalikda butun IPv4 fazosini qoplaydi va default'dan
-        aniqroq (uzunroq prefiks) bo'lgani uchun ustun keladi. Jadvalda default
-        turgan bo'lsa ham trafik VPN'ga ketadi — shuning uchun alohida
-        belgilanadi.
+        Together these two routes cover the whole IPv4 space and, being more
+        specific than the default (a longer prefix), they win. Even with a
+        default route in the table the traffic goes to the VPN — which is why
+        this is flagged separately.
         """
         return self.destination in ("0.0.0.0/1", "128.0.0.0/1")
 
 
 @dataclass(slots=True)
 class RouteTable:
-    """Marshrut jadvali + xulosalar."""
+    """The route table plus conclusions."""
 
     routes: list[Route] = field(default_factory=list)
     error: str | None = None
@@ -87,7 +87,7 @@ class RouteTable:
 
     @property
     def default_gateways(self) -> list[str]:
-        """Takrorsiz default next-hop manzillari (hammasi, link-local ham)."""
+        """Unique default next-hop addresses (all of them, link-local included)."""
         out: list[str] = []
         for r in self.defaults:
             if r.gateway and r.gateway not in out:
@@ -96,21 +96,21 @@ class RouteTable:
 
     @property
     def routable_defaults(self) -> list[Route]:
-        """Faqat MA'NOLI default marshrutlar — bo'sh placeholder'lar tashlanadi.
+        """Only MEANINGFUL default routes — empty placeholders are dropped.
 
-        macOS'da har doim bir nechta `utun*` interfeysi bo'ladi (VPN/relay
-        xizmatlari uchun) va ularning IPv6 default'i **yalang'och**
-        `fe80::%utunN` ko'rinishida turadi — ya'ni interfeys-ID qismi butunlay
-        nol. Bu haqiqiy qo'shni emas, joy egallab turuvchi yozuv; ping'ga
-        hech qachon javob bermaydi. Ularni "o'lik gateway" yoki "bir nechta
-        default marshrut" deb hisoblash **soxta signal** beradi.
+        On macOS there are always several `utun*` interfaces (for VPN/relay
+        services) and their IPv6 default sits there as a **bare**
+        `fe80::%utunN` — that is, with the interface-ID part entirely zero.
+        This is not a real neighbour but a placeholder entry; it never answers
+        a ping. Counting them as "a dead gateway" or as "multiple default
+        routes" produces a **false signal**.
 
-        MUHIM: ajratish **link-local ekanligi** bo'yicha EMAS, **interfeys-ID
-        nol** ekanligi bo'yicha. Chunki normal IPv6 tarmoqda default gateway
-        aynan link-local bo'ladi — router RA'da o'zining `fe80::1%en0`
-        manzilini e'lon qiladi. Link-local'ning hammasini tashlash IPv6-only
-        hostda "Default marshrut yo'q" degan CRITICAL soxta xulosani berardi
-        va IPv6 uchun "bir nechta default" tekshiruvi umuman ishlamasdi.
+        IMPORTANT: the discriminator is NOT **link-local-ness**, it is a
+        **zero interface-ID**. Because in a normal IPv6 network the default
+        gateway *is* link-local — the router announces its own `fe80::1%en0`
+        address in an RA. Dropping every link-local next hop produced a
+        CRITICAL false conclusion "no default route" on IPv6-only hosts, and
+        the "multiple defaults" check did not work for IPv6 at all.
         """
         out: list[Route] = []
         for r in self.defaults:
@@ -123,7 +123,7 @@ class RouteTable:
                 out.append(r)
                 continue
             if ip.version == 6 and ip.packed[8:] == b"\x00" * 8:
-                continue  # yalang'och fe80:: / :: — haqiqiy next-hop emas
+                continue  # bare fe80:: / :: — not a real next hop
             if ip.is_unspecified:
                 continue
             out.append(r)
@@ -131,14 +131,14 @@ class RouteTable:
 
     @property
     def routable_default_gateways(self) -> list[str]:
-        """Ping qilinadigan holatdagi next-hop manzillari.
+        """Next-hop addresses in a pingable form.
 
-        Link-local manzil **zonasiz ishlatib bo'lmaydi** — `ping6 fe80::1`
-        "No route to host" beradi, chunki OS qaysi interfeysdan chiqishni
-        bilmaydi. macOS `netstat` zonani o'zi qo'shib beradi (`fe80::1%en0`),
-        Linux `ip -6 route` esa alohida `dev eth0` ustunida beradi. Shuning
-        uchun zona yo'q bo'lsa interfeys nomidan yasab qo'shamiz — aks holda
-        sog'lom IPv6 gateway "o'lik" deb belgilanardi.
+        A link-local address **cannot be used without a zone** — `ping6 fe80::1`
+        returns "No route to host", because the OS does not know which
+        interface to leave through. macOS `netstat` appends the zone itself
+        (`fe80::1%en0`), whereas Linux `ip -6 route` supplies it in a separate
+        `dev eth0` column. So when the zone is missing we build it from the
+        interface name — otherwise a healthy IPv6 gateway was marked "dead".
         """
         out: list[str] = []
         for r in self.routable_defaults:
@@ -156,7 +156,7 @@ class RouteTable:
         return out
 
     def routable_defaults_for(self, family: str) -> list[Route]:
-        """Bitta oila (`ipv4`/`ipv6`) bo'yicha ma'noli default'lar."""
+        """Meaningful defaults for a single family (`ipv4`/`ipv6`)."""
         return [r for r in self.routable_defaults if r.family == family]
 
     @property
@@ -165,7 +165,7 @@ class RouteTable:
 
 
 def _norm_dest(dest: str) -> str:
-    """macOS qisqartirilgan tarmoqni to'liq CIDR'ga keltiradi ("192.168.10/23")."""
+    """Expand a macOS abbreviated network into a full CIDR ("192.168.10/23")."""
     if dest == "default":
         return "default"
     if "/" not in dest:
@@ -178,15 +178,15 @@ def _norm_dest(dest: str) -> str:
 
 
 def parse_netstat(text: str) -> list[Route]:
-    """macOS/BSD `netstat -rn` chiqishini parse qiladi — SOF funksiya.
+    """Parse macOS/BSD `netstat -rn` output — pure function.
 
-    Ustunlar: `Destination Gateway Flags Netif [Expire]`. Oxirgi ustun ixtiyoriy
-    va turli shaklda bo'ladi (raqam, `!`, bo'sh) — shuning uchun qat'iy regex
-    emas, ustunlarga bo'lish ishlatiladi.
+    Columns: `Destination Gateway Flags Netif [Expire]`. The last column is
+    optional and comes in various shapes (a number, `!`, empty) — which is why
+    we split on columns instead of using a strict regex.
 
-    Gateway ustunida `link#11` yoki MAC turishi mumkin — bu next-hop EMAS,
-    balki shu segmentdagi to'g'ridan-to'g'ri yetishuv belgisi. Bunday
-    yozuvlarda `gateway=None` bo'ladi.
+    The Gateway column may hold `link#11` or a MAC — that is NOT a next hop but
+    a marker of direct reachability on this segment. Such entries get
+    `gateway=None`.
     """
     routes: list[Route] = []
     family = "ipv4"
@@ -209,8 +209,8 @@ def parse_netstat(text: str) -> list[Route]:
             continue
         dest, gw = parts[0], parts[1]
 
-        # Netif — flags'dan keyingi ustun. Expire ustuni bo'lishi/bo'lmasligi
-        # mumkin, shuning uchun 4-ustunni olamiz (bor bo'lsa).
+        # Netif is the column after flags. The Expire column may or may not be
+        # present, so we take the 4th column (when there is one).
         iface = parts[3] if len(parts) >= 4 else None
 
         gateway: str | None = None
@@ -230,7 +230,7 @@ def parse_netstat(text: str) -> list[Route]:
 
 
 def parse_ip_route(text: str, family: str = "ipv4") -> list[Route]:
-    """Linux `ip route` / `ip -6 route` chiqishini parse qiladi — SOF funksiya."""
+    """Parse Linux `ip route` / `ip -6 route` output — pure function."""
     routes: list[Route] = []
     for line in text.splitlines():
         stripped = line.strip()
@@ -252,7 +252,7 @@ def parse_ip_route(text: str, family: str = "ipv4") -> list[Route]:
 
 
 def parse_route_print(text: str) -> list[Route]:
-    """Windows `route print` IPv4 jadvalini parse qiladi — SOF funksiya."""
+    """Parse the IPv4 table of Windows `route print` — pure function."""
     routes: list[Route] = []
     for line in text.splitlines():
         m = _ROUTE_WIN_RE.match(line)
@@ -276,14 +276,14 @@ def parse_route_print(text: str) -> list[Route]:
 
 
 async def list_routes() -> RouteTable:
-    """OS marshrut jadvalini o'qiydi (macOS/Linux/Windows). Istisno ko'tarmaydi."""
+    """Read the OS route table (macOS/Linux/Windows). Never raises."""
     if _platform.IS_WINDOWS:
         out = await _platform.run_command(["route", "print", "-4"], timeout=8.0)
         if not out:
-            return RouteTable(error="`route print` natija bermadi")
+            return RouteTable(error="`route print` returned nothing")
         return RouteTable(routes=parse_route_print(out))
 
-    # Linux: `ip route` aniqroq (metric/dev), bo'lmasa `netstat -rn`.
+    # Linux: `ip route` is more precise (metric/dev), `netstat -rn` otherwise.
     out = await _platform.run_command(["ip", "route"], timeout=8.0)
     if out:
         routes = parse_ip_route(out, "ipv4")
@@ -295,18 +295,18 @@ async def list_routes() -> RouteTable:
 
     out = await _platform.run_command(["netstat", "-rn"], timeout=8.0)
     if not out:
-        return RouteTable(error="marshrut jadvalini o'qib bo'lmadi")
+        return RouteTable(error="could not read the route table")
     return RouteTable(routes=parse_netstat(out))
 
 
 async def check_next_hops(table: RouteTable, timeout: float = 2.0) -> dict[str, bool]:
-    """Default next-hop'larning yetishuvini ping bilan tekshiradi.
+    """Check the reachability of the default next hops with a ping.
 
-    Qaytaradi: {gateway_ip: tirikmi}. Jadval to'g'ri, lekin gateway o'lik
-    bo'lishi mumkin — bu holat faqat shu tekshiruvda ko'rinadi.
+    Returns: {gateway_ip: alive}. The table can be correct while the gateway
+    is dead — that situation only shows up in this check.
 
-    Faqat `routable_default_gateways` tekshiriladi (link-local `utun*`
-    marshrutlari soxta "o'lik" natija bermasligi uchun).
+    Only `routable_default_gateways` are checked (so that link-local `utun*`
+    routes do not produce a false "dead" result).
     """
     gws = table.routable_default_gateways
     if not gws:
