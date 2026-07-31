@@ -994,7 +994,9 @@ async def run_diagnostics(
         w = await wifi_mod.status()
         overlap = 0
         if w.channel and w.is_24ghz:
-            overlap = len(wifi_mod.overlapping_24ghz(w.channel, w.neighbours))
+            overlap = len(
+                wifi_mod.overlapping_channels(w.channel, w.band, w.width_mhz, w.neighbours)
+            )
         findings += evaluate_wifi(
             available=w.available,
             connected=w.connected,

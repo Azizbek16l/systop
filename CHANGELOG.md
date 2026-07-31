@@ -5,6 +5,32 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1] — 2026-07-31
+
+### Fixed
+
+- **`wifi` never reported 5 GHz channel collisions.** Overlap detection existed
+  only for 2.4 GHz, so the single most damaging case — another AP sitting on
+  *exactly* your 5 GHz channel, i.e. full co-channel contention — was silently
+  absent from both the table and `doctor`. Measured on a real network: the host
+  was on channel 64 with two neighbours also on 64, and the tool said nothing.
+  Added `channel_span()` and `overlapping_channels()`, both pure. 5/6 GHz
+  channels do not slide into each other the way 2.4 GHz does — they occupy
+  fixed blocks, and an 80 MHz AP covers four 20 MHz channels, so comparing
+  channel *numbers* misses the overlap entirely. The UNII-3 block (149+) is not
+  reachable by arithmetic — `(149-36)/4` is not an integer — so the blocks are
+  a table, not a formula.
+
+### Added
+
+- `wifi --neighbours` now shows an **SSID** column and an **interference**
+  column (`bir kanalda` / `kesishadi` / `yo'q`), with the interfering APs
+  sorted to the top. Reading the old table meant comparing channel numbers by
+  eye, which is exactly the work the tool exists to do.
+- When the OS withholds SSIDs (macOS hides them without Location Services
+  permission) the tool now says so and names the setting, instead of rendering
+  an unexplained empty column.
+
 ## [Unreleased]
 
 ### Planned

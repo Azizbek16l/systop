@@ -270,3 +270,87 @@ def test_signal_quality_none_without_rssi():
 
 def test_snr_none_without_noise():
     assert WifiStatus(rssi_dbm=-50).snr_db is None
+
+
+# --------------------------------------------------------------------------- #
+# Kanal kesishuvi — IKKALA diapazon
+# --------------------------------------------------------------------------- #
+
+from systop.core.wifi import channel_span, overlapping_channels  # noqa: E402
+
+
+def test_80mhz_kanal_tortta_uyachani_egallaydi():
+    """ "Kanal 64" degan yozuv AP qancha joy egallashini AYTMAYDI.
+
+    80 MHz kenglikdagi AP to'rtta 20 MHz kanalni bosadi. Faqat raqamni
+    taqqoslash bu to'qnashuvlarni butunlay o'tkazib yuboradi.
+    """
+    assert channel_span(64, "5GHz", 80) == {52, 56, 60, 64}
+    assert channel_span(36, "5GHz", 80) == {36, 40, 44, 48}
+    assert channel_span(157, "5GHz", 80) == {149, 153, 157, 161}
+
+
+def test_40mhz_va_20mhz_span():
+    assert channel_span(60, "5GHz", 40) == {60, 64}
+    assert channel_span(64, "5GHz", 20) == {64}
+    assert channel_span(64, "5GHz", None) == {64}
+
+
+def test_unii3_bloki_arifmetika_bilan_chiqmaydi():
+    """(149-36)/4 butun son emas — shuning uchun bloklar ro'yxat sifatida.
+
+    Arifmetik formula bu yerda noto'g'ri natija berardi.
+    """
+    assert channel_span(149, "5GHz", 80) == {149, 153, 157, 161}
+    assert 149 not in channel_span(144, "5GHz", 80)
+
+
+def test_notanish_kanal_ehtiyotkor():
+    """Noma'lum (DFS/mintaqaviy) kanalda faqat o'zi hisoblanadi — taxmin qilinmaydi."""
+    assert channel_span(177, "5GHz", 80) == {177}
+
+
+def test_5ghz_bir_kanaldagi_qoshni_aniqlanadi():
+    """ASOSIY KAMCHILIK REGRESSIYASI.
+
+    Ilgari faqat 2.4 GHz tekshirilardi. Natijada 5 GHz da AYNAN bir kanalda
+    turgan qo'shni — eng jiddiy holat, to'liq co-channel raqobat — umuman
+    aytilmasdi.
+    """
+    ns = [
+        WifiNetwork(channel=64, band="5GHz", width_mhz=80),
+        WifiNetwork(channel=36, band="5GHz", width_mhz=80),
+        WifiNetwork(channel=157, band="5GHz", width_mhz=80),
+    ]
+    ov = overlapping_channels(64, "5GHz", 80, ns)
+    assert [n.channel for n in ov] == [64]
+
+
+def test_5ghz_kesishuvchi_blok_aniqlanadi():
+    """60-kanaldagi 40 MHz AP {60,64} ni egallaydi — 64 bilan kesishadi."""
+    ns = [WifiNetwork(channel=60, band="5GHz", width_mhz=40)]
+    assert len(overlapping_channels(64, "5GHz", 20, ns)) == 1
+
+
+def test_boshqa_diapazon_hech_qachon_xalaqit_bermaydi():
+    """2.4 va 5 GHz — turli chastotalar, ular kesisha olmaydi."""
+    ns = [WifiNetwork(channel=6, band="2.4GHz", width_mhz=20)]
+    assert overlapping_channels(64, "5GHz", 80, ns) == []
+    ns2 = [WifiNetwork(channel=64, band="5GHz", width_mhz=80)]
+    assert overlapping_channels(6, "2.4GHz", 20, ns2) == []
+
+
+def test_24ghz_qoidasi_saqlanadi():
+    """2.4 GHz uzluksiz ustma-ust tushadi: ±4, 40 MHz uchun ±8."""
+    ns = [
+        WifiNetwork(channel=1, band="2.4GHz", width_mhz=20),  # 6 dan 5 uzoq -> yo'q
+        WifiNetwork(channel=8, band="2.4GHz", width_mhz=20),  # 2 uzoq -> ha
+        WifiNetwork(channel=13, band="2.4GHz", width_mhz=40),  # 7 uzoq, ±8 -> ha
+    ]
+    got = {n.channel for n in overlapping_channels(6, "2.4GHz", 20, ns)}
+    assert got == {8, 13}
+
+
+def test_kanalsiz_qoshni_tashlanadi():
+    ns = [WifiNetwork(channel=None, band="5GHz", width_mhz=80)]
+    assert overlapping_channels(64, "5GHz", 80, ns) == []

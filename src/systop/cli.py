@@ -2215,7 +2215,7 @@ async def _cmd_arpwatch(update: bool, reset: bool) -> int:
 async def _cmd_wifi(show_neighbours: bool = False) -> int:
     """Wi-Fi holati va atrofdagi tarmoqlar."""
     # `status` nomi cli.status (spinner) bilan to'qnashadi — alias bilan olamiz.
-    from systop.core.wifi import overlapping_24ghz
+    from systop.core.wifi import overlapping_channels
     from systop.core.wifi import status as wifi_status
 
     with status("[bold]Wi-Fi holati o'qilmoqda..."):
@@ -2276,32 +2276,71 @@ async def _cmd_wifi(show_neighbours: bool = False) -> int:
         t.add_row("Qo'shnilar", ", ".join(f"{k}: {v}" for k, v in sorted(bands.items())))
     emit_table(t)
 
-    if w.channel and w.is_24ghz:
-        ov = overlapping_24ghz(w.channel, w.neighbours)
+    if w.channel:
+        ov = overlapping_channels(w.channel, w.band, w.width_mhz, w.neighbours)
+        same = [n for n in ov if n.channel == w.channel]
         if ov:
+            izoh = (
+                "2.4 GHz da faqat 1/6/11 ustma-ust tushmaydi"
+                if w.is_24ghz
+                else f"{w.width_mhz or 20} MHz kanal bir nechta 20 MHz uyachani egallaydi"
+            )
+            qism = f", shundan {len(same)} tasi AYNAN shu kanalda" if same else ""
             note(
-                f"[{WARNING}]Kanal {w.channel} ga {len(ov)} ta AP xalaqit beryapti[/] "
-                "[dim](2.4 GHz da faqat 1/6/11 ustma-ust tushmaydi)[/]"
+                f"[{WARNING}]Kanal {w.channel} ga {len(ov)} ta AP xalaqit beryapti[/]{qism} "
+                f"[dim]({izoh})[/]"
             )
     if w.is_24ghz and w.five_ghz_available:
         note(f"[{WARNING}]Atrofda 5 GHz mavjud[/] - unga o'tsangiz tezlik sezilarli oshadi.")
 
     if show_neighbours and w.neighbours:
+        # Xalaqit beradiganlarni ALOHIDA belgilaymiz va tepaga chiqaramiz —
+        # jadvalning maqsadi "atrofda kim bor" emas, "kim menga xalaqit
+        # beryapti". Foydalanuvchi kanallarni o'zi solishtirib chiqmasligi kerak.
+        clashing: set[int] = set()
+        if w.channel:
+            clashing = {
+                id(n) for n in overlapping_channels(w.channel, w.band, w.width_mhz, w.neighbours)
+            }
+
         nt = styled_table(f"Atrofdagi tarmoqlar ({len(w.neighbours)} ta)")
+        nt.add_column("Nomi (SSID)")
         nt.add_column("Kanal", justify="right")
         nt.add_column("Diapazon")
         nt.add_column("Kenglik", justify="right")
+        nt.add_column("Xalaqit")
         nt.add_column("PHY")
         nt.add_column("Xavfsizlik")
-        for n in sorted(w.neighbours, key=lambda x: (x.band or "", x.channel or 0)):
+        for n in sorted(
+            w.neighbours,
+            key=lambda x: (id(x) not in clashing, x.band or "", x.channel or 0),
+        ):
+            hits = id(n) in clashing
+            if hits:
+                same = n.channel == w.channel
+                mark = f"[{ERROR}]bir kanalda[/]" if same else f"[{WARNING}]kesishadi[/]"
+            else:
+                mark = "[dim]yo'q[/]"
             nt.add_row(
+                data_cell(n.ssid, dash()),
                 str(n.channel or dash()),
                 n.band or dash(),
                 f"{n.width_mhz} MHz" if n.width_mhz else dash(),
+                mark,
                 data_cell(n.phy_mode, dash()),
                 data_cell(n.security, dash()),
             )
         emit_table(nt)
+
+        # macOS Sonoma'dan beri SSID'ni Location Services ruxsatisiz bermaydi
+        # ("<redacted>"). Buni jimgina bo'sh ustun qilib qoldirish noto'g'ri —
+        # foydalanuvchi tool ishlamayapti deb o'ylaydi.
+        if not any(n.ssid for n in w.neighbours):
+            note(
+                "[dim]SSID nomlari OS tomonidan yashirilgan. macOS'da: "
+                "Tizim sozlamalari -> Maxfiylik -> Joylashuv xizmatlari -> "
+                "terminalga ruxsat bering.[/]"
+            )
     return EXIT_OK
 
 

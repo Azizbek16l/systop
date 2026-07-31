@@ -154,6 +154,107 @@ def channel_to_band(channel: int) -> str:
     return "6GHz"
 
 
+# 5 GHz da kanallar 2.4 GHz dagidek "surilib" ustma-ust tushmaydi — ular
+# qat'iy bloklarga bo'lingan. 80 MHz kanal aynan to'rtta 20 MHz kanalni
+# egallaydi va bloklar chegarasi belgilangan (UNII-1/2/2e/3).
+#
+# Arifmetika bilan hisoblab bo'lmaydi: UNII-3 (149+) blokining boshlanishi
+# oldingi bloklar bilan bir xil qadamda emas ((149-36)/4 butun son emas).
+# Shuning uchun bloklar ATAYLAB ro'yxat sifatida berilgan.
+_5GHZ_80MHZ_BLOCKS: tuple[tuple[int, ...], ...] = (
+    (36, 40, 44, 48),
+    (52, 56, 60, 64),
+    (100, 104, 108, 112),
+    (116, 120, 124, 128),
+    (132, 136, 140, 144),
+    (149, 153, 157, 161),
+)
+_5GHZ_40MHZ_BLOCKS: tuple[tuple[int, ...], ...] = (
+    (36, 40),
+    (44, 48),
+    (52, 56),
+    (60, 64),
+    (100, 104),
+    (108, 112),
+    (116, 120),
+    (124, 128),
+    (132, 136),
+    (140, 144),
+    (149, 153),
+    (157, 161),
+)
+
+
+def channel_span(channel: int, band: str | None, width_mhz: int | None) -> set[int]:
+    """AP egallagan 20 MHz kanallar to'plamini qaytaradi — SOF funksiya.
+
+    Nima uchun kerak: "kanal 64" degan yozuv AP aslida qancha joy egallashini
+    aytmaydi. 80 MHz kenglikdagi AP to'rtta 20 MHz kanalni egallaydi, ya'ni
+    kanal 36 dagi 80 MHz AP 36/40/44/48 ning hammasiga tegadi. Faqat kanal
+    raqamini taqqoslash bu to'qnashuvlarni butunlay o'tkazib yuboradi.
+
+    2.4 GHz bu yerda ishlatilmaydi — u yerda kanallar 5 MHz qadamda va
+    uzluksiz ustma-ust tushadi, shuning uchun alohida (±4/±8) qoida bor.
+    """
+    if band == "2.4GHz":
+        return {channel}
+    width = width_mhz or 20
+    if width <= 20:
+        return {channel}
+
+    if band == "6GHz":
+        # 6 GHz kanallari 1, 5, 9, ... — qadam bir xil, arifmetika ishlaydi.
+        count = min(width // 20, 8)
+        idx = (channel - 1) // 4
+        start = (idx // count) * count
+        return {1 + 4 * (start + i) for i in range(count)}
+
+    blocks = _5GHZ_80MHZ_BLOCKS if width >= 80 else _5GHZ_40MHZ_BLOCKS
+    for block in blocks:
+        if channel in block:
+            return set(block)
+    # Noma'lum kanal (DFS/mintaqaviy) — ehtiyotkor bo'lamiz, faqat o'zi.
+    return {channel}
+
+
+def overlapping_channels(
+    channel: int,
+    band: str | None,
+    width_mhz: int | None,
+    neighbours: list[WifiNetwork],
+) -> list[WifiNetwork]:
+    """Bizning kanalimiz bilan CHINDAN kesishadigan qo'shnilarni qaytaradi.
+
+    Ikkala diapazon uchun ham ishlaydi va bu muhim: ilgari faqat 2.4 GHz
+    tekshirilardi, natijada 5 GHz da AYNAN bir kanalda turgan qo'shnilar
+    (eng jiddiy holat — to'liq co-channel raqobat) umuman aytilmasdi.
+
+    * **2.4 GHz** — kanallar uzluksiz ustma-ust tushadi: farq ±4 dan kichik
+      bo'lsa xalaqit bor, 40 MHz AP uchun ±8.
+    * **5/6 GHz** — bloklar kesishsa xalaqit bor (`channel_span`).
+
+    Boshqa diapazondagi qo'shni hech qachon xalaqit bermaydi — 2.4 va 5 GHz
+    fizik jihatdan turli chastotalar.
+    """
+    out: list[WifiNetwork] = []
+    if band == "2.4GHz":
+        for n in neighbours:
+            if not n.is_24ghz or n.channel is None:
+                continue
+            reach = 8 if (n.width_mhz or 20) >= 40 else 4
+            if abs(n.channel - channel) <= reach:
+                out.append(n)
+        return out
+
+    mine = channel_span(channel, band, width_mhz)
+    for n in neighbours:
+        if n.channel is None or n.band != band:
+            continue
+        if mine & channel_span(n.channel, n.band, n.width_mhz):
+            out.append(n)
+    return out
+
+
 def overlapping_24ghz(channel: int, neighbours: list[WifiNetwork]) -> list[WifiNetwork]:
     """2.4 GHz da berilgan kanalga XALAQIT beradigan qo'shnilarni qaytaradi.
 
