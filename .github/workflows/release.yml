@@ -56,13 +56,15 @@ jobs:
             label: windows-x86_64
             asset: systop-windows-x86_64.exe
             exe: dist/systop.exe
+          # Intel Mac (`macos-13`) ATAYLAB yo'q: GitHub bu runner'ni iste'foga
+          # chiqargan va job abadiy `queued` da qotib qoladi. `fail-fast: false`
+          # tufayli qolgan uchtasi tugaydi, lekin relise job'i HAMMASINI kutadi —
+          # ya'ni bitta o'lik matritsa yozuvi butun relise'ni to'xtatib qo'yadi
+          # (58 daqiqa navbatda turgani shundan). Intel Mac kerak bo'lsa
+          # `packaging/build-macos.sh` bilan Intel mashinada yig'iladi.
           - os: macos-14 # Apple Silicon
             label: macos-arm64
             asset: systop-macos-arm64
-            exe: dist/systop
-          - os: macos-13 # Intel
-            label: macos-x86_64
-            asset: systop-macos-x86_64
             exe: dist/systop
 
     steps:
