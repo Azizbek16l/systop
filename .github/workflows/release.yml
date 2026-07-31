@@ -54,11 +54,11 @@ jobs:
             asset: systop-windows-x86_64.exe
             exe: dist/systop.exe
           # Intel Mac (`macos-13`) is DELIBERATELY absent: GitHub retired that
-          # chiqargan va job abadiy `queued` da qotib qoladi. `fail-fast: false`
-          # tufayli qolgan uchtasi tugaydi, lekin relise job'i HAMMASINI kutadi —
-          # i.e. a single dead matrix entry stalls the whole release
-          # (that is why one release sat queued for 58 minutes). If an Intel Mac
-          # build is needed, run `packaging/build-macos.sh` on an Intel machine.
+          # runner, so the job sits `queued` forever. With `fail-fast: false`
+          # the other three platforms finish, but the release job waits on the
+          # WHOLE matrix — one dead entry stalls every release (that is why one
+          # sat queued for 58 minutes). If an Intel Mac build is needed, run
+          # `packaging/build-macos.sh` on an Intel machine.
           - os: macos-14 # Apple Silicon
             label: macos-arm64
             asset: systop-macos-arm64

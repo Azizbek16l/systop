@@ -47,7 +47,7 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]
-# ASYNC109: `timeout` parametrlari icmplib/httpx ga uzatiladi (qo'lda timeout emas).
+# ASYNC109: `timeout` parameters are handed to icmplib/httpx, not implemented by hand.
 ignore = ["ASYNC109"]
 
 [tool.pytest.ini_options]
