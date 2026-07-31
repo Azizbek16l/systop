@@ -4,4 +4,4 @@ Measures internet speed, pings local and global targets, and maps the network
 topology (traceroute + LAN discovery).
 """
 
-__version__ = "0.10.2"
+__version__ = "0.11.0"

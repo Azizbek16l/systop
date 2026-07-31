@@ -50,6 +50,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   permission) the tool now says so and names the setting, instead of rendering
   an unexplained empty column.
 
+## [0.11.0] — 2026-07-31
+
+### Changed
+
+- **The codebase is now English-only.** Every user-facing string, docstring,
+  comment and test name was converted, along with the CSS comments, the
+  installers, the packaging scripts and the CI workflows. Roughly 725
+  docstrings, 850 strings and 1,070 comments; 129 test functions renamed.
+  Detection corpora were deliberately left as they are — the localized login
+  keywords in `webscan.py` and the Cyrillic keys in `parse_netsh_interfaces`
+  are match data, not prose, and removing them would silently stop detecting
+  devices with a localized login page and break Wi-Fi parsing on Russian
+  Windows.
+- Documentation is a single English `README.md`; the parallel Uzbek README is
+  gone, since maintaining two was also the mechanism that let them drift.
+
+### Fixed
+
+- `wifi --neighbours` no longer says "2 APs interfering, 2 of them on the same
+  channel" when all of them are — three distinct messages now cover the three
+  cases.
+- The published installer URLs pointed at `/main/`, but the default branch is
+  `master`; copy-pasting the documented one-liner returned 404.
+- The Intel macOS asset no longer exists (GitHub retired the runner), so an
+  Intel Mac downloaded a 404 page and failed with "download failed". It now
+  explains why and points at the source build.
+- The release matrix still listed the retired `macos-13` runner. With
+  `fail-fast: false` the other three platforms finished, but the release job
+  waits on the whole matrix — one dead entry stalled every release for an hour.
+
+### Removed
+
+- `wheel`/`sdist` builds and the PyPI publish step. Both carry `src/` verbatim,
+  so distributing them hands out the source; only the standalone binaries are
+  released now. Worth noting the PyPI job was armed — the environment existed
+  and it ran on every `v*` tag — and had only ever failed because Trusted
+  Publishing was not configured.
+
 ## [Unreleased]
 
 ### Planned
