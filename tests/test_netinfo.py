@@ -442,3 +442,50 @@ def test_primary_interface_gateway_outside_network_skips_apipa(monkeypatch):
 )
 def test_is_apipa(ipv4, expected):
     assert netinfo._is_apipa(ipv4) is expected
+
+
+# --------------------------------------------------------------------------- #
+# prefixlen / host_count (0.6.1) — gateway yonida `/24` ko'rsatish uchun
+# --------------------------------------------------------------------------- #
+
+
+def test_prefixlen_from_netmask():
+    assert Interface(name="en0", ipv4="10.0.0.5", netmask="255.255.255.0").prefixlen == 24
+
+
+def test_prefixlen_slash_23():
+    assert Interface(name="en0", ipv4="192.168.11.43", netmask="255.255.254.0").prefixlen == 23
+
+
+def test_prefixlen_slash_16():
+    assert Interface(name="en0", ipv4="172.16.0.5", netmask="255.255.0.0").prefixlen == 16
+
+
+def test_prefixlen_none_without_netmask():
+    assert Interface(name="en0", ipv4="10.0.0.5").prefixlen is None
+
+
+def test_prefixlen_none_without_ipv4():
+    assert Interface(name="en0", netmask="255.255.255.0").prefixlen is None
+
+
+def test_prefixlen_invalid_netmask_is_none():
+    assert Interface(name="en0", ipv4="10.0.0.5", netmask="nonsense").prefixlen is None
+
+
+def test_host_count_slash_24():
+    """/24 -> 254 (tarmoq va broadcast chiqariladi)."""
+    assert Interface(name="en0", ipv4="10.0.0.5", netmask="255.255.255.0").host_count == 254
+
+
+def test_host_count_slash_23():
+    assert Interface(name="en0", ipv4="10.0.0.5", netmask="255.255.254.0").host_count == 510
+
+
+def test_host_count_slash_31_is_zero():
+    """/31 da foydalanish mumkin host qolmaydi (manfiy bo'lmasligi kerak)."""
+    assert Interface(name="en0", ipv4="10.0.0.5", netmask="255.255.255.254").host_count == 0
+
+
+def test_host_count_none_without_prefix():
+    assert Interface(name="en0").host_count is None

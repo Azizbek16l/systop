@@ -643,3 +643,54 @@ def test_addr_dword_roundtrip():
 
 def test_addr_to_dword_invalid_returns_none():
     assert _platform._addr_to_dword("not-an-ip") is None
+
+
+# --------------------------------------------------------------------------- #
+# PATH qattiqlashtirish — cron/systemd ssenariysi
+# --------------------------------------------------------------------------- #
+
+from systop.core._platform import resolve_binary  # noqa: E402
+
+
+def test_yol_berilgan_buyruq_tegilmaydi():
+    """To'liq yo'l berilgan bo'lsa qidiruv qilinmasligi kerak."""
+    assert resolve_binary("/usr/bin/env") == "/usr/bin/env"
+
+
+def test_path_dagi_buyruq_topiladi():
+    got = resolve_binary("sh")
+    assert got.endswith("/sh")
+    assert got.startswith("/")
+
+
+def test_nomalum_buyruq_ozgarishsiz_qaytadi():
+    """Topilmasa nom qaytadi — `run_command` mavjud xatti-harakatini saqlaydi.
+
+    (`create_subprocess_exec` FileNotFoundError beradi, u bo'sh satrga aylanadi.)
+    """
+    assert resolve_binary("bunday_buyruq_yoq_12345") == "bunday_buyruq_yoq_12345"
+
+
+def test_sbin_dagi_buyruq_path_da_bolmasa_ham_topiladi(monkeypatch):
+    """ASOSIY REGRESSIYA.
+
+    `cron` va `systemd` odatda `PATH=/usr/bin:/bin` beradi, ya'ni `/usr/sbin`
+    yo'q. `system_profiler`, `ndp`, `arp`, `route`, `ifconfig` esa aynan
+    o'sha yerda. O'lchab ko'rildi: bunday PATH bilan `doctor` link turini
+    "wifi" o'rniga "wired" deb aniqlab, chegaralarni noto'g'ri tanlagan edi.
+    """
+    import os
+    import shutil
+
+    resolve_binary.cache_clear()
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    # /usr/sbin da chindan ham mavjud bo'lgan buyruqni tanlaymiz.
+    nomzod = next(
+        (n for n in ("arp", "ifconfig", "route") if os.access(f"/usr/sbin/{n}", os.X_OK)),
+        None,
+    )
+    if nomzod is None:
+        return  # bu platformada /usr/sbin yo'q — tekshiradigan narsa yo'q
+    assert shutil.which(nomzod) is None, "test sharti buzildi: buyruq PATH'da"
+    assert resolve_binary(nomzod) == f"/usr/sbin/{nomzod}"
+    resolve_binary.cache_clear()

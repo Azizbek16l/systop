@@ -129,4 +129,17 @@ OUI_VENDORS: dict[str, str] = {
     # --- Aruba (HPE) ---
     "186472": "Aruba",
     "9C1C12": "Aruba",
+    # --- Virtual NIC'lar (hypervisor/konteyner) ---------------------------
+    # Sysadmin uchun juda qimmatli: LAN'dagi host jismoniy qurilmami yoki VM'mi
+    # — shu prefikslar aytadi. Hyper-V ("00:15:5D") ayniqsa muhim, chunki bir
+    # xost o'nlab VM chiqaradi va ularning hammasi shu prefiks bilan ko'rinadi.
+    "00155D": "Microsoft Hyper-V (VM)",
+    "080027": "VirtualBox (VM)",
+    "0A0027": "VirtualBox (VM)",
+    "525400": "QEMU/KVM (VM)",
+    "00163E": "Xen (VM)",
+    "001C42": "Parallels (VM)",
+    "000569": "VMware (VM)",
+    "001C14": "VMware (VM)",
+    "0242AC": "Docker (konteyner)",
 }

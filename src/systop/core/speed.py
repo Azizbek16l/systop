@@ -16,7 +16,7 @@ import asyncio
 import contextlib
 import time
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 
@@ -288,3 +288,107 @@ async def run_speedtest(
         bytes_down=bytes_down,
         bytes_up=bytes_up,
     )
+
+
+# ===========================================================================
+# Lokal (IX) vs xalqaro tezlik
+# ===========================================================================
+#
+# Nima uchun kerak: ko'p mamlakatda provayder LOKAL almashuv nuqtasi (IX)
+# ichidagi trafikni xalqarodan butunlay boshqacha narxlaydi va cheklaydi —
+# O'zbekistonda TAS-IX, Qozog'istonda KazIX, Rossiyada MSK-IX va hokazo.
+# Natijada foydalanuvchida lokal tezlik to'la, xalqaro esa chekланган bo'ladi.
+#
+# "Internet sekin" shikoyatida bu farqni ko'rmasdan turib xulosa chiqarib
+# bo'lmaydi: agar lokal 100 Mbps, xalqaro 8 Mbps bo'lsa — bu nosozlik EMAS,
+# tarif shunday. Aksincha ikkalasi ham past bo'lsa — bu haqiqiy muammo.
+#
+# Endpoint KODGA YOZILMAYDI: har mamlakatda o'zinikini config'da beriladi
+# (`speed_local_urls`). Shunda bir xil kod hamma joyda ishlaydi.
+
+
+@dataclass(slots=True)
+class LocalSpeedResult:
+    """Bitta lokal endpoint bo'yicha o'lchov."""
+
+    url: str
+    ok: bool = False
+    mbps: float = 0.0
+    latency_ms: float = 0.0
+    bytes_read: int = 0
+    error: str | None = None
+
+
+@dataclass(slots=True)
+class SpeedComparison:
+    """Lokal va xalqaro tezlik taqqoslashi."""
+
+    international_mbps: float = 0.0
+    local: list[LocalSpeedResult] = field(default_factory=list)
+
+    @property
+    def best_local_mbps(self) -> float:
+        vals = [r.mbps for r in self.local if r.ok]
+        return max(vals) if vals else 0.0
+
+    @property
+    def ratio(self) -> float | None:
+        """Lokal / xalqaro nisbati. Xalqaro 0 bo'lsa None."""
+        if self.international_mbps <= 0:
+            return None
+        return self.best_local_mbps / self.international_mbps
+
+    @property
+    def is_throttled_international(self) -> bool:
+        """Lokal xalqarodan sezilarli tez bo'lsa — xalqaro kanal cheklangan.
+
+        Chegara 3x: tabiiy farq (masofa, peering) odatda 2x dan oshmaydi,
+        3x va undan yuqorisi tarif/shaping belgisidir.
+        """
+        r = self.ratio
+        return r is not None and r >= 3.0
+
+
+async def measure_local(
+    urls: list[str],
+    duration: float = 5.0,
+    timeout: float = 10.0,
+) -> list[LocalSpeedResult]:
+    """Berilgan lokal endpointlardan yuklab, o'tkazuvchanlikni o'lchaydi.
+
+    Har URL katta fayl bo'lishi kerak (>= 10 MB tavsiya etiladi). Yuklash
+    `duration` soniyadan keyin to'xtatiladi — butun faylni yuklab olish shart
+    emas, faqat barqaror tezlikni o'lchash kerak.
+
+    Istisno ko'tarmaydi: har endpoint mustaqil, biri yiqilsa qolgani davom etadi.
+    """
+    results: list[LocalSpeedResult] = []
+    for url in urls:
+        res = LocalSpeedResult(url=url)
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                start = time.perf_counter()
+                async with client.stream("GET", url) as resp:
+                    res.latency_ms = (time.perf_counter() - start) * 1000.0
+                    if resp.status_code >= 400:
+                        res.error = f"HTTP {resp.status_code}"
+                        results.append(res)
+                        continue
+                    t0 = time.perf_counter()
+                    total = 0
+                    async for chunk in resp.aiter_bytes(65536):
+                        total += len(chunk)
+                        if time.perf_counter() - t0 >= duration:
+                            break
+                    elapsed = max(time.perf_counter() - t0, 1e-6)
+            res.bytes_read = total
+            res.mbps = (total * 8) / elapsed / 1e6
+            res.ok = total > 0
+            if not res.ok:
+                res.error = "ma'lumot kelmadi"
+        except httpx.HTTPError as exc:
+            res.error = f"so'rov xatosi: {type(exc).__name__}"
+        except (OSError, ValueError) as exc:
+            res.error = f"ulanish xatosi: {type(exc).__name__}"
+        results.append(res)
+    return results

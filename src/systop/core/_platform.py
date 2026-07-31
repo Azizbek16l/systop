@@ -35,9 +35,11 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
+import functools
 import os
 import platform
 import re
+import shutil
 import socket
 import struct
 import subprocess
@@ -557,9 +559,41 @@ def parse_windows_route_print(output: str) -> str | None:
 # --- Umumiy async subprocess yordamchisi ------------------------------------
 
 
+# Tarmoq buyruqlarining ko'pchiligi PATH'da BO'LMAYDIGAN kataloglarda yotadi:
+# `system_profiler`, `ndp`, `arp`, `route`, `ifconfig` -> /usr/sbin yoki /sbin.
+# Interaktiv qobiqda ular PATH'da bo'ladi, lekin `cron`, `systemd` va launchd
+# odatda `PATH=/usr/bin:/bin` beradi — aynan sysadmin toolni avtomatlashtirgan
+# joyda. O'lchab ko'rildi: shunday PATH bilan `doctor` link turini "wifi"
+# o'rniga "wired" deb aniqlab, chegaralarni noto'g'ri tanladi.
+_EXTRA_BIN_DIRS = ("/usr/sbin", "/sbin", "/usr/local/sbin")
+
+
+@functools.lru_cache(maxsize=64)
+def resolve_binary(name: str) -> str:
+    """Buyruq nomini to'liq yo'lga aylantiradi; topilmasa nomni qaytaradi.
+
+    Avval PATH, keyin `_EXTRA_BIN_DIRS`. Topilmasa nom o'zgarishsiz qaytadi —
+    `create_subprocess_exec` o'zi `FileNotFoundError` beradi va `run_command`
+    uni bo'sh satrga aylantiradi (mavjud xatti-harakat saqlanadi).
+
+    Yo'l (`/` yoki `\\` bor) berilgan bo'lsa tegilmaydi.
+    """
+    if os.sep in name or (os.altsep and os.altsep in name):
+        return name
+    found = shutil.which(name)
+    if found:
+        return found
+    for d in _EXTRA_BIN_DIRS:
+        candidate = os.path.join(d, name)
+        if os.access(candidate, os.X_OK):
+            return candidate
+    return name
+
+
 async def run_command(
     cmd: list[str],
     timeout: float,
+    include_stderr: bool = False,
 ) -> str:
     """Buyruqni async ishga tushirib stdout matnini qaytaradi (bloklanmaydi).
 
@@ -567,14 +601,23 @@ async def run_command(
     cp850) to'g'ri o'qiladi (kirill mojibake yo'q). Windows'da CREATE_NO_WINDOW
     bilan ishga tushadi (konsol oynasi miltillamasin).
 
+    `include_stderr=True` — stderr ham qo'shiladi. Ba'zi diagnostika xabarlari
+    AYNAN stderr'ga yoziladi: macOS `ping` "Message too long" ni shu yerga
+    chiqaradi va uni tashlab yuborish path-MTU aniqlashni butunlay ishlamas
+    qilardi ("juda katta" javobi hech qachon ko'rinmasdi).
+
     Xato (buyruq yo'q / timeout / OS) bo'lsa bo'sh satr qaytaradi — chaqiruvchi
     "natija yo'q" deb degrade qilaverishi uchun (istisno ko'tarilmaydi).
     """
+    cmd = [resolve_binary(cmd[0]), *cmd[1:]] if cmd else cmd
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=(
+                asyncio.subprocess.STDOUT if include_stderr
+                else asyncio.subprocess.DEVNULL
+            ),
             creationflags=subprocess_flags(),
         )
     except (OSError, ValueError):

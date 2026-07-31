@@ -8,12 +8,21 @@ Qo'shimcha tez (bir martalik, scriptlarga mos) buyruqlar ham bor:
     systop trace HOST   -> traceroute
     systop mtr HOST     -> jonli mtr-uslubi traceroute (Ctrl+C to'xtatadi)
     systop lan          -> LAN host discovery (vendor bilan)
-    systop scan HOST    -> TCP port skaner
+    systop scan TARGET  -> TCP port skaner (host / CIDR / diapazon, --top, --banner)
+    systop nc HOST PORT -> xom TCP/TLS ulanish (ncat uslubi)
     systop dns NAME     -> DNS resolve + serverlar latency taqqoslash
     systop bw           -> per-interfeys bandwidth (--watch jonli)
     systop tls HOST     -> TLS sertifikat tekshiruvi (muddat, issuer, SAN)
     systop http URL     -> HTTP holat tekshiruvi (status, redirect, vaqt)
     systop conn         -> faol tarmoq ulanishlari (--listen faqat LISTEN)
+    systop web          -> web xizmatlar + boshqaruv panellari (--http80, --mgmt)
+    systop doctor       -> tarmoq muammolarini avtomatik topish (jiddiylik bo'yicha)
+    systop ntp          -> soat siljishi (clock skew) tekshiruvi — SNTP
+    systop route        -> marshrut jadvali + next-hop yetishuvi
+    systop mtu [HOST]   -> path MTU aniqlash (DF-ping, ikkilik qidiruv)
+    systop dhcp         -> DHCP server(lar)ni aniqlash (rogue DHCP)
+    systop arpwatch     -> ARP/NDP o'zgarishlari (MAC almashishi, dublikat)
+    systop wifi         -> Wi-Fi signal/SNR/kanal (--neighbours qo'shnilar)
     systop config       -> joriy konfiguratsiya / fayl yo'li
     systop info         -> interfeyslar, gateway, public IP
 
@@ -58,12 +67,16 @@ from systop._render import (
     styled_table,
 )
 from systop.core import _platform
-from systop.widgets._glyphs import dash, glyph
+from systop.widgets._glyphs import dash, data_cell, glyph
 
 # Exit kodlari — mazmunli, skriptlar uchun.
 EXIT_OK = 0
 EXIT_ERROR = 1  # umumiy xato
 EXIT_UNREACHABLE = 2  # nishon yetib bo'lmaydi / o'lik / muddat tugagan
+
+# `doctor` qaysi darajada "yiqildi" deb hisoblansin (jadval/JSON/CSV bir xil).
+DOCTOR_FAIL_CRITICAL = "critical"
+DOCTOR_FAIL_HIGH = "high"
 
 # Global chiqish formati (main() tomonidan o'rnatiladi).
 _FORMAT = "table"  # table | json | csv
@@ -205,6 +218,20 @@ def error(message: str) -> None:
 # --------------------------------------------------------------------------- #
 
 
+# `_to_dict` avtomatik qo'shmaydigan property'lar: ular asosiy maydonning
+# filtrlangan takrori bo'lib, payload'ni behuda ikki barobar qiladi.
+_TO_DICT_SKIP: frozenset[str] = frozenset({
+    "problems",            # Report.findings ning bir qismi
+    "open_ports",          # ScanResult.ports ning bir qismi
+    "responsive",          # SweepResult.hosts ning bir qismi
+    "defaults",            # RouteTable.routes ning bir qismi
+    "routable_defaults",
+    "responded",           # NtpReport.results ning bir qismi
+    "mac_changes",         # ArpDiff.changes ning bir qismi
+    "neighbours",          # WifiStatus.neighbours — maydon sifatida bor
+})
+
+
 def _to_dict(obj: Any) -> Any:
     """Dataclass'ni tozalangan lug'atga aylantiradi (property'lar bilan).
 
@@ -218,15 +245,51 @@ def _to_dict(obj: Any) -> Any:
             if f.name.startswith("_"):
                 continue
             out[f.name] = _to_dict(getattr(obj, f.name))
-        # Foydali hisoblanadigan property'larni qo'lda qo'shamiz.
-        for prop in ("loss_pct", "cidr", "total_bps", "is_open"):
-            if hasattr(type(obj), prop) and isinstance(getattr(type(obj), prop), property):
-                out[prop] = getattr(obj, prop)
+        # Hisoblanadigan property'larni AVTOMATIK qo'shamiz.
+        #
+        # Ilgari bu qo'lda yozilgan ro'yxat edi va har yangi dataclass property
+        # jimgina `--json`/`--format csv` dan tushib qolardi — audit 38 ta
+        # yo'qolgan maydonni topdi (`Interface.ipv6_global`, `WifiStatus.snr_db`,
+        # `MtuResult.is_reduced` va h.k.). Ro'yxatni yuritish ishlamadi, chunki
+        # uni unutish JIM xato beradi.
+        #
+        # Faqat SKALYAR yoki skalyar-ro'yxat qiymatlar olinadi: ichma-ich
+        # obyektlar payload'ni bir necha barobar shishirardi va CSV katakchasiga
+        # butun JSON blokini tiqardi. Filtrlangan ko'rinishlar (`problems`,
+        # `open_ports`, ...) ataylab tashlanadi — ular asosiy maydonning
+        # takrori.
+        for prop in dir(type(obj)):
+            if prop.startswith("_") or prop in _TO_DICT_SKIP or prop in out:
+                continue
+            attr = getattr(type(obj), prop, None)
+            if not isinstance(attr, property):
+                continue
+            try:
+                value = getattr(obj, prop)
+            except Exception:  # noqa: BLE001 — property hisoblashda xato bo'lsa
+                # Jim tashlab ketmaymiz: maydon yo'qligi sababi ko'rinsin.
+                out[prop] = None
+                continue
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                out[prop] = value
+            elif isinstance(value, (list, tuple)) and all(
+                isinstance(x, (str, int, float, bool)) for x in value
+            ):
+                out[prop] = list(value)
+            elif isinstance(value, dict) and all(
+                isinstance(x, (str, int, float, bool)) for x in value.values()
+            ):
+                out[prop] = dict(value)
         return out
     if isinstance(obj, dict):
         return {k: _to_dict(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
         return [_to_dict(v) for v in obj]
+    if isinstance(obj, (bytes, bytearray)):
+        # `json.dumps` bytes'ni seriyalay olmaydi va TypeError bilan yiqiladi
+        # (`nc --json` aynan shunday buzilardi). Matnga aylantiramiz — xom
+        # baytlar kerak bo'lsa `received_bytes_count`/`is_binary` xossalari bor.
+        return bytes(obj).decode("utf-8", errors="replace")
     return obj
 
 
@@ -320,7 +383,15 @@ def _build_parser() -> argparse.ArgumentParser:
         return p
 
     _with_globals(sub.add_parser("dashboard", help="Interaktiv TUI dashboard (default)"))
-    _with_globals(sub.add_parser("speed", help="Internet tezligini o'lchash"))
+    p_speed = _with_globals(sub.add_parser("speed", help="Internet tezligini o'lchash"))
+    p_speed.add_argument(
+        "--local", action="store_true",
+        help="lokal (IX) endpointlarni ham o'lchab, xalqaro bilan solishtirish",
+    )
+    p_speed.add_argument(
+        "--local-url", action="append", default=None, metavar="URL",
+        help="lokal endpoint URL (bir necha marta berish mumkin; config'ni bekor qiladi)",
+    )
 
     p_ping = _with_globals(
         sub.add_parser("ping", help="Lokal gateway + global serverlarni ping qilish")
@@ -355,15 +426,71 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     p_scan = _with_globals(sub.add_parser("scan", help="TCP port skaner (ochiq portlarni topish)"))
-    p_scan.add_argument("host", help="skaner qilinadigan host (IP yoki nom)")
+    p_scan.add_argument(
+        "targets",
+        nargs="*",
+        help="host / CIDR / diapazon: '10.0.0.5' '10.0.0.0/24' '10.0.0.1-50' 'example.com'",
+    )
     p_scan.add_argument(
         "--ports",
         default=None,
         help="portlar: '22,80,443' yoki '1-1024' (default: keng tarqalganlar)",
     )
     p_scan.add_argument(
+        "--top", type=int, default=None, metavar="N",
+        help="eng ko'p uchraydigan N portni skan qilish (nmap --top-ports uslubi)",
+    )
+    p_scan.add_argument(
+        "--banner", action="store_true",
+        help="ochiq portlardan xizmat versiyasini o'qish (nmap -sV yengil varianti)",
+    )
+    p_scan.add_argument(
+        "--open-only", action="store_true", help="faqat ochiq porti bor hostlarni ko'rsatish"
+    )
+    p_scan.add_argument(
+        "--polite", action="store_true",
+        help="sekin rejim (IPS/anti-scan himoyasi bor tarmoq uchun)",
+    )
+    p_scan.add_argument(
+        "--lan", action="store_true",
+        help="nishonlarni LAN'dan avtomatik olish (barcha faol interfeys tarmoqlari)",
+    )
+    p_scan.add_argument(
+        "--lan6", action="store_true",
+        help="nishonlar: NDP orqali topilgan IPv6 hostlar (IPv6 /64 ni sweep qilib bo'lmaydi)",
+    )
+    p_scan.add_argument(
+        "--max-hosts", type=int, default=1024,
+        help="CIDR/diapazondan olinadigan maksimal host soni (himoya chegarasi)",
+    )
+    p_scan.add_argument(
         "--timeout", type=float, default=1.5, help="har bir port uchun timeout (soniya)"
     )
+    _add_family_flags(p_scan)
+
+    # --- nc: ncat uslubidagi xom TCP/TLS mijoz ------------------------------
+    p_nc = _with_globals(sub.add_parser(
+        "nc", help="Xom TCP/TLS ulanish (ncat uslubi) — banner, qo'lda so'rov"
+    ))
+    p_nc.add_argument("host", help="host (IP yoki nom; IPv6 ham)")
+    p_nc.add_argument("port", type=int, help="port")
+    p_nc.add_argument(
+        "--send", default=None, metavar="TEXT",
+        help=r"yuboriladigan matn; \r\n \t \xNN ketma-ketliklari qo'llanadi",
+    )
+    p_nc.add_argument(
+        "--tls", action="store_true",
+        help="TLS bilan ulanish (sertifikat tekshirilmaydi)",
+    )
+    p_nc.add_argument("--hex", action="store_true", help="javobni hexdump ko'rinishida")
+    p_nc.add_argument(
+        "--timeout", type=float, default=5.0, help="ulanish timeout (soniya)"
+    )
+    p_nc.add_argument(
+        "--wait", type=float, default=None, metavar="SEC",
+        help="javobni qancha kutish (default: timeout bilan bir xil)",
+    )
+    _add_family_flags(p_nc)
 
     p_dns = _with_globals(sub.add_parser("dns", help="DNS resolve + serverlar latency taqqoslash"))
     p_dns.add_argument("name", help="resolve qilinadigan domen nomi")
@@ -406,10 +533,111 @@ def _build_parser() -> argparse.ArgumentParser:
         "--show", action="store_true", help="joriy (samarali) sozlamalarni ko'rsatish"
     )
 
-    _with_globals(sub.add_parser("lan", help="Lokal tarmoq hostlarini topish"))
+    p_lan = _with_globals(sub.add_parser("lan", help="Lokal tarmoq hostlarini topish"))
+    p_lan.add_argument(
+        "-6", "--ipv6", action="store_true",
+        help="IPv6 hostlarni ham topish (ff02::1 multicast + NDP jadval)",
+    )
+    p_lan.add_argument(
+        "--only-ipv6", action="store_true", help="faqat IPv6 (IPv4 sweep qilinmaydi)"
+    )
+    p_lan.add_argument(
+        "--global-only", action="store_true",
+        help="IPv6'da link-local (fe80::) manzillarni chiqarib tashlash",
+    )
+
+    # --- web: boshqaruv panellari va web xizmatlarni topish ------------------
+    p_web = _with_globals(sub.add_parser(
+        "web", help="Web xizmatlar + boshqaruv panellarini topish (LAN inventari)"
+    ))
+    p_web.add_argument(
+        "hosts", nargs="*",
+        help="tekshiriladigan hostlar; bo'sh bo'lsa LAN avtomatik topiladi",
+    )
+    p_web.add_argument(
+        "--ports", default=None,
+        help="portlar: '80' yoki '80,443,8080' (default: keng tarqalgan web portlar)",
+    )
+    p_web.add_argument(
+        "--admin-only", action="store_true", help="faqat boshqaruv panellarini ko'rsatish"
+    )
+    p_web.add_argument(
+        "--mgmt", action="store_true",
+        help="faqat tarmoqni boshqaruvchi qurilmalar (router/firewall/switch/NVR)",
+    )
+    p_web.add_argument(
+        "--http80", action="store_true",
+        help="qisqa yo'l: faqat 80-portni tekshirish (lokal HTTP ochiqligini topish)",
+    )
+    p_web.add_argument(
+        "--polite", action="store_true",
+        help="sekin rejim (IPS/anti-scan himoyasi bor tarmoq uchun)",
+    )
+    p_web.add_argument(
+        "--timeout", type=float, default=4.0, help="har bir so'rov uchun timeout"
+    )
+    p_web.add_argument(
+        "-6", "--ipv6", action="store_true", help="IPv6 hostlarni ham tekshirish"
+    )
+
+    # --- doctor: tarmoq muammolarini avtomatik topish ------------------------
+    p_doc = _with_globals(sub.add_parser(
+        "doctor", help="Tarmoq muammolarini avtomatik topish (jiddiylik bo'yicha)"
+    ))
+    p_doc.add_argument(
+        "--quick", action="store_true", help="tez rejim (web skan va IPv6 tashlanadi)"
+    )
+    p_doc.add_argument(
+        "--no-web", action="store_true", help="web/admin panel tekshiruvini o'tkazib yuborish"
+    )
+    p_doc.add_argument(
+        "--tls", default=None, help="TLS tekshiriladigan hostlar (vergul bilan)"
+    )
+    p_doc.add_argument(
+        "--max-hosts", type=int, default=64, help="LAN'da maksimal host soni"
+    )
+
+    p_ntp = _with_globals(sub.add_parser("ntp", help="Soat siljishi (NTP) tekshiruvi"))
+    p_ntp.add_argument("--servers", default=None, help="NTP serverlar (vergul bilan)")
+    p_ntp.add_argument("--timeout", type=float, default=3.0)
+
+    _with_globals(sub.add_parser("route", help="Marshrut jadvali + next-hop yetishuvi"))
+
+    p_mtu = _with_globals(sub.add_parser("mtu", help="Path MTU aniqlash (DF-ping)"))
+    p_mtu.add_argument("host", nargs="?", default="1.1.1.1", help="nishon (default 1.1.1.1)")
+    p_mtu.add_argument("--low", type=int, default=1200)
+    p_mtu.add_argument("--high", type=int, default=1500)
+
+    p_dhcp = _with_globals(sub.add_parser("dhcp", help="DHCP server(lar)ni aniqlash"))
+    p_dhcp.add_argument("--listen", type=float, default=4.0, help="broadcast javobini kutish (s)")
+
+    p_arp = _with_globals(sub.add_parser(
+        "arpwatch", help="ARP/NDP o'zgarishlari (MAC almashishi, dublikat)"
+    ))
+    p_arp.add_argument("--no-update", action="store_true", help="baseline'ni yangilamaslik")
+    p_arp.add_argument("--reset", action="store_true", help="baseline'ni qaytadan yozish")
+
+    p_wifi = _with_globals(sub.add_parser(
+        "wifi", help="Wi-Fi holati: signal, SNR, kanal, qo'shnilar"
+    ))
+    p_wifi.add_argument(
+        "--neighbours", action="store_true", help="atrofdagi tarmoqlarni ham ko'rsatish"
+    )
+
     _with_globals(sub.add_parser("info", help="Tarmoq interfeyslari va public IP"))
 
     return parser
+
+
+def _add_family_flags(p: argparse.ArgumentParser) -> None:
+    """`-4`/`-6` manzil oilasi bayroqlarini qo'shadi (o'zaro istisno)."""
+    g = p.add_mutually_exclusive_group()
+    g.add_argument(
+        "-4", "--ipv4", action="store_true", help="faqat IPv4 (A yozuvi)"
+    )
+    g.add_argument(
+        "-6", "--ipv6", action="store_true", help="faqat IPv6 (AAAA yozuvi)"
+    )
 
 
 def _resolve_format(args: argparse.Namespace) -> str:
@@ -486,7 +714,7 @@ def main() -> None:
 async def _dispatch(command: str, args: argparse.Namespace) -> int:
     """Buyruqni mos handler'ga yo'naltiradi; exit kod qaytaradi."""
     if command == "speed":
-        return await _cmd_speed()
+        return await _cmd_speed(local=args.local, local_urls=args.local_url)
     if command == "ping":
         return await _cmd_ping(ipv6=args.ipv6, watch=args.watch, targets_arg=args.targets)
     if command == "trace":
@@ -496,7 +724,30 @@ async def _dispatch(command: str, args: argparse.Namespace) -> int:
     if command == "mtr":
         return await _cmd_mtr(args.host, interval=args.interval, cycles=args.cycles)
     if command == "scan":
-        return await _cmd_scan(args.host, args.ports, args.timeout)
+        return await _cmd_scan(
+            args.targets,
+            args.ports,
+            args.timeout,
+            family=_family_from_args(args),
+            top=args.top,
+            banner=args.banner,
+            open_only=args.open_only,
+            polite=args.polite,
+            max_hosts=args.max_hosts,
+            from_lan=args.lan,
+            from_lan6=args.lan6,
+        )
+    if command == "nc":
+        return await _cmd_nc(
+            args.host,
+            args.port,
+            send=args.send,
+            tls=args.tls,
+            as_hex=args.hex,
+            timeout=args.timeout,
+            wait=args.wait,
+            family=_family_from_args(args),
+        )
     if command == "dns":
         return await _cmd_dns(args.name, resolvers_arg=args.resolvers)
     if command == "bw":
@@ -510,11 +761,55 @@ async def _dispatch(command: str, args: argparse.Namespace) -> int:
     if command == "config":
         return await _cmd_config(show=args.show, path_only=args.path)
     if command == "lan":
-        return await _cmd_lan()
+        return await _cmd_lan(
+            ipv6=args.ipv6,
+            only_ipv6=args.only_ipv6,
+            global_only=args.global_only,
+        )
+    if command == "web":
+        return await _cmd_web(
+            hosts=args.hosts,
+            ports_spec=("80" if args.http80 else args.ports),
+            admin_only=args.admin_only,
+            mgmt_only=args.mgmt,
+            polite=args.polite,
+            timeout=args.timeout,
+            ipv6=args.ipv6,
+        )
+    if command == "doctor":
+        return await _cmd_doctor(
+            quick=args.quick,
+            no_web=args.no_web,
+            tls_arg=args.tls,
+            max_hosts=args.max_hosts,
+        )
+    if command == "ntp":
+        return await _cmd_ntp(args.servers, args.timeout)
+    if command == "route":
+        return await _cmd_route()
+    if command == "mtu":
+        return await _cmd_mtu(args.host, args.low, args.high)
+    if command == "dhcp":
+        return await _cmd_dhcp(args.listen)
+    if command == "arpwatch":
+        return await _cmd_arpwatch(update=not args.no_update, reset=args.reset)
+    if command == "wifi":
+        return await _cmd_wifi(show_neighbours=args.neighbours)
     if command == "info":
         return await _cmd_info()
     error(f"Noma'lum buyruq: {command}")
     return EXIT_ERROR
+
+
+def _family_from_args(args: argparse.Namespace) -> str:
+    """`-4`/`-6` bayroqlarini `ports.FAMILY_*` qiymatiga aylantiradi."""
+    from systop.core.ports import FAMILY_AUTO, FAMILY_V4, FAMILY_V6
+
+    if getattr(args, "ipv6", False):
+        return FAMILY_V6
+    if getattr(args, "ipv4", False):
+        return FAMILY_V4
+    return FAMILY_AUTO
 
 
 # --------------------------------------------------------------------------- #
@@ -522,7 +817,7 @@ async def _dispatch(command: str, args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------- #
 
 
-async def _cmd_speed() -> int:
+async def _cmd_speed(local: bool = False, local_urls: list[str] | None = None) -> int:
     from systop.core.config import load_config
     from systop.core.speed import run_speedtest
 
@@ -551,6 +846,55 @@ async def _cmd_speed() -> int:
     )
     emit_table(table)
     note(f"[dim]download {result.download_mbps:.1f} · upload {result.upload_mbps:.1f} Mbps[/]")
+
+    # --- lokal (IX) vs xalqaro ---------------------------------------------
+    urls = local_urls or (cfg.speed_local_urls if local else [])
+    if not urls:
+        if local:
+            error(
+                "Lokal endpoint berilmagan. `--local-url URL` bilan bering yoki "
+                "config'ga qo'shing:\n"
+                "  speed_local_urls = [\"https://mirror.example.uz/10MB.bin\"]\n"
+                "Endpoint ataylab kodga yozilmagan — u har mamlakatda boshqacha "
+                "(TAS-IX, KazIX, MSK-IX va h.k.)."
+            )
+            return EXIT_ERROR
+        return EXIT_OK
+
+    from systop.core.speed import SpeedComparison, measure_local
+
+    with status(f"[bold]{len(urls)} ta lokal endpoint o'lchanmoqda..."):
+        locals_ = await measure_local(urls, duration=min(cfg.speed_duration, 5.0))
+    cmp = SpeedComparison(international_mbps=result.download_mbps, local=locals_)
+
+    lt = styled_table("Lokal (IX) vs xalqaro")
+    lt.add_column("Endpoint", overflow="ellipsis")
+    lt.add_column("Tezlik", justify="right")
+    lt.add_column("Latency", justify="right")
+    lt.add_column("Holat")
+    for r in locals_:
+        if r.ok:
+            lt.add_row(
+                data_cell(r.url), f"[{SUCCESS}]{r.mbps:.1f}[/] Mbps",
+                f"{r.latency_ms:.0f} ms", f"[{SUCCESS}]ok[/]",
+            )
+        else:
+            lt.add_row(data_cell(r.url), dash(), dash(), f"[{ERROR}]{r.error}[/]")
+    lt.add_row(
+        "[dim]xalqaro (Cloudflare)[/]",
+        f"[{SECONDARY}]{cmp.international_mbps:.1f}[/] Mbps", dash(), "",
+    )
+    emit_table(lt)
+
+    ratio = cmp.ratio
+    if ratio is not None and cmp.best_local_mbps > 0:
+        if cmp.is_throttled_international:
+            note(
+                f"[{WARNING}]Lokal xalqarodan {ratio:.1f}x tez[/] — xalqaro kanal "
+                "cheklangan (tarif yoki shaping). Bu apparat nosozligi EMAS."
+            )
+        else:
+            note(f"[dim]lokal/xalqaro nisbati {ratio:.1f}x — sezilarli farq yo'q[/]")
     return EXIT_OK
 
 
@@ -658,17 +1002,83 @@ async def _cmd_ping_watch(targets: dict[str, str]) -> int:
     return EXIT_OK
 
 
-async def _cmd_scan(host: str, ports_spec: str | None, timeout: float) -> int:
-    from systop.core.ports import parse_ports, scan_host
+async def _cmd_scan(
+    targets_spec: list[str],
+    ports_spec: str | None,
+    timeout: float,
+    family: str = "auto",
+    top: int | None = None,
+    banner: bool = False,
+    open_only: bool = False,
+    polite: bool = False,
+    max_hosts: int = 1024,
+    from_lan: bool = False,
+    from_lan6: bool = False,
+) -> int:
+    """Port skaner — bitta host, butun LAN (CIDR/diapazon) yoki IPv6 qo'shnilar.
+
+    Bitta hostga kengaysa batafsil port jadvali, ko'pga kengaysa har host bir
+    qator ko'rinishidagi sweep xulosasi chiqadi (nmap uslubi).
+    """
+    from systop.core.ports import parse_ports, parse_targets, scan_host, top_ports
 
     ports = parse_ports(ports_spec) if ports_spec else None
     if ports_spec and not ports:
         error(f"'{ports_spec}' portlar ro'yxati noto'g'ri.")
         return EXIT_ERROR
+    if top is not None:
+        if top < 1:
+            error("--top kamida 1 bo'lishi kerak.")
+            return EXIT_ERROR
+        ports = top_ports(top)
 
+    hosts = parse_targets(",".join(targets_spec), max_hosts=max_hosts) if targets_spec else []
+
+    # `--lan` / `--lan6`: nishonlarni tarmoqdan avtomatik olamiz. IPv6'da
+    # subnet sweep imkonsiz (2^64 manzil), shuning uchun NDP qo'shni
+    # jadvalidan topilgan ANIQ manzillar skan qilinadi.
+    if from_lan or from_lan6:
+        from systop.core.topology import discover_lan, discover_lan6
+
+        with status("[bold]Nishonlar LAN'dan aniqlanmoqda..."):
+            if from_lan:
+                found = await discover_lan(resolve=False, all_interfaces=True)
+                hosts += [h.ip for h in found if h.ip not in hosts]
+            if from_lan6:
+                found6 = await discover_lan6(include_link_local=True)
+                hosts += [h.ip for h in found6 if h.ip not in hosts]
+        if from_lan6 and not from_lan:
+            family = "ipv6"
+
+    hosts = hosts[:max_hosts]
+    if not hosts:
+        error(
+            f"Nishon aniqlanmadi: {' '.join(targets_spec) or '(bo`sh)'}"
+            + ("" if (from_lan or from_lan6) else " — host bering yoki --lan/--lan6 ishlating")
+        )
+        return EXIT_ERROR
+
+    # Ko'p host => sweep rejimi.
+    if len(hosts) > 1:
+        return await _scan_sweep(
+            hosts, ports, timeout, family, banner, open_only, polite
+        )
+
+    host = hosts[0]
     count = len(ports) if ports else "keng tarqalgan"
-    with status(f"[bold]{host} skaner qilinmoqda ({count} port)..."):
-        result = await scan_host(host, ports=ports, timeout=timeout)
+    fam_note = "" if family == "auto" else f", {family}"
+    with status(f"[bold]{host} skaner qilinmoqda ({count} port{fam_note})..."):
+        result = await scan_host(host, ports=ports, timeout=timeout, family=family)
+        if banner:
+            from systop.core.ports import grab_banner, parse_banner
+
+            for p in result.open_ports:
+                raw = await grab_banner(result.resolved_ip or host, p.port, timeout=timeout)
+                if raw:
+                    svc, ver = parse_banner(raw)
+                    p.banner = ver
+                    if svc and not p.service:
+                        p.service = svc
 
     if result.error:
         if _FORMAT == "json":
@@ -698,8 +1108,14 @@ async def _cmd_scan(host: str, ports_spec: str | None, timeout: float) -> int:
         emit_table(table)
         note(f"[{WARNING}]Hech qaysi port ochiq emas[/] ({len(result.ports)} ta tekshirildi).")
         return EXIT_UNREACHABLE
+    has_banner = any(p.banner for p in open_ports)
+    if has_banner:
+        table.add_column("Versiya / banner", overflow="ellipsis")
     for p in open_ports:
-        table.add_row(str(p.port), f"[{SUCCESS}]ochiq[/]", p.service or dash(), rtt_cell(p.rtt_ms))
+        row = [str(p.port), f"[{SUCCESS}]ochiq[/]", p.service or dash(), rtt_cell(p.rtt_ms)]
+        if has_banner:
+            row.append(p.banner or dash())
+        table.add_row(*row)
     emit_table(table)
     filtered = sum(1 for p in result.ports if p.state == "filtered")
     closed = sum(1 for p in result.ports if p.state == "closed")
@@ -710,17 +1126,161 @@ async def _cmd_scan(host: str, ports_spec: str | None, timeout: float) -> int:
     return EXIT_OK
 
 
+async def _scan_sweep(
+    hosts: list[str],
+    ports: list[int] | None,
+    timeout: float,
+    family: str,
+    banner: bool,
+    open_only: bool,
+    polite: bool,
+) -> int:
+    """Ko'p host bo'yicha sweep — har host bir qator (nmap uslubi xulosa)."""
+    from systop.core.ports import scan_targets, top_ports
+
+    port_list = ports or top_ports(20)
+    conc = 8 if polite else 64
+    delay = 0.2 if polite else 0.0
+    with status(
+        f"[bold]{len(hosts)} host x {len(port_list)} port skaner qilinmoqda"
+        + (" (sekin rejim)" if polite else "")
+        + "..."
+    ):
+        sweep = await scan_targets(
+            hosts, ports=port_list, timeout=timeout, concurrency=conc,
+            family=family, banner=banner, delay=delay,
+        )
+
+    shown = sweep.responsive if open_only else [h for h in sweep.hosts if not h.error]
+    if _FORMAT == "json":
+        emit_json(sweep)
+        return EXIT_OK if sweep.total_open else EXIT_UNREACHABLE
+    if _FORMAT == "csv":
+        # CSV'da har host bir qator bo'lishi kerak - portlarni yig'ib beramiz.
+        rows = [
+            {
+                "host": h.host,
+                "resolved_ip": h.resolved_ip or "",
+                "family": h.resolved_family or "",
+                "open_ports": " ".join(str(p.port) for p in h.open_ports),
+                "open_count": len(h.open_ports),
+                "services": " ".join(p.service or "?" for p in h.open_ports),
+            }
+            for h in shown
+        ]
+        emit_csv(rows)
+        return EXIT_OK if sweep.total_open else EXIT_UNREACHABLE
+
+    if not sweep.responsive:
+        note(
+            f"[{WARNING}]Hech bir hostda ochiq port topilmadi[/] "
+            f"({sweep.scanned_hosts} host x {sweep.scanned_ports} port)."
+        )
+        return EXIT_UNREACHABLE
+
+    table = styled_table(
+        f"Port sweep - {len(sweep.responsive)}/{sweep.scanned_hosts} hostda "
+        f"{sweep.total_open} ochiq port"
+    )
+    table.add_column("Host", no_wrap=True)
+    table.add_column("Ochiq portlar", no_wrap=True)
+    table.add_column("Xizmatlar", overflow="ellipsis")
+    if banner:
+        table.add_column("Banner", overflow="ellipsis")
+    for h in shown:
+        if not h.open_ports:
+            continue
+        row = [
+            h.resolved_ip or h.host,
+            " ".join(f"[{SUCCESS}]{p.port}[/]" for p in h.open_ports),
+            ", ".join(p.service or "?" for p in h.open_ports),
+        ]
+        if banner:
+            row.append("; ".join(p.banner for p in h.open_ports if p.banner) or dash())
+        table.add_row(*row)
+    emit_table(table)
+
+    failed = sum(1 for h in sweep.hosts if h.error)
+    parts = [f"{sweep.scanned_hosts} host x {sweep.scanned_ports} port"]
+    if failed:
+        parts.append(f"{failed} resolve bo'lmadi")
+    if polite:
+        parts.append("sekin rejim")
+    note(f"[dim]{' - '.join(parts)}[/]")
+    return EXIT_OK
+
+
+async def _cmd_nc(
+    host: str,
+    port: int,
+    send: str | None,
+    tls: bool,
+    as_hex: bool,
+    timeout: float,
+    wait: float | None,
+    family: str,
+) -> int:
+    """ncat uslubidagi xom TCP/TLS ulanish."""
+    from systop.core.netcat import connect, to_hexdump, unescape
+
+    payload = unescape(send) if send else None
+    label = f"{host}:{port}" + (" (TLS)" if tls else "")
+    with status(f"[bold]{label} ga ulanmoqda..."):
+        res = await connect(
+            host, port, send=payload, tls=tls, timeout=timeout,
+            family=family, wait_read=wait,
+        )
+
+    if _FORMAT == "json":
+        emit_json(res)
+        return EXIT_OK if res.connected else EXIT_UNREACHABLE
+    if _FORMAT == "csv":
+        emit_csv([res])
+        return EXIT_OK if res.connected else EXIT_UNREACHABLE
+
+    if not res.connected:
+        error(res.error or "ulanib bo'lmadi")
+        return EXIT_UNREACHABLE
+
+    table = styled_table(f"nc {label}")
+    table.add_column("Maydon")
+    table.add_column("Qiymat", overflow="fold")
+    table.add_row("Manzil", f"{res.resolved_ip} ({res.family})")
+    table.add_row("Holat", f"[{SUCCESS}]ulandi[/] - {res.elapsed_ms:.0f} ms")
+    if res.tls:
+        table.add_row("TLS", f"{res.tls_version or dash()} - {res.tls_cipher or dash()}")
+        if res.peer_cert_sha256:
+            table.add_row("Cert SHA-256", res.peer_cert_sha256)
+    if res.sent_bytes:
+        table.add_row("Yuborildi", f"{res.sent_bytes} bayt")
+    table.add_row("Qabul qilindi", f"{res.received_bytes_count} bayt")
+    emit_table(table)
+
+    if res.received:
+        if as_hex or res.is_binary:
+            note("[dim]-- javob (hexdump) --[/]")
+            console.print(to_hexdump(res.received[:1024]))
+        else:
+            note("[dim]-- javob --[/]")
+            console.print(res.received_text[:4000].rstrip())
+    else:
+        note("[dim]Javob kelmadi (xizmat so'rov kutayotgan bo'lishi mumkin - --send bering).[/]")
+    return EXIT_OK
+
+
 async def _cmd_dns(name: str, resolvers_arg: str | None = None) -> int:
-    from systop.core.config import load_config
     from systop.core.dns import diagnose_dns
 
+    # MUHIM: `load_config().dns_resolvers` ni SHARTSIZ uzatib bo'lmaydi.
+    # `DEFAULT_DNS_RESOLVERS` da 3 ta, `PUBLIC_RESOLVERS` da 4 ta server bor —
+    # config fayli yo'q har bir foydalanuvchi jimgina OpenDNS'ni yo'qotardi.
+    # Shuning uchun faqat foydalanuvchi ATAYLAB bergan qiymat override qiladi.
     resolvers = _split_csv_arg(resolvers_arg)
-    if not resolvers:
-        resolvers = list(load_config().dns_resolvers)
-    verbose(f"resolverlar: {', '.join(resolvers) or '(default)'}")
+    override: dict[str, str] | None = {r: r for r in resolvers} if resolvers else None
+    verbose(f"resolverlar: {', '.join(resolvers) or '(tizim + ommaviy)'}")
 
     with status(f"[bold]{name} uchun DNS diagnostika..."):
-        result = await diagnose_dns(name)
+        result = await diagnose_dns(name, resolvers=override)
 
     if _FORMAT == "json":
         emit_json(result)
@@ -733,7 +1293,13 @@ async def _cmd_dns(name: str, resolvers_arg: str | None = None) -> int:
         error(f"Tizim resolveri: {result.system_error}")
     else:
         addrs = ", ".join(result.system_addresses) or dash()
-        note(f"[dim]Tizim resolveri:[/] [bold]{addrs}[/]")
+        note(f"[dim]Tizim resolveri (A):[/] [bold]{addrs}[/]")
+        if result.aaaa_addresses:
+            note(
+                f"[dim]AAAA (IPv6):[/] [bold]{', '.join(result.aaaa_addresses)}[/]"
+            )
+        elif result.tool:
+            note("[dim]AAAA (IPv6): yozuv yo'q[/]")
 
     if not result.resolvers:
         note(
@@ -1114,11 +1680,22 @@ async def _cmd_config(show: bool = False, path_only: bool = False) -> int:
     return EXIT_OK
 
 
-async def _cmd_lan() -> int:
-    from systop.core.topology import discover_lan
+async def _cmd_lan(
+    ipv6: bool = False,
+    only_ipv6: bool = False,
+    global_only: bool = False,
+) -> int:
+    from systop.core.topology import discover_lan, discover_lan6
 
-    with status("[bold]LAN skanerlanmoqda..."):
-        hosts = await discover_lan(resolve=True)
+    hosts: list = []
+    if not only_ipv6:
+        with status("[bold]LAN skanerlanmoqda (IPv4)..."):
+            hosts += await discover_lan(resolve=True)
+    if ipv6 or only_ipv6:
+        with status("[bold]IPv6 qo'shnilari izlanmoqda (ff02::1 + NDP)..."):
+            hosts += await discover_lan6(
+                resolve=True, include_link_local=not global_only
+            )
 
     if _FORMAT == "json":
         emit_json(hosts)
@@ -1127,7 +1704,11 @@ async def _cmd_lan() -> int:
         emit_csv(hosts)
         return EXIT_OK
 
-    table = styled_table(f"LAN hostlar ({len(hosts)} ta)")
+    v4 = sum(1 for h in hosts if h.family == "ipv4")
+    v6 = len(hosts) - v4
+    title = f"LAN hostlar ({len(hosts)} ta"
+    title += f" — IPv4: {v4}, IPv6: {v6})" if v6 else ")"
+    table = styled_table(title)
     table.add_column("IP")
     table.add_column("MAC")
     table.add_column("Vendor")
@@ -1135,11 +1716,557 @@ async def _cmd_lan() -> int:
     table.add_column("RTT ms", justify="right")
     table.add_column("Rol")
     for h in hosts:
-        role = f"[{WARNING}]{glyph('gateway')}[/] gateway" if h.is_gateway else "host"
+        if h.is_gateway:
+            role = f"[{WARNING}]{glyph('gateway')}[/] gateway"
+        elif h.family == "ipv6":
+            role = "[dim]link-local[/]" if h.is_link_local else "IPv6 host"
+        else:
+            role = "host"
         rtt = rtt_cell(h.rtt_ms) if h.rtt_ms else f"[dim]{dash()}[/]"
         table.add_row(h.ip, h.mac or dash(), h.vendor or dash(), h.hostname or dash(), rtt, role)
     emit_table(table)
-    note(f"[dim]{len(hosts)} host topildi · /24 ping sweep + ARP[/]")
+
+    src = []
+    if not only_ipv6:
+        src.append("/24 ping sweep + ARP")
+    if ipv6 or only_ipv6:
+        src.append("ff02::1 multicast + NDP")
+    note(f"[dim]{len(hosts)} host topildi · {' · '.join(src)}[/]")
+    return EXIT_OK
+
+
+async def _cmd_web(
+    hosts: list[str],
+    ports_spec: str | None,
+    admin_only: bool,
+    mgmt_only: bool,
+    polite: bool,
+    timeout: float,
+    ipv6: bool,
+) -> int:
+    """Web xizmatlar va boshqaruv panellarini topadi."""
+    from systop.core.diagnose import is_management_device
+    from systop.core.ports import parse_ports
+    from systop.core.topology import discover_lan, discover_lan6
+    from systop.core.webscan import WEB_PORTS, discover_web, summarize
+
+    ports = parse_ports(ports_spec) if ports_spec else None
+    if ports_spec and not ports:
+        error(f"'{ports_spec}' portlar ro'yxati noto'g'ri.")
+        return EXIT_ERROR
+
+    # Host berilmasa — LAN'ni o'zimiz topamiz.
+    targets = list(hosts)
+    if not targets:
+        with status("[bold]LAN hostlari izlanmoqda..."):
+            found = await discover_lan(resolve=False)
+            targets = [h.ip for h in found]
+            if ipv6:
+                v6 = await discover_lan6(include_link_local=False)
+                targets += [h.ip for h in v6]
+        if not targets:
+            error("LAN'da host topilmadi. Hostni qo'lda bering: systop web 192.168.1.1")
+            return EXIT_UNREACHABLE
+
+    n_ports = len(ports) if ports else len(WEB_PORTS)
+    delay = 0.3 if polite else 0.0
+    conc = 4 if polite else 16
+    with status(
+        f"[bold]{len(targets)} host × {n_ports} port tekshirilmoqda"
+        + (" (sekin rejim)" if polite else "")
+        + "..."
+    ):
+        services = await discover_web(
+            targets, ports=ports, timeout=timeout,
+            concurrency=conc, delay=delay, admin_only=admin_only,
+        )
+
+    if mgmt_only:
+        services = [s for s in services if is_management_device(s.device_kind)]
+
+    if _FORMAT == "json":
+        emit_json(services)
+        return EXIT_OK if services else EXIT_UNREACHABLE
+    if _FORMAT == "csv":
+        emit_csv(services)
+        return EXIT_OK if services else EXIT_UNREACHABLE
+
+    if not services:
+        note(f"[{WARNING}]Web xizmat topilmadi[/] ({len(targets)} host tekshirildi).")
+        return EXIT_UNREACHABLE
+
+    st = summarize(services)
+    table = styled_table(
+        f"Web xizmatlar ({st['total']} ta · boshqaruv paneli: {st['admin']})"
+    )
+    # Manzil qisqarmasligi kerak — u natijaning kaliti (qaysi host, qaysi port).
+    table.add_column("Manzil", no_wrap=True)
+    table.add_column("Mahsulot", no_wrap=True)
+    table.add_column("Tur")
+    table.add_column("Sarlavha", overflow="ellipsis")
+    table.add_column("Kod", justify="right")
+    table.add_column("Xavf")
+    for s in services:
+        risk_map = {
+            "high": f"[{ERROR}]yuqori[/]",
+            "medium": f"[{WARNING}]o'rta[/]",
+            "low": f"[{SUCCESS}]past[/]",
+            "none": f"[dim]{dash()}[/]",
+        }
+        addr = f"{s.scheme}://{s.ip}:{s.port}"
+        mgmt = " ⚙" if is_management_device(s.device_kind) else ""
+        table.add_row(
+            addr,
+            (s.product or dash()) + mgmt,
+            s.device_kind or dash(),
+            (s.title or dash())[:38],
+            str(s.status or dash()),
+            risk_map.get(s.risk, dash()),
+        )
+    emit_table(table)
+
+    parts = [f"{st['admin']} boshqaruv paneli"]
+    if st["insecure_admin"]:
+        parts.append(f"[{WARNING}]{st['insecure_admin']} tasi shifrlanmagan HTTP ustida[/]")
+    if st["high_risk"]:
+        parts.append(f"[{ERROR}]{st['high_risk']} tasida parol ochiq matnda[/]")
+    if st["http_80"]:
+        parts.append(f"{st['http_80']} tasi 80-portda")
+    note("[dim]⚙ = tarmoqni boshqaruvchi qurilma · [/]" + " · ".join(parts))
+    return EXIT_OK
+
+
+def _doctor_exit_code(report: Any) -> int:
+    """`doctor` uchun YAGONA exit-kod qoidasi (jadval, JSON va CSV uchun bir xil).
+
+    Ilgari jadval va mashina rejimi turli qoidaga tayanardi: jadval faqat
+    critical/high da 2 qaytarardi, `--json` esa INFO bo'lmagan HAR qanday
+    topilmada. Natijada `systop doctor` muvaffaqiyat, `systop doctor --json`
+    esa muvaffaqiyatsizlik qaytarardi — bir xil tarmoqda, bir xil sekundda.
+    Skript uchun bu jim yolg'on: har normal LAN (SMB ochiq + bitta sekin
+    resolver = medium) "yiqildi" deb hisoblanardi.
+    """
+    return EXIT_UNREACHABLE if report.worst_severity in (
+        DOCTOR_FAIL_CRITICAL, DOCTOR_FAIL_HIGH
+    ) else EXIT_OK
+
+
+async def _cmd_doctor(
+    quick: bool, no_web: bool, tls_arg: str | None, max_hosts: int
+) -> int:
+    """Tarmoq muammolarini avtomatik topadi va jiddiylik bo'yicha ko'rsatadi."""
+    from systop.core.diagnose import (
+        SEV_CRITICAL,
+        SEV_HIGH,
+        SEV_INFO,
+        SEV_LOW,
+        SEV_MEDIUM,
+        run_diagnostics,
+    )
+
+    tls_hosts = [h.strip() for h in tls_arg.split(",") if h.strip()] if tls_arg else None
+
+    with status("[bold]Tarmoq tekshirilmoqda (interfeys → ping → DNS → LAN → web)..."):
+        report = await run_diagnostics(
+            quick=quick,
+            include_web=not no_web,
+            tls_hosts=tls_hosts,
+            max_hosts=max_hosts,
+        )
+
+    if _FORMAT == "json":
+        emit_json(report)
+        return _doctor_exit_code(report)
+    if _FORMAT == "csv":
+        emit_csv(report.findings)
+        return _doctor_exit_code(report)
+
+    sev_style = {
+        SEV_CRITICAL: f"[{ERROR}]KRITIK[/]",
+        SEV_HIGH: f"[{ERROR}]JIDDIY[/]",
+        SEV_MEDIUM: f"[{WARNING}]O'RTA[/]",
+        SEV_LOW: "[dim]KICHIK[/]",
+        SEV_INFO: "[dim]ma'lumot[/]",
+    }
+    counts = report.counts
+    head = f"Tarmoq diagnostikasi — {len(report.problems)} muammo"
+    if not report.problems:
+        head = "Tarmoq diagnostikasi — muammo topilmadi"
+    table = styled_table(head)
+    table.add_column("Daraja")
+    table.add_column("Bo'lim")
+    table.add_column("Muammo")
+    table.add_column("Nima qilish kerak")
+    for f in report.findings:
+        table.add_row(
+            sev_style.get(f.severity, f.severity),
+            f.category,
+            f.title,
+            (f.fix or f.detail)[:70],
+        )
+    emit_table(table)
+
+    summary = " · ".join(
+        f"{lvl}: {counts[lvl]}" for lvl in
+        (SEV_CRITICAL, SEV_HIGH, SEV_MEDIUM, SEV_LOW, SEV_INFO)
+        if counts.get(lvl)
+    )
+    note(
+        f"[dim]{report.checks_run} tekshiruv · {report.duration_ms / 1000:.1f}s"
+        + (f" · {summary}" if summary else "")
+        + (f" · o'tkazib yuborildi: {', '.join(report.skipped)}" if report.skipped else "")
+        + "[/]"
+    )
+    if _VERBOSE:
+        for f in report.problems:
+            note(f"\n[bold]{f.title}[/]\n  {f.detail}" + (f"\n  → {f.fix}" if f.fix else ""))
+
+    return _doctor_exit_code(report)
+
+
+async def _cmd_ntp(servers_arg: str | None, timeout: float) -> int:
+    """Soat siljishini NTP orqali tekshiradi."""
+    from systop.core.ntp import check_time
+
+    servers = None
+    if servers_arg:
+        parts = [x.strip() for x in servers_arg.split(",") if x.strip()]
+        servers = {p: p for p in parts}
+    with status("[bold]NTP serverlari so'ralmoqda..."):
+        rep = await check_time(servers, timeout=timeout)
+
+    if _FORMAT == "json":
+        emit_json(rep)
+        return EXIT_OK if rep.responded else EXIT_UNREACHABLE
+    if _FORMAT == "csv":
+        emit_csv(rep.results)
+        return EXIT_OK if rep.responded else EXIT_UNREACHABLE
+
+    med = rep.median_offset_s
+    title = "Soat tekshiruvi"
+    if med is not None:
+        title += f" - mediana siljish {med * 1000:+.0f} ms"
+    table = styled_table(title)
+    table.add_column("Server", no_wrap=True)
+    table.add_column("Holat")
+    table.add_column("Siljish", justify="right")
+    table.add_column("RTT ms", justify="right")
+    table.add_column("Stratum", justify="right")
+    sev_color = {"ok": SUCCESS, "warn": WARNING, "high": ERROR, "critical": ERROR}
+    for r in rep.results:
+        if not r.ok:
+            table.add_row(data_cell(r.label), f"[{ERROR}]{r.error or 'xato'}[/]",
+                          dash(), dash(), dash())
+            continue
+        col = sev_color.get(r.severity, WARNING)
+        table.add_row(
+            data_cell(r.label),
+            f"[{SUCCESS}]ok[/]",
+            f"[{col}]{r.offset_ms:+.0f} ms[/]",
+            f"{r.delay_ms:.0f}",
+            str(r.stratum),
+        )
+    emit_table(table)
+    if med is not None and abs(med) >= 1.0:
+        note(f"[{WARNING}]Soat {med:+.1f} s siljigan[/] - Kerberos/TLS/loglarni buzishi mumkin.")
+    else:
+        note(f"[dim]{len(rep.responded)}/{len(rep.results)} server javob berdi - soat joyida[/]")
+    return EXIT_OK if rep.responded else EXIT_UNREACHABLE
+
+
+async def _cmd_route() -> int:
+    """Marshrut jadvali va default next-hop yetishuvi."""
+    from systop.core.routes import check_next_hops, list_routes
+
+    with status("[bold]Marshrut jadvali o'qilmoqda..."):
+        table_data = await list_routes()
+        alive = await check_next_hops(table_data)
+
+    if table_data.error:
+        error(table_data.error)
+        return EXIT_ERROR
+    if _FORMAT == "json":
+        emit_json(table_data)
+        return EXIT_OK
+    if _FORMAT == "csv":
+        emit_csv(table_data.routes)
+        return EXIT_OK
+
+    t = styled_table(
+        f"Marshrutlar ({len(table_data.routes)} ta, "
+        f"{len(table_data.routable_defaults)} ma'noli default)"
+    )
+    t.add_column("Nishon", no_wrap=True)
+    t.add_column("Gateway", no_wrap=True)
+    t.add_column("Interfeys")
+    t.add_column("Oila")
+    t.add_column("Holat")
+    for r in table_data.routes:
+        state = ""
+        if r.is_default and r.gateway in alive:
+            state = f"[{SUCCESS}]tirik[/]" if alive[r.gateway] else f"[{ERROR}]javobsiz[/]"
+        elif r.is_default:
+            state = "[dim]link-local[/]"
+        t.add_row(
+            data_cell(r.destination),
+            data_cell(r.gateway, dash()),
+            data_cell(r.interface, dash()),
+            r.family,
+            state or "[dim]-[/]",
+        )
+    emit_table(t)
+    if table_data.has_vpn_split_hack:
+        note(f"[{WARNING}]VPN 0.0.0.0/1 + 128.0.0.0/1 bilan butun trafikni olgan[/]")
+    dead = [g for g, ok in alive.items() if not ok]
+    if dead:
+        note(f"[{ERROR}]Javob bermayotgan gateway: {', '.join(dead)}[/]")
+        return EXIT_UNREACHABLE
+    return EXIT_OK
+
+
+async def _cmd_mtu(host: str, low: int, high: int) -> int:
+    """Path MTU aniqlash."""
+    from systop.core.mtu import discover_path_mtu
+
+    with status(f"[bold]{host} gacha path MTU aniqlanmoqda (DF-ping)..."):
+        res = await discover_path_mtu(host, low=low, high=high)
+
+    if _FORMAT == "json":
+        emit_json(res)
+        return EXIT_UNREACHABLE if res.error else EXIT_OK
+    if _FORMAT == "csv":
+        emit_csv([res])
+        return EXIT_UNREACHABLE if res.error else EXIT_OK
+
+    if res.error:
+        error(res.error)
+        return EXIT_UNREACHABLE
+    t = styled_table(f"Path MTU - {host}")
+    t.add_column("Maydon")
+    t.add_column("Qiymat")
+    t.add_row("Path MTU", f"[b]{res.path_mtu}[/] bayt")
+    t.add_row("Max payload", str(res.max_payload))
+    t.add_row("Oila", res.family)
+    t.add_row("Probe soni", str(res.probes))
+    if res.likely_cause:
+        t.add_row("Ehtimoliy sabab", res.likely_cause)
+    emit_table(t)
+    if res.is_reduced:
+        note(
+            f"[{WARNING}]MTU 1500 dan kichik[/] - katta javobli saytlar qotishi "
+            "mumkin (PMTUD qora tuynugi). MSS clamping yoqing."
+        )
+        return EXIT_UNREACHABLE
+    note("[dim]Standart Ethernet MTU - muammo yo'q[/]")
+    return EXIT_OK
+
+
+async def _cmd_dhcp(listen_s: float) -> int:
+    """DHCP serverlarni aniqlash + faol lease."""
+    from systop.core.dhcp import current_lease, discover_servers
+
+    with status("[bold]DHCP tekshirilmoqda..."):
+        lease = await current_lease()
+        probe = await discover_servers(listen_s=listen_s)
+
+    if _FORMAT == "json":
+        emit_json({"lease": lease, "probe": probe})
+        return EXIT_OK
+    if _FORMAT == "csv":
+        emit_csv(probe.offers or ([lease] if lease else []))
+        return EXIT_OK
+
+    t = styled_table("DHCP")
+    t.add_column("Manba", no_wrap=True)
+    t.add_column("Server", no_wrap=True)
+    t.add_column("IP")
+    t.add_column("Router")
+    t.add_column("DNS")
+    t.add_column("Lease")
+    if lease:
+        t.add_row(
+            "faol lease",
+            data_cell(lease.identity),
+            data_cell(lease.offered_ip, dash()),
+            data_cell(", ".join(lease.routers), dash()),
+            data_cell(", ".join(lease.dns), dash()),
+            f"{(lease.lease_seconds or 0) // 3600}h" if lease.lease_seconds else dash(),
+        )
+    for o in probe.offers:
+        t.add_row(
+            "broadcast",
+            data_cell(o.identity),
+            data_cell(o.offered_ip, dash()),
+            data_cell(", ".join(o.routers), dash()),
+            data_cell(", ".join(o.dns), dash()),
+            f"{(o.lease_seconds or 0) // 3600}h" if o.lease_seconds else dash(),
+        )
+    emit_table(t)
+
+    servers = list(probe.servers)
+    if lease and lease.identity not in servers:
+        servers.append(lease.identity)
+    if len(servers) > 1:
+        note(f"[{ERROR}]{len(servers)} ta DHCP server topildi - rogue DHCP ehtimoli![/]")
+        return EXIT_UNREACHABLE
+    if probe.partial:
+        note(
+            "[dim]Broadcast probe'ga javob kelmadi. Bu 'server yo'q' degani EMAS: "
+            "root'siz 68-portga bog'lanib bo'lmaydi, qat'iy RFC serverlar faqat "
+            "o'sha portga javob beradi. Faol lease ishonchli manba.[/]"
+        )
+    return EXIT_OK
+
+
+async def _cmd_arpwatch(update: bool, reset: bool) -> int:
+    """ARP/NDP o'zgarishlarini baseline bilan solishtiradi."""
+    from systop.core.arpwatch import baseline_path, check
+
+    if reset:
+        try:
+            baseline_path().unlink(missing_ok=True)
+            note("[dim]Baseline o'chirildi - qaytadan yoziladi.[/]")
+        except OSError as exc:
+            error(f"baseline o'chirilmadi: {exc}")
+            return EXIT_ERROR
+
+    with status("[bold]ARP/NDP jadvali solishtirilmoqda..."):
+        diff = await check(update=update)
+
+    if _FORMAT == "json":
+        emit_json(diff)
+        return EXIT_OK
+    if _FORMAT == "csv":
+        emit_csv(diff.changes)
+        return EXIT_OK
+
+    if diff.first_run:
+        note(
+            f"[dim]Birinchi ishlash - {diff.current_hosts} host baseline sifatida "
+            f"saqlandi ({baseline_path()}). Keyingi ishlashda farq ko'rsatiladi.[/]"
+        )
+        return EXIT_OK
+    if not diff.changes:
+        note(f"[{SUCCESS}]O'zgarish yo'q[/] - {diff.current_hosts} host, baseline bilan bir xil.")
+        return EXIT_OK
+
+    t = styled_table(f"ARP o'zgarishlari ({len(diff.changes)} ta)")
+    t.add_column("Daraja")
+    t.add_column("Tur")
+    t.add_column("IP", no_wrap=True)
+    t.add_column("Tafsilot", overflow="fold")
+    sev_color = {"high": ERROR, "medium": WARNING, "low": SUCCESS, "info": "dim"}
+    kind_uz = {
+        "mac_changed": "MAC o'zgardi",
+        "duplicate_mac": "MAC dublikati",
+        "new_host": "yangi host",
+        "disappeared": "yo'qoldi",
+    }
+    for c in diff.changes:
+        col = sev_color.get(c.severity, "dim")
+        if c.kind == "mac_changed":
+            detail = f"{c.old_mac} ({c.old_vendor or '?'}) -> {c.new_mac} ({c.new_vendor or '?'})"
+        elif c.kind == "duplicate_mac":
+            detail = f"{c.new_mac} ayni paytda: {', '.join([c.ip, *c.extra_ips][:6])}"
+        else:
+            detail = f"{c.new_mac or c.old_mac or ''} {c.new_vendor or c.old_vendor or ''}"
+        t.add_row(f"[{col}]{c.severity}[/]", kind_uz.get(c.kind, c.kind),
+                  data_cell(c.ip), data_cell(detail, dash()))
+    emit_table(t)
+    if diff.has_suspicious:
+        note(
+            f"[{WARNING}]MAC almashishi/dublikati bor[/] - ARP spoofing yoki "
+            "IP dublikatini tekshiring"
+        )
+        return EXIT_UNREACHABLE
+    return EXIT_OK
+
+
+async def _cmd_wifi(show_neighbours: bool = False) -> int:
+    """Wi-Fi holati va atrofdagi tarmoqlar."""
+    # `status` nomi cli.status (spinner) bilan to'qnashadi — alias bilan olamiz.
+    from systop.core.wifi import overlapping_24ghz
+    from systop.core.wifi import status as wifi_status
+
+    with status("[bold]Wi-Fi holati o'qilmoqda..."):
+        w = await wifi_status()
+
+    if _FORMAT == "json":
+        emit_json(w)
+        return EXIT_OK if w.connected else EXIT_UNREACHABLE
+    if _FORMAT == "csv":
+        emit_csv(w.neighbours or [w])
+        return EXIT_OK
+
+    if not w.available:
+        note(f"[dim]Bu mashinada Wi-Fi apparati topilmadi{' — ' + w.error if w.error else ''}.[/]")
+        return EXIT_OK
+    if not w.connected:
+        note(f"[{WARNING}]Wi-Fi ulanmagan.[/]")
+        return EXIT_UNREACHABLE
+
+    qual_color = {
+        "excellent": SUCCESS, "good": SUCCESS, "fair": WARNING,
+        "poor": ERROR, "unusable": ERROR,
+    }
+    t = styled_table(f"Wi-Fi{' - ' + w.ssid if w.ssid else ''}")
+    t.add_column("Maydon")
+    t.add_column("Qiymat", overflow="fold")
+    col = qual_color.get(w.signal_quality or "", WARNING)
+    if w.rssi_dbm is not None:
+        t.add_row("Signal", f"[{col}]{w.rssi_dbm} dBm[/] ({w.signal_quality})")
+    if w.snr_db is not None:
+        snr_col = SUCCESS if w.snr_db >= 25 else (WARNING if w.snr_db >= 15 else ERROR)
+        t.add_row("SNR", f"[{snr_col}]{w.snr_db} dB[/] (shovqin {w.noise_dbm} dBm)")
+    if w.channel is not None:
+        band_col = WARNING if w.is_24ghz and w.five_ghz_available else SUCCESS
+        t.add_row("Kanal", f"[{band_col}]{w.channel}[/] ({w.band}, {w.width_mhz or '?'} MHz)")
+    if w.phy_mode:
+        gen_col = WARNING if (w.phy_generation != w.supported_generation) else SUCCESS
+        t.add_row(
+            "PHY",
+            f"[{gen_col}]{w.phy_mode}[/]"
+            + (f"  [dim](karta: {w.supported_phy})[/]" if w.supported_phy else ""),
+        )
+    if w.tx_rate_mbps:
+        t.add_row("Tezlik", f"{w.tx_rate_mbps:.0f} Mbps")
+    if w.security:
+        _weak = "wep" in w.security.lower() or "none" in w.security.lower()
+        sec_col = ERROR if _weak else SUCCESS
+        t.add_row("Xavfsizlik", f"[{sec_col}]{w.security}[/]")
+    if w.country_code:
+        t.add_row("Davlat", w.country_code)
+    if w.neighbours:
+        bands: dict[str, int] = {}
+        for n in w.neighbours:
+            bands[n.band or "?"] = bands.get(n.band or "?", 0) + 1
+        t.add_row("Qo'shnilar", ", ".join(f"{k}: {v}" for k, v in sorted(bands.items())))
+    emit_table(t)
+
+    if w.channel and w.is_24ghz:
+        ov = overlapping_24ghz(w.channel, w.neighbours)
+        if ov:
+            note(
+                f"[{WARNING}]Kanal {w.channel} ga {len(ov)} ta AP xalaqit beryapti[/] "
+                "[dim](2.4 GHz da faqat 1/6/11 ustma-ust tushmaydi)[/]"
+            )
+    if w.is_24ghz and w.five_ghz_available:
+        note(f"[{WARNING}]Atrofda 5 GHz mavjud[/] - unga o'tsangiz tezlik sezilarli oshadi.")
+
+    if show_neighbours and w.neighbours:
+        nt = styled_table(f"Atrofdagi tarmoqlar ({len(w.neighbours)} ta)")
+        nt.add_column("Kanal", justify="right")
+        nt.add_column("Diapazon")
+        nt.add_column("Kenglik", justify="right")
+        nt.add_column("PHY")
+        nt.add_column("Xavfsizlik")
+        for n in sorted(w.neighbours, key=lambda x: (x.band or "", x.channel or 0)):
+            nt.add_row(
+                str(n.channel or dash()), n.band or dash(),
+                f"{n.width_mhz} MHz" if n.width_mhz else dash(),
+                data_cell(n.phy_mode, dash()), data_cell(n.security, dash()),
+            )
+        emit_table(nt)
     return EXIT_OK
 
 
@@ -1157,22 +2284,39 @@ async def _cmd_info() -> int:
         return EXIT_OK
 
     table = styled_table("Tarmoq interfeyslari")
-    table.add_column("Interfeys")
-    table.add_column("IPv4")
-    table.add_column("Tarmoq (CIDR)")
-    table.add_column("MAC")
+    table.add_column("Interfeys", no_wrap=True)
+    table.add_column("IPv4", no_wrap=True)
+    table.add_column("Tarmoq", no_wrap=True)
+    # min_width — ustun bo'sh bo'lsa ham sarlavha o'qilsin.
+    table.add_column("IPv6", overflow="ellipsis", min_width=6)
+    table.add_column("MAC", no_wrap=True)
     table.add_column("Holat")
     for iface in summary.interfaces:
         if iface.is_up:
             st = f"[{SUCCESS}]{glyph('ok')}[/] up"
         else:
             st = f"[{ERROR}]{glyph('dead')}[/] down"
+        # Tarmoq: CIDR + host sig'imi ("10.0.0.0/24 · 254") — hajm bir qarashda
+        # ko'rinsin. IPv6 ustunida FAQAT global manzil: link-local deyarli har
+        # interfeysda bor va bu jadvalda hech qanday ma'lumot bermaydi.
+        net = f"{iface.cidr} {glyph('sep')} {iface.host_count}" if iface.cidr else None
+        v6 = iface.ipv6_global[0] if iface.ipv6_global else None
         table.add_row(
-            iface.name, iface.ipv4 or dash(), iface.cidr or dash(), iface.mac or dash(), st
+            data_cell(iface.name),
+            data_cell(iface.ipv4, dash()),
+            data_cell(net, dash()),
+            data_cell(v6, dash()),
+            data_cell(iface.mac, dash()),
+            st,
         )
     emit_table(table)
+    # Gateway yoniga prefiks: `/24` bir qarashda tarmoq hajmini aytadi.
+    primary = next((i for i in summary.interfaces if i.prefixlen and i.ipv4), None)
+    gw_text = summary.gateway or dash()
+    if summary.gateway and primary:
+        gw_text = f"{summary.gateway}/{primary.prefixlen}"
     note(
-        f"\n[{WARNING}]{glyph('gateway')}[/] gateway [bold]{summary.gateway or dash()}[/]   "
+        f"\n[{WARNING}]{glyph('gateway')}[/] gateway [bold]{gw_text}[/]   "
         f"[dim]public IP[/] [bold]{summary.public_ip or dash()}[/]"
     )
     return EXIT_OK

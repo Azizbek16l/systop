@@ -23,9 +23,9 @@ from textual.widgets import (
 from systop.core.bandwidth import bandwidth_stream
 from systop.core.connections import list_connections
 from systop.core.dns import diagnose_dns
-from systop.core.ports import parse_ports, scan_host
+from systop.core.ports import parse_ports, parse_targets, scan_host
 from systop.core.topology import discover_lan, trace_stream, traceroute
-from systop.widgets._glyphs import dash, ellipsis, glyph
+from systop.widgets._glyphs import dash, data_cell, ellipsis, glyph
 
 
 def _fmt_bps(bps: float) -> str:
@@ -78,12 +78,13 @@ class TopologyPanel(Vertical):
                 yield DataTable(id="trace-table", zebra_stripes=True, cursor_type="row")
             with TabPane("Port skan", id="tab-scan"):
                 with Horizontal(id="scan-controls"):
-                    yield Input(placeholder="host (IP yoki domen)", id="scan-host")
+                    yield Input(placeholder="host / CIDR / diapazon: 10.0.0.0/24", id="scan-host")
                     yield Input(placeholder="portlar: 22,80 (ixtiyoriy)", id="scan-ports")
                     yield Button("Skan", id="run-scan", variant="primary")
                     yield LoadingIndicator(id="scan-loading")
                 yield Static(
-                    "[dim]Host kiriting va [b]Enter[/] bosing — ochiq portlar topiladi.[/]",
+                    "[dim]Host, CIDR (10.0.0.0/24) yoki diapazon (10.0.0.1-50) kiriting — "
+                    "[b]Enter[/] bosing.[/]",
                     id="scan-empty",
                     classes="empty-state",
                 )
@@ -217,10 +218,10 @@ class TopologyPanel(Vertical):
                 role = f"[cyan]{glyph('gateway')} gateway[/]" if h.is_gateway else "[dim]host[/]"
                 rtt = f"{h.rtt_ms:.1f}" if h.rtt_ms else f"[dim]{d}[/]"
                 table.add_row(
-                    h.ip,
-                    h.mac or f"[dim]{d}[/]",
-                    h.vendor or f"[dim]{d}[/]",
-                    h.hostname or f"[dim]{d}[/]",
+                    data_cell(h.ip),
+                    data_cell(h.mac, d),
+                    data_cell(h.vendor, d),
+                    data_cell(h.hostname, d),
                     rtt,
                     role,
                 )
@@ -283,7 +284,12 @@ class TopologyPanel(Vertical):
                 else:
                     rtt = "[dim]*[/]"
                     addr = "[dim]* * *[/]"
-                table.add_row(str(hop.index), addr, hop.hostname or f"[dim]{d}[/]", rtt)
+                table.add_row(
+                    str(hop.index),
+                    addr if addr.startswith("[") else data_cell(addr),
+                    data_cell(hop.hostname, d),
+                    rtt,
+                )
             table.display = True
         except Exception as exc:
             empty.update(f"[red]{glyph('cross')} Xato:[/] {exc}")
@@ -325,8 +331,8 @@ class TopologyPanel(Vertical):
                         worst = f"[dim]{hop.worst_rtt:.1f}[/]"
                     table.add_row(
                         str(hop.index),
-                        addr,
-                        hop.hostname or f"[dim]{d}[/]",
+                        addr if addr.startswith("[") else data_cell(addr),
+                        data_cell(hop.hostname, d),
                         self._loss_cell(hop.loss_pct),
                         avg,
                         best,
@@ -340,6 +346,62 @@ class TopologyPanel(Vertical):
             loading.display = False
             btn.disabled = False
             btn.label = "Traceroute"
+
+    def _set_scan_columns(self, table: DataTable, sweep: bool) -> None:
+        """Port skan jadvali ustunlarini rejimga qarab qayta yaratadi.
+
+        Bitta host -> port-bo'yicha ko'rinish; subnet -> host-bo'yicha xulosa.
+        Textual DataTable ustunlari statik, shuning uchun `clear(columns=True)`
+        bilan qayta qurilади.
+        """
+        wanted = (
+            ("Host", "Ochiq portlar", "Xizmatlar")
+            if sweep
+            else ("Port", "Xizmat", "Holat", "RTT ms")
+        )
+        current = tuple(str(c.label) for c in table.columns.values())
+        if current == wanted:
+            table.clear()
+            return
+        table.clear(columns=True)
+        table.add_columns(*wanted)
+
+    async def _scan_sweep_rows(
+        self,
+        targets: list[str],
+        ports: list[int] | None,
+        table: DataTable,
+        empty: Static,
+        btn: Button,
+    ) -> None:
+        """Subnet/diapazon skani — har host bir qator (CLI `scan CIDR` bilan bir xil)."""
+        from systop.core.ports import scan_targets, top_ports
+
+        port_list = ports or top_ports(20)
+        self._set_scan_columns(table, sweep=True)
+        btn.label = f"Skanerlanmoqda ({len(targets)} host){ellipsis()}"
+        sweep = await scan_targets(
+            targets, ports=port_list, timeout=1.5, concurrency=64
+        )
+        if not sweep.responsive:
+            empty.update(
+                f"[dim]{sweep.scanned_hosts} host x {sweep.scanned_ports} port "
+                "tekshirildi — ochiq port topilmadi.[/]"
+            )
+            empty.display = True
+            btn.label = "Qayta skan"
+            return
+        for h in sweep.responsive:
+            table.add_row(
+                data_cell(h.resolved_ip or h.host),
+                data_cell(" ".join(str(p.port) for p in h.open_ports)),
+                data_cell(", ".join(p.service or "?" for p in h.open_ports), dash()),
+            )
+        table.display = True
+        btn.label = (
+            f"Qayta skan ({len(sweep.responsive)}/{sweep.scanned_hosts} host, "
+            f"{sweep.total_open} port)"
+        )
 
     @work(exclusive=True, group="scan")
     async def scan_ports(self) -> None:
@@ -367,7 +429,18 @@ class TopologyPanel(Vertical):
         table.clear()
 
         try:
-            result = await scan_host(host, ports=ports)
+            # Nishon CIDR/diapazon bo'lishi mumkin ("10.0.0.0/24", "10.0.0.1-50").
+            # Ko'p hostga kengaysa sweep rejimiga o'tamiz — jadval ustunlari
+            # ham almashadi (DataTable ustunlari dinamik qayta yaratiladi).
+            targets = parse_targets(host, max_hosts=512)
+            if len(targets) > 1:
+                await self._scan_sweep_rows(
+                    targets, ports, table, empty, btn
+                )
+                return
+
+            self._set_scan_columns(table, sweep=False)
+            result = await scan_host(targets[0] if targets else host, ports=ports)
             if result.error:
                 empty.update(f"[red]{glyph('cross')} {result.error}[/]")
                 empty.display = True
@@ -385,7 +458,7 @@ class TopologyPanel(Vertical):
             for p in open_ports:
                 table.add_row(
                     str(p.port),
-                    p.service or f"[dim]{dash()}[/]",
+                    data_cell(p.service, dash()),
                     "[green]ochiq[/]",
                     self._rtt_cell(p.rtt_ms),
                 )
@@ -423,8 +496,10 @@ class TopologyPanel(Vertical):
             if result.system_error:
                 table.add_row("Tizim", "[red]xato[/]", f"[dim]{d}[/]", result.system_error)
             else:
-                addrs = ", ".join(result.system_addresses[:3]) or f"[dim]{d}[/]"
-                table.add_row("Tizim resolver", "[green]ok[/]", f"[dim]{d}[/]", addrs)
+                joined = ", ".join(result.system_addresses[:3])
+                table.add_row(
+                    "Tizim resolver", "[green]ok[/]", f"[dim]{d}[/]", data_cell(joined, d)
+                )
 
             ok_resolvers = [r for r in result.resolvers if r.ok]
             fastest = min(ok_resolvers, key=lambda r: r.rtt_ms) if ok_resolvers else None
@@ -432,7 +507,12 @@ class TopologyPanel(Vertical):
                 if r.ok:
                     tag = f" [yellow]{glyph('fast')}[/]" if r is fastest else ""
                     addrs = ", ".join(r.addresses[:3])
-                    table.add_row(f"{r.name}{tag}", "[green]ok[/]", self._rtt_cell(r.rtt_ms), addrs)
+                    table.add_row(
+                        f"{r.name}{tag}",
+                        "[green]ok[/]",
+                        self._rtt_cell(r.rtt_ms),
+                        data_cell(addrs, d),
+                    )
                 else:
                     table.add_row(r.name, f"[red]{d}[/]", f"[dim]{d}[/]", r.error or "xato")
 
@@ -535,12 +615,12 @@ class TopologyPanel(Vertical):
                 return
             for c in conns:
                 table.add_row(
-                    c.proto,
-                    c.laddr or f"[dim]{d}[/]",
-                    c.raddr or f"[dim]{d}[/]",
+                    data_cell(c.proto),
+                    data_cell(c.laddr, d),
+                    data_cell(c.raddr, d),
                     self._status_cell(c.status),
                     str(c.pid) if c.pid is not None else f"[dim]{d}[/]",
-                    c.process or f"[dim]{d}[/]",
+                    data_cell(c.process, d),
                 )
             table.display = True
             btn.label = f"Yangilash ({len(conns)} ta)"

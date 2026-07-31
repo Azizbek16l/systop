@@ -132,13 +132,15 @@ def test_main_trace_default_host(monkeypatch):
 @pytest.mark.parametrize(
     "command, handler_name",
     [
-        ("speed", "_cmd_speed"),
-        ("lan", "_cmd_lan"),
         ("info", "_cmd_info"),
     ],
 )
 def test_main_dispatches_noarg_commands(monkeypatch, command, handler_name):
-    """Argumentsiz buyruqlar (speed/lan/info) to'g'ri handler'ga yo'naltirilsin."""
+    """Argumentsiz buyruqlar (info) to'g'ri handler'ga yo'naltirilsin.
+
+    `lan` (0.4.0) va `speed` (0.9.0) bayroq oladi, shuning uchun ular bu
+    ro'yxatdan chiqarilib, o'z testlariga ko'chirildi.
+    """
     import systop.cli as cli
 
     called = {"name": None}
@@ -418,3 +420,256 @@ def test_cli_table_survives_ascii_locale():
     # Chiqishda nimadir bor (jadval), traceback YO'Q.
     assert "Traceback" not in proc.stderr
     assert "UnicodeEncodeError" not in proc.stderr
+
+
+# --------------------------------------------------------------------------- #
+# 0.4.0: lan bayroqlari + web/doctor buyruqlari
+# --------------------------------------------------------------------------- #
+
+
+def test_main_dispatches_lan_with_flags(monkeypatch):
+    """`lan -6 --global-only` bayroqlari _cmd_lan'ga to'g'ri uzatilsin."""
+    import systop.cli as cli
+
+    captured = {}
+
+    async def fake_cmd_lan(*, ipv6=False, only_ipv6=False, global_only=False):
+        captured.update(ipv6=ipv6, only_ipv6=only_ipv6, global_only=global_only)
+        return 0
+
+    monkeypatch.setattr(cli, "_cmd_lan", fake_cmd_lan)
+    monkeypatch.setattr(sys, "argv", ["systop", "lan", "-6", "--global-only"])
+    _main_expect_exit(cli)
+    assert captured == {"ipv6": True, "only_ipv6": False, "global_only": True}
+
+
+def test_main_dispatches_lan_defaults(monkeypatch):
+    """Bayroqsiz `lan` — hammasi False (eski xulq saqlanadi)."""
+    import systop.cli as cli
+
+    captured = {}
+
+    async def fake_cmd_lan(*, ipv6=False, only_ipv6=False, global_only=False):
+        captured.update(ipv6=ipv6, only_ipv6=only_ipv6, global_only=global_only)
+        return 0
+
+    monkeypatch.setattr(cli, "_cmd_lan", fake_cmd_lan)
+    monkeypatch.setattr(sys, "argv", ["systop", "lan"])
+    _main_expect_exit(cli)
+    assert captured == {"ipv6": False, "only_ipv6": False, "global_only": False}
+
+
+def test_main_dispatches_web_with_hosts(monkeypatch):
+    import systop.cli as cli
+
+    captured = {}
+
+    async def fake_cmd_web(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(cli, "_cmd_web", fake_cmd_web)
+    monkeypatch.setattr(
+        sys, "argv", ["systop", "web", "10.0.0.1", "10.0.0.2", "--admin-only", "--polite"]
+    )
+    _main_expect_exit(cli)
+    assert captured["hosts"] == ["10.0.0.1", "10.0.0.2"]
+    assert captured["admin_only"] is True
+    assert captured["polite"] is True
+
+
+def test_web_http80_shortcut_sets_port_80(monkeypatch):
+    """`--http80` — 80-portni topishning qisqa yo'li."""
+    import systop.cli as cli
+
+    captured = {}
+
+    async def fake_cmd_web(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(cli, "_cmd_web", fake_cmd_web)
+    monkeypatch.setattr(sys, "argv", ["systop", "web", "--http80"])
+    _main_expect_exit(cli)
+    assert captured["ports_spec"] == "80"
+
+
+def test_main_dispatches_doctor(monkeypatch):
+    import systop.cli as cli
+
+    captured = {}
+
+    async def fake_cmd_doctor(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(cli, "_cmd_doctor", fake_cmd_doctor)
+    monkeypatch.setattr(sys, "argv", ["systop", "doctor", "--quick", "--no-web"])
+    _main_expect_exit(cli)
+    assert captured["quick"] is True
+    assert captured["no_web"] is True
+
+
+def test_scan_family_flags_are_mutually_exclusive():
+    """`-4` va `-6` birga berilmasligi kerak (argparse xato bersin)."""
+    import systop.cli as cli
+
+    parser = cli._build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["scan", "host", "-4", "-6"])
+
+
+def test_scan_family_from_args():
+    import systop.cli as cli
+    from systop.core.ports import FAMILY_AUTO, FAMILY_V4, FAMILY_V6
+
+    parser = cli._build_parser()
+    assert cli._family_from_args(parser.parse_args(["scan", "h"])) == FAMILY_AUTO
+    assert cli._family_from_args(parser.parse_args(["scan", "h", "-4"])) == FAMILY_V4
+    assert cli._family_from_args(parser.parse_args(["scan", "h", "-6"])) == FAMILY_V6
+
+
+def test_to_dict_includes_webservice_properties():
+    """`url`/`risk` property'lari JSON'ga tushishi SHART (jim yo'qolmasin)."""
+    import systop.cli as cli
+    from systop.core.webscan import WebService
+
+    d = cli._to_dict(WebService(ip="2001:db8::1", port=443, scheme="https", is_admin=True))
+    assert d["url"] == "https://[2001:db8::1]:443/"
+    assert "risk" in d
+
+
+def test_to_dict_includes_lanhost_is_link_local():
+    import systop.cli as cli
+    from systop.core.topology import LanHost
+
+    d = cli._to_dict(LanHost(ip="fe80::1%en0", family="ipv6"))
+    assert d["is_link_local"] is True
+    assert d["family"] == "ipv6"
+
+
+# --------------------------------------------------------------------------- #
+# 0.5.0: scan sweep (nmap uslubi) + nc buyrug'i
+# --------------------------------------------------------------------------- #
+
+
+def test_main_dispatches_scan_with_multiple_targets(monkeypatch):
+    import systop.cli as cli
+
+    captured = {}
+
+    async def fake_cmd_scan(*args, **kwargs):
+        captured["targets"] = args[0] if args else kwargs.get("targets_spec")
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(cli, "_cmd_scan", fake_cmd_scan)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["systop", "scan", "10.0.0.1", "10.0.0.0/24", "--top", "10", "--banner", "--polite"],
+    )
+    _main_expect_exit(cli)
+    assert captured["targets"] == ["10.0.0.1", "10.0.0.0/24"]
+    assert captured["top"] == 10
+    assert captured["banner"] is True
+    assert captured["polite"] is True
+
+
+def test_scan_single_target_still_works(monkeypatch):
+    """Eski chaqiruv shakli (`scan HOST`) buzilmasligi kerak."""
+    import systop.cli as cli
+
+    captured = {}
+
+    async def fake_cmd_scan(*args, **kwargs):
+        captured["targets"] = args[0]
+        return 0
+
+    monkeypatch.setattr(cli, "_cmd_scan", fake_cmd_scan)
+    monkeypatch.setattr(sys, "argv", ["systop", "scan", "example.com"])
+    _main_expect_exit(cli)
+    assert captured["targets"] == ["example.com"]
+
+
+def test_main_dispatches_nc(monkeypatch):
+    import systop.cli as cli
+
+    captured = {}
+
+    async def fake_cmd_nc(host, port, **kwargs):
+        captured["host"] = host
+        captured["port"] = port
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(cli, "_cmd_nc", fake_cmd_nc)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["systop", "nc", "10.0.0.1", "443", "--tls", "--hex", "--send", r"PING\r\n"],
+    )
+    _main_expect_exit(cli)
+    assert captured["host"] == "10.0.0.1"
+    assert captured["port"] == 443
+    assert captured["tls"] is True
+    assert captured["as_hex"] is True
+    assert captured["send"] == r"PING\r\n"
+
+
+def test_nc_family_flag(monkeypatch):
+    import systop.cli as cli
+
+    captured = {}
+
+    async def fake_cmd_nc(host, port, **kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(cli, "_cmd_nc", fake_cmd_nc)
+    monkeypatch.setattr(sys, "argv", ["systop", "nc", "localhost", "22", "-6"])
+    _main_expect_exit(cli)
+    assert captured["family"] == "ipv6"
+
+
+def test_to_dict_includes_ncresult_properties():
+    """`received` bytes JSON'da muammo qilmasligi va xossalar kirishi kerak."""
+    import systop.cli as cli
+    from systop.core.netcat import NcResult
+
+    d = cli._to_dict(NcResult(host="h", port=22, received=b"SSH-2.0\r\n", connected=True))
+    assert d["received_text"].startswith("SSH-2.0")
+    assert d["received_bytes_count"] == 9
+    assert d["is_binary"] is False
+
+
+def test_main_dispatches_speed_with_local_flags(monkeypatch):
+    """`speed --local-url URL` bayroqlari _cmd_speed'ga uzatilsin."""
+    import systop.cli as cli
+
+    captured = {}
+
+    async def fake_cmd_speed(*, local=False, local_urls=None):
+        captured.update(local=local, local_urls=local_urls)
+        return 0
+
+    monkeypatch.setattr(cli, "_cmd_speed", fake_cmd_speed)
+    monkeypatch.setattr(
+        sys, "argv", ["systop", "speed", "--local-url", "https://a.uz/f", "--local"]
+    )
+    _main_expect_exit(cli)
+    assert captured["local"] is True
+    assert captured["local_urls"] == ["https://a.uz/f"]
+
+
+def test_main_dispatches_speed_defaults(monkeypatch):
+    import systop.cli as cli
+
+    captured = {}
+
+    async def fake_cmd_speed(*, local=False, local_urls=None):
+        captured.update(local=local, local_urls=local_urls)
+        return 0
+
+    monkeypatch.setattr(cli, "_cmd_speed", fake_cmd_speed)
+    monkeypatch.setattr(sys, "argv", ["systop", "speed"])
+    _main_expect_exit(cli)
+    assert captured == {"local": False, "local_urls": None}

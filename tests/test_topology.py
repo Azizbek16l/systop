@@ -133,9 +133,9 @@ def test_parse_arp_table_falls_back_to_ip_neigh(monkeypatch):
 
     def fake_run(cmd, **kwargs):
         if cmd[:1] == ["arp"]:
-            # arp mavjud emas / bo'sh chiqish -> ip neigh ga o'tadi.
+            # arp mavjud emas / bo'sh chiqish -> `ip -4 neigh` ga o'tadi.
             return FakeCompletedProcess(stdout="")
-        if cmd[:2] == ["ip", "neigh"]:
+        if cmd[:1] == ["ip"]:
             return FakeCompletedProcess(stdout=neigh_out)
         return FakeCompletedProcess(stdout="")
 
@@ -148,7 +148,7 @@ def test_parse_arp_table_falls_back_to_ip_neigh(monkeypatch):
 
 
 def test_parse_arp_table_arp_missing_raises_oserror(monkeypatch):
-    """`arp` buyrug'i topilmasa (OSError) -> `ip neigh` ga o'tishi kerak."""
+    """`arp` buyrug'i topilmasa (OSError) -> `ip -4 neigh` ga o'tishi kerak."""
     neigh_out = "192.168.1.1 dev eth0 lladdr a4:b1:c2:d3:e4:f5 REACHABLE\n"
 
     def fake_run(cmd, **kwargs):
@@ -807,13 +807,22 @@ async def test_trace_stream_no_resolve_skips_dns(monkeypatch):
 
 
 async def test_trace_stream_probe_error_yields_empty(monkeypatch):
-    """Probe xato bersa (ICMP/OS) -> bo'sh ro'yxat yield qilinadi, oqim uzilmaydi."""
+    """Ikkala probe yo'li ham xato bersa -> bo'sh ro'yxat, oqim uzilmaydi.
+
+    0.5.1 dan beri `icmplib` ruxsat bermasa tizim `traceroute` binariga
+    o'tiladi, shuning uchun test ikkinchi yo'lni HAM mock qilishi shart —
+    aks holda offline test haqiqiy tarmoqqa chiqib ketadi.
+    """
     from icmplib.exceptions import ICMPLibError
 
     def boom(address, **kwargs):
         raise ICMPLibError("no socket")
 
+    async def no_fallback(address, **kwargs):
+        return []
+
     monkeypatch.setattr(topology, "_sync_traceroute", boom)
+    monkeypatch.setattr(topology, "_posix_traceroute", no_fallback)
 
     snapshots = []
     async for stats in trace_stream("8.8.8.8", cycles=2, interval=0.0, resolve=False):
@@ -846,3 +855,207 @@ async def test_trace_stream_tracks_loss_across_cycles(monkeypatch):
     assert s.sent == 2
     assert s.recv == 1
     assert s.loss_pct == pytest.approx(50.0)
+
+
+# --------------------------------------------------------------------------- #
+# IPv6 qo'shni (NDP) jadvali — 0.4.0 da qo'shilgan
+# --------------------------------------------------------------------------- #
+
+from systop.core.topology import ALL_NODES_MULTICAST, parse_ndp_output  # noqa: E402
+
+_MACOS_NDP = """Neighbor                             Linklayer Address  Netif Expire    St Flgs
+fe80::1%en0                          a4:83:e7:1b:2c:3d  en0   23h59m58s S  R
+2001:db8:1::10                       aa:bb:cc:dd:ee:ff  en0   permanent R
+fe80::c0a:1234%en0                   0:1c:42:3:4:5      en0   1m20s     S
+"""
+
+_LINUX_NEIGH = """fe80::1 dev eth0 lladdr a4:83:e7:1b:2c:3d router STALE
+2001:db8:1::10 dev eth0 lladdr aa:bb:cc:dd:ee:ff REACHABLE
+fe80::dead dev eth0  INCOMPLETE
+"""
+
+_WIN_NEIGH = """Interface 12: Ethernet
+Internet Address                              Physical Address   Type
+--------------------------------------------  -----------------  -----------
+fe80::1                                       a4-83-e7-1b-2c-3d  Stale
+2001:db8:1::10                                aa-bb-cc-dd-ee-ff  Reachable
+"""
+
+
+def test_parse_ndp_macos():
+    t = parse_ndp_output(_MACOS_NDP)
+    assert t["fe80::1%en0"] == "a4:83:e7:1b:2c:3d"
+    assert t["2001:db8:1::10"] == "aa:bb:cc:dd:ee:ff"
+
+
+def test_parse_ndp_macos_zero_pads_short_octets():
+    """macOS qisqa oktet beradi ("0:1c:42:3:4:5") — normallashtirilishi kerak."""
+    t = parse_ndp_output(_MACOS_NDP)
+    assert t["fe80::c0a:1234%en0"] == "00:1c:42:03:04:05"
+
+
+def test_parse_ndp_preserves_zone():
+    """Zona (%en0) saqlanishi SHART — link-local manzil zonasiz ishlatilmaydi."""
+    assert any("%en0" in ip for ip in parse_ndp_output(_MACOS_NDP))
+
+
+def test_parse_ndp_linux():
+    t = parse_ndp_output(_LINUX_NEIGH)
+    assert t["fe80::1"] == "a4:83:e7:1b:2c:3d"
+
+
+def test_parse_ndp_linux_skips_incomplete():
+    """MAC'siz (INCOMPLETE) yozuv tashlanadi."""
+    assert "fe80::dead" not in parse_ndp_output(_LINUX_NEIGH)
+
+
+def test_parse_ndp_windows():
+    t = parse_ndp_output(_WIN_NEIGH, windows=True)
+    assert t["fe80::1"] == "a4:83:e7:1b:2c:3d"
+    assert len(t) == 2
+
+
+def test_parse_ndp_windows_skips_header():
+    t = parse_ndp_output(_WIN_NEIGH, windows=True)
+    assert not any("Internet" in ip for ip in t)
+
+
+def test_parse_ndp_empty_input():
+    assert parse_ndp_output("") == {}
+
+
+def test_parse_ndp_ignores_ipv4_lines():
+    """IPv4 ARP qatorlari IPv6 parserga tushmasligi kerak."""
+    assert parse_ndp_output("192.168.1.1 dev eth0 lladdr aa:bb:cc:dd:ee:ff REACHABLE") == {}
+
+
+def test_all_nodes_multicast_constant():
+    assert ALL_NODES_MULTICAST == "ff02::1"
+
+
+def test_lan_host_is_link_local():
+    assert LanHost(ip="fe80::1%en0", family="ipv6").is_link_local
+    assert not LanHost(ip="2001:db8::1", family="ipv6").is_link_local
+    assert not LanHost(ip="192.168.1.1").is_link_local
+
+
+def test_lan_host_defaults_to_ipv4():
+    h = LanHost(ip="192.168.1.1")
+    assert h.family == "ipv4"
+    assert h.source == "ping"
+
+
+# --------------------------------------------------------------------------- #
+# ARP parsing regressiyasi (0.4.0) — MAC/vendor bo'sh chiqishi bugi
+# --------------------------------------------------------------------------- #
+
+from systop.core.oui import lookup_vendor  # noqa: E402
+from systop.core.topology import _normalize_mac  # noqa: E402
+
+
+def test_normalize_mac_zero_pads_macos_short_octets():
+    """macOS `arp` qisqa oktet beradi — to'ldirilmasa OUI hech qachon topilmaydi."""
+    assert _normalize_mac("0:15:5d:27:40:3") == "00:15:5d:27:40:03"
+    assert _normalize_mac("c0:6:c3:2:63:55") == "c0:06:c3:02:63:55"
+
+
+def test_normalize_mac_lowercases():
+    assert _normalize_mac("AA:BB:CC:DD:EE:FF") == "aa:bb:cc:dd:ee:ff"
+
+
+def test_normalize_mac_leaves_full_form_unchanged():
+    assert _normalize_mac("00:15:5d:27:40:03") == "00:15:5d:27:40:03"
+
+
+def test_short_mac_resolves_vendor_after_normalization():
+    """Bug: qisqa MAC vendor topilmasdi. Normalizatsiyadan keyin topilishi kerak."""
+    assert lookup_vendor(_normalize_mac("c0:6:c3:2:63:55")) == "TP-Link"
+
+
+def test_arp_regex_skips_incomplete_entries():
+    """`(incomplete)` yozuvda MAC yo'q — mos kelmasligi kerak."""
+    line = "? (192.168.10.3) at (incomplete) on en0 ifscope [ethernet]"
+    assert _ARP_RE.search(line) is None
+
+
+def test_arp_regex_matches_macos_numeric_output():
+    """`arp -an` chiqishi (kod shu buyruqni ishlatadi — `arp -a` sekin)."""
+    line = "? (192.168.10.2) at c0:6:c3:2:63:55 on en0 ifscope [ethernet]"
+    m = _ARP_RE.search(line)
+    assert m is not None
+    assert m.group(1) == "192.168.10.2"
+    assert _normalize_mac(m.group(2)) == "c0:06:c3:02:63:55"
+
+
+def test_arp_regex_matches_named_host_line():
+    line = "control (192.168.10.1) at 0:15:5d:27:40:3 on en0 ifscope [ethernet]"
+    m = _ARP_RE.search(line)
+    assert m.group(1) == "192.168.10.1"
+
+
+def test_hyperv_oui_detected():
+    """Hyper-V VM prefiksi — infratuzilmada eng ko'p uchraydigani."""
+    assert "Hyper-V" in lookup_vendor("00:15:5d:38:01:02")
+
+
+def test_virtual_nic_ouis_present():
+    for mac, expect in [
+        ("08:00:27:11:22:33", "VirtualBox"),
+        ("52:54:00:11:22:33", "QEMU"),
+        ("00:16:3e:11:22:33", "Xen"),
+    ]:
+        assert expect in (lookup_vendor(mac) or ""), mac
+
+
+# --------------------------------------------------------------------------- #
+# POSIX traceroute zaxira yo'li (0.5.1) — icmplib macOS'da raw socket talab qiladi
+# --------------------------------------------------------------------------- #
+
+from systop.core.topology import parse_posix_traceroute  # noqa: E402
+
+_MACOS_TR = """traceroute to 1.1.1.1 (1.1.1.1), 30 hops max, 40 byte packets
+ 1  192.168.10.1  3.590 ms
+ 2  185.203.238.161  6.582 ms
+ 3  * * *
+ 4  84.54.64.157  6.108 ms
+"""
+
+_LINUX_TR = """traceroute to 8.8.8.8 (8.8.8.8), 30 hops max, 60 byte packets
+ 1  10.0.0.1  1.234 ms  1.5 ms  1.4 ms
+ 2  * * *
+ 3  142.250.1.1  12.5 ms
+"""
+
+
+def test_parse_posix_traceroute_macos():
+    hops = parse_posix_traceroute(_MACOS_TR)
+    assert len(hops) == 4
+    assert hops[0] == (1, "192.168.10.1", 3.590, True)
+
+
+def test_parse_posix_traceroute_marks_unanswered_hop():
+    hops = parse_posix_traceroute(_MACOS_TR)
+    assert hops[2] == (3, None, 0.0, False)
+
+
+def test_parse_posix_traceroute_linux_multiple_probes():
+    """Linux har hop uchun 3 probe chiqaradi — birinchisi olinadi."""
+    hops = parse_posix_traceroute(_LINUX_TR)
+    assert hops[0] == (1, "10.0.0.1", 1.234, True)
+    assert hops[1] == (2, None, 0.0, False)
+    assert hops[2][1] == "142.250.1.1"
+
+
+def test_parse_posix_traceroute_skips_header():
+    hops = parse_posix_traceroute(_MACOS_TR)
+    assert all(h[0] > 0 for h in hops)
+
+
+def test_parse_posix_traceroute_ipv6_address():
+    out = " 1  2001:db8::1  5.5 ms\n"
+    assert parse_posix_traceroute(out) == [(1, "2001:db8::1", 5.5, True)]
+
+
+def test_parse_posix_traceroute_empty_and_garbage():
+    assert parse_posix_traceroute("") == []
+    assert parse_posix_traceroute("hech qanday hop yo'q\n") == []

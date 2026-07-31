@@ -21,3 +21,6 @@ htmlcov/
 .vscode/
 .idea/
 .DS_Store
+
+# macOS Spotlight
+.metadata_never_index

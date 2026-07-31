@@ -16,6 +16,8 @@ o'qiladi). Bu arzon va konsol holati ish davomida o'zgarishi mumkin (foydalanuvc
 
 from __future__ import annotations
 
+from rich.text import Text
+
 from systop.core import _platform
 
 # Har bir mantiqiy belgi uchun (Unicode, ASCII) juftligi.
@@ -69,3 +71,25 @@ def ellipsis() -> str:
 def dash() -> str:
     """Bo'sh / mavjud emas qiymat belgisi (`—` yoki `-`)."""
     return glyph("dash")
+
+
+def data_cell(value: object, empty: str | None = None) -> Text:
+    """Ma'lumot qiymatini `Text` sifatida qaytaradi — markup/emoji parse QILINMAYDI.
+
+    Nima uchun kerak: Rich `:ab:` kabi ketma-ketlikni **emoji shortcode** deb
+    biladi va almashtiradi. MAC manzil `62:46:3c:ab:d1:1a` ekranda
+    `62:46:3c🆎d1:1a` bo'lib chiqadi — ya'ni sysadmin ko'rgan MAC haqiqiy MAC
+    emas. IPv6 yanada xavfli: 16-lik belgilardan iborat 10 ta shortcode bor
+    (`:a:`->🅰, `:b:`->🅱, `:ab:`->🆎, `:cd:`->💿, `:abc:`->🔤, `:abcd:`->🔡,
+    `:bed:`->🛏, `:bee:`->🐝, `:100:`->💯, `:1234:`->🔢).
+
+    CLI'da `Console(emoji=False)` shu muammoni yopadi, ammo **Textual TUI**
+    o'z render quvuridan o'tadi va u yerda almashtirish yoqilgan. `Text`
+    obyekti esa parse qilinmaydi — shuning uchun har qanday MAC/IP/hostname
+    katakchasi shu funksiyadan o'tishi kerak.
+
+    `empty` — qiymat bo'sh bo'lganda ko'rsatiladigan belgi (xira uslubda).
+    """
+    if value is None or value == "":
+        return Text(empty or "", style="dim")
+    return Text(str(value))

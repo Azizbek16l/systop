@@ -41,3 +41,84 @@ def test_neigh_regex_linux():
     m = _NEIGH_RE.search(line)
     assert m and m.group(1) == "192.168.1.1"
     assert m.group(2) == "a4:b1:c2:d3:e4:f5"
+
+
+# --------------------------------------------------------------------------- #
+# Rich emoji shortcode himoyasi (0.5.1) — MAC/IPv6 buzilishi regressiyasi
+# --------------------------------------------------------------------------- #
+
+import io  # noqa: E402
+
+from rich.console import Console  # noqa: E402
+
+from systop.widgets._glyphs import data_cell  # noqa: E402
+
+
+def _render(renderable) -> str:
+    """Emoji almashtirish YOQILGAN konsolda render qiladi (TUI holati)."""
+    c = Console(file=io.StringIO(), emoji=True, force_terminal=False, width=80)
+    c.print(renderable)
+    return c.file.getvalue()
+
+
+def test_raw_string_mac_is_corrupted_by_rich():
+    """Muammoni hujjatlashtiradi: xom satr Rich'da emojiga aylanadi."""
+    assert "🆎" in _render("62:46:3c:ab:d1:1a")
+
+
+def test_data_cell_protects_mac_with_ab_octet():
+    """`:ab:` -> 🆎 bo'lmasligi kerak (ekranda ko'rilgan haqiqiy bug)."""
+    out = _render(data_cell("62:46:3c:ab:d1:1a"))
+    assert "62:46:3c:ab:d1:1a" in out
+    assert "🆎" not in out
+
+
+def test_data_cell_protects_mac_with_cd_octet():
+    out = _render(data_cell("aa:bb:cd:11:22:33"))
+    assert "aa:bb:cd:11:22:33" in out
+    assert "💿" not in out
+
+
+def test_data_cell_protects_ipv6_hex_groups():
+    """IPv6'da xavf kattaroq: :a: :b: :abc: :abcd: :bed: :bee: :100: :1234:."""
+    for addr, emoji in [
+        ("2001:a:1::1", "🅰"),
+        ("2001:b:1::1", "🅱"),
+        ("2001:abc:1::1", "🔤"),
+        ("2001:abcd:1::1", "🔡"),
+        ("2001:bed:1::1", "🛏"),
+        ("2001:bee:1::1", "🐝"),
+        ("2001:100:1::1", "💯"),
+        ("2001:1234:1::1", "🔢"),
+    ]:
+        out = _render(data_cell(addr))
+        assert addr in out, addr
+        assert emoji not in out, addr
+
+
+def test_data_cell_does_not_interpret_markup():
+    """Ma'lumotda `[dim]` bo'lsa ham uslub sifatida talqin qilinmasligi kerak."""
+    out = _render(data_cell("[red]not-a-style[/]"))
+    assert "[red]not-a-style[/]" in out
+
+
+def test_data_cell_empty_uses_placeholder():
+    assert "—" in _render(data_cell(None, "—"))
+    assert "—" in _render(data_cell("", "—"))
+
+
+def test_data_cell_stringifies_non_str():
+    assert "8080" in _render(data_cell(8080))
+
+
+def test_all_hex_emoji_shortcodes_are_covered():
+    """Rich'da 16-lik belgilardan iborat shortcode'lar soni o'zgarsa xabar bersin.
+
+    Rich yangilanib yangi shortcode qo'shilsa (masalan `:dead:`) bu test
+    yiqiladi va himoyani qayta ko'rib chiqishga majbur qiladi.
+    """
+    from rich._emoji_codes import EMOJI
+
+    hexchars = set("0123456789abcdef")
+    risky = {n for n in EMOJI if 1 <= len(n) <= 4 and set(n.lower()) <= hexchars}
+    assert risky == {"a", "b", "ab", "cd", "abc", "abcd", "bed", "bee", "100", "1234"}

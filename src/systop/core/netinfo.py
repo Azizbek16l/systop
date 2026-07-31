@@ -18,6 +18,8 @@ import psutil
 
 from systop.core import _platform
 
+_IS_WINDOWS_NETINFO = platform.system() == "Windows"
+
 
 @dataclass(slots=True)
 class Interface:
@@ -29,10 +31,14 @@ class Interface:
     mac: str | None = None
     is_up: bool = False
     speed_mbps: int = 0  # 0 => noma'lum
+    # IPv6: `(manzil, prefiks_uzunligi)` juftliklari. Ro'yxat, chunki bitta
+    # interfeysda bir vaqtda link-local + global + ULA + vaqtinchalik (privacy)
+    # manzillar bo'lishi normal holat.
+    ipv6: list[tuple[str, int]] = field(default_factory=list)
 
     @property
     def cidr(self) -> str | None:
-        """`192.168.1.0/24` ko'rinishidagi tarmoq (ipv4 + netmask bo'lsa)."""
+        """`192.168.1.0/24` ko'rinishidagi IPv4 tarmoq (ipv4 + netmask bo'lsa)."""
         if not self.ipv4 or not self.netmask:
             return None
         try:
@@ -40,6 +46,99 @@ class Interface:
             return str(net)
         except ValueError:
             return None
+
+    @property
+    def prefixlen(self) -> int | None:
+        """IPv4 prefiks uzunligi (`/24`). Maska bo'lmasa None.
+
+        Gateway yonida ko'rsatish uchun kerak: `10.0.0.1/24` bir qarashda
+        tarmoq hajmini aytadi (254 host), `/23` esa 510 — bu skan hajmini va
+        DHCP pool kattaligini baholashda darhol ma'no beradi.
+        """
+        if not self.ipv4 or not self.netmask:
+            return None
+        try:
+            return ipaddress.ip_network(f"{self.ipv4}/{self.netmask}", strict=False).prefixlen
+        except ValueError:
+            return None
+
+    @property
+    def host_count(self) -> int | None:
+        """Tarmoqdagi maksimal host soni (tarmoq/broadcast chiqarilgan)."""
+        plen = self.prefixlen
+        if plen is None:
+            return None
+        return max((1 << (32 - plen)) - 2, 0)
+
+    @property
+    def ipv6_global(self) -> list[str]:
+        """Global/ULA IPv6 manzillar (link-local emas) — routerdan o'tadiganlar."""
+        out: list[str] = []
+        for addr, _plen in self.ipv6:
+            try:
+                obj = ipaddress.IPv6Address(addr.split("%")[0])
+            except ValueError:
+                continue
+            if not obj.is_link_local:
+                out.append(addr)
+        return out
+
+    @property
+    def ipv6_link_local(self) -> list[str]:
+        """fe80::/10 manzillar — faqat shu segmentda ishlaydi."""
+        glob = set(self.ipv6_global)
+        return [a for a, _ in self.ipv6 if a not in glob]
+
+    @property
+    def ipv6_cidrs(self) -> list[str]:
+        """Global IPv6 tarmoqlar (`2001:db8:1::/64`) — link-local chiqarib tashlangan."""
+        out: list[str] = []
+        for addr, plen in self.ipv6:
+            bare = addr.split("%")[0]
+            try:
+                obj = ipaddress.IPv6Address(bare)
+                if obj.is_link_local:
+                    continue
+                net = str(ipaddress.ip_network(f"{bare}/{plen}", strict=False))
+            except ValueError:
+                continue
+            if net not in out:
+                out.append(net)
+        return out
+
+    @property
+    def has_dual_stack(self) -> bool:
+        """IPv4 va global IPv6 ikkalasi ham bormi (to'liq dual-stack)."""
+        return bool(self.ipv4) and bool(self.ipv6_global)
+
+
+
+def _v6_prefixlen(netmask: str | None) -> int:
+    """IPv6 maskani prefiks uzunligiga aylantiradi — SOF funksiya.
+
+    psutil platformaga qarab turlicha beradi: `ffff:ffff:ffff:ffff::` (mask)
+    yoki `64` (uzunlik) yoki `None`. Aniqlanmasa 64 qaytadi — bu IPv6'da
+    amaldagi standart segment o'lchami.
+    """
+    if not netmask:
+        return 64
+    text = str(netmask).strip()
+    if text.isdigit():
+        return max(0, min(int(text), 128))
+    try:
+        packed = ipaddress.IPv6Address(text).packed
+    except ValueError:
+        return 64
+    bits = 0
+    for byte in packed:
+        if byte == 0xFF:
+            bits += 8
+            continue
+        while byte & 0x80:
+            bits += 1
+            byte = (byte << 1) & 0xFF
+        break
+    return bits
 
 
 def list_interfaces(include_loopback: bool = False) -> list[Interface]:
@@ -57,6 +156,10 @@ def list_interfaces(include_loopback: bool = False) -> list[Interface]:
             if addr.family == socket.AF_INET:
                 iface.ipv4 = addr.address
                 iface.netmask = addr.netmask
+            elif addr.family == socket.AF_INET6:
+                # psutil IPv6 maskani `ffff:ffff:...` yoki prefiks-uzunlik
+                # sifatida berishi mumkin — ikkalasini ham qabul qilamiz.
+                iface.ipv6.append((addr.address, _v6_prefixlen(addr.netmask)))
             elif addr.family == psutil.AF_LINK:
                 iface.mac = addr.address
 
@@ -64,8 +167,9 @@ def list_interfaces(include_loopback: bool = False) -> list[Interface]:
             iface.is_up = stats[name].isup
             iface.speed_mbps = stats[name].speed
 
-        # IPv4'siz "virtual" interfeyslarni o'tkazib yuboramiz.
-        if iface.ipv4:
+        # IPv4 YOKI IPv6 manzili bo'lsa qabul qilamiz. Faqat IPv4 talab qilish
+        # IPv6-only tarmoqni butunlay ko'rinmas qilardi.
+        if iface.ipv4 or iface.ipv6:
             result.append(iface)
 
     return result
@@ -176,6 +280,32 @@ def _is_apipa(ipv4: str | None) -> bool:
     except ValueError:
         return True
     return bool(addr.is_link_local)
+
+
+
+def default_gateway_v6() -> str | None:
+    """IPv6 default gateway (link-local bo'lsa zonasi bilan). Topilmasa None.
+
+    IPv4 gateway'dan alohida kerak: dual-stack tarmoqda ular boshqa qurilma
+    bo'lishi mumkin, va IPv6 marshruti buzilgani IPv4 ishlab turganda
+    ko'rinmaydi — aynan shu holat "ba'zi saytlar sekin" sababidir.
+    """
+    try:
+        out = subprocess.run(
+            ["netstat", "-rn", "-f", "inet6"] if not _IS_WINDOWS_NETINFO
+            else ["route", "print", "-6"],
+            capture_output=True, timeout=6,
+        ).stdout
+    except (subprocess.SubprocessError, OSError):
+        return None
+    text = out.decode("utf-8", errors="replace")
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] in ("default", "::/0"):
+            gw = parts[1]
+            if ":" in gw:
+                return gw
+    return None
 
 
 def primary_interface() -> Interface | None:

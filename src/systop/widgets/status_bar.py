@@ -40,7 +40,13 @@ class StatusBar(Horizontal):
             self.query_one("#chip-public", Static).update(self._chip("Public IP", d))
             return
 
+        # Gateway yoniga prefiks qo'shamiz (`10.0.0.1/24`) — tarmoq hajmi bir
+        # qarashda ko'rinsin. Prefiks asosiy interfeys maskasidan olinadi,
+        # chunki gateway o'sha segmentda turadi.
+        iface = primary_interface()
         gw = summary.gateway or d
+        if summary.gateway and iface is not None and iface.prefixlen is not None:
+            gw = f"{summary.gateway}/{iface.prefixlen}"
         pub = summary.public_ip or d
         self.query_one("#chip-gateway", Static).update(self._chip("Gateway", gw))
         self.query_one("#chip-public", Static).update(self._chip("Public IP", pub))

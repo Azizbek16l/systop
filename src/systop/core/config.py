@@ -29,6 +29,12 @@ DEFAULT_DNS_RESOLVERS: list[str] = ["1.1.1.1", "8.8.8.8", "9.9.9.9"]
 DEFAULT_SPEED_DURATION: float = 10.0
 DEFAULT_SPEED_PARALLEL: int = 4
 DEFAULT_THEME: str = "dark"
+# Lokal (IX) tezlik endpointlari — ATAYLAB BO'SH.
+# Har mamlakatda o'zinikini config'da berish kerak (O'zbekistonda TAS-IX
+# mirrorlari, boshqa yurtda o'sha yurt IX'i). Kodga yozib qo'yish tool'ni
+# bitta mamlakatga bog'lab qo'yardi va boshqa joyda noto'g'ri ishlardi.
+DEFAULT_SPEED_LOCAL_URLS: list[str] = []
+
 DEFAULT_SCAN_PORTS: str = ""  # bo'sh => keng tarqalgan portlar (ports.default_ports)
 
 # Atrof-muhit override va standart joylashuv.
@@ -46,6 +52,9 @@ class SystopConfig:
     speed_parallel: int = DEFAULT_SPEED_PARALLEL
     theme: str = DEFAULT_THEME
     scan_ports: str = DEFAULT_SCAN_PORTS
+    speed_local_urls: list[str] = field(
+        default_factory=lambda: list(DEFAULT_SPEED_LOCAL_URLS)
+    )
 
 
 def _resolve_path(path: str | Path | None) -> Path:
@@ -87,6 +96,10 @@ def _coerce(cfg: SystopConfig, data: dict[str, object]) -> None:
     ports = data.get("scan_ports")
     if isinstance(ports, str):
         cfg.scan_ports = ports
+
+    # Lokal (IX) tezlik endpointlari — faqat http(s) URL qabul qilinadi.
+    if (v := _as_str_list(data.get("speed_local_urls"))) is not None:
+        cfg.speed_local_urls = [u for u in v if u.startswith(("http://", "https://"))]
 
 
 def load_config(path: str | Path | None = None) -> SystopConfig:
