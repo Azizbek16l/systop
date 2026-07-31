@@ -1,303 +1,316 @@
-# Arxitektura va ishlab chiqish qo'llanmasi
+# Architecture and development guide
 
-Bu hujjat `systop` kod bazasida ishlaydigan dasturchi uchun: qatlamlar,
-modullar xaritasi va koddan KO'RINMAYDIGAN qarorlar (nima uchun aynan
-shunday qilingan). Yangi funksiya qo'shishdan oldin "Muhim qarorlar"
-bo'limini o'qing — u yerdagi har bir band haqiqiy bug natijasida yozilgan.
+This document is for developers working in the `systop` codebase: the layers,
+a map of the modules, and the decisions that are INVISIBLE from the code (why
+things are the way they are). Read the "Key decisions" section before adding a
+feature — every entry there was written in the aftermath of a real bug.
 
-## Loyiha
+## The project
 
-`systop` — sysadminlar uchun root talab qilmaydigan terminal tarmoq tooli
-(TUI + CLI), **Linux, Windows va macOS** da ishlaydi. Sysadminning kundalik
-tarmoq vazifalari bitta toolda: internet tezligi (xalqaro + lokal/IX), lokal va
-global ping, traceroute/mtr, LAN discovery (IPv4+IPv6), port skan va banner,
-xom TCP/TLS mijoz, DNS taqqoslash, per-interfeys bandwidth, TLS/HTTP
-tekshiruvi, faol ulanishlar, web/boshqaruv paneli inventari, avto-diagnostika,
-soat siljishi (SNTP), marshrut jadvali, path MTU, DHCP aniqlash, ARP/NDP
-kuzatuv va Wi-Fi tahlili. Har bir buyruq scriptlarga mos (`--json`/`--format`,
-mazmunli exit kodlar). Stack: **Python 3.11+**, **Textual** (TUI), **httpx**,
-**icmplib**, **psutil**. Paket menejeri: **uv**.
+`systop` is a terminal network tool for sysadmins that never requires root
+(TUI + CLI) and runs on **Linux, Windows and macOS**. It puts a sysadmin's
+day-to-day network tasks into a single tool: internet speed (international +
+local/IX), local and global ping, traceroute/mtr, LAN discovery (IPv4+IPv6),
+port scanning and banner grabbing, a raw TCP/TLS client, DNS comparison,
+per-interface bandwidth, TLS/HTTP checks, active connections, a web/management
+panel inventory, auto-diagnostics, clock skew (SNTP), the route table, path
+MTU, DHCP detection, ARP/NDP watching and Wi-Fi analysis. Every command is
+script-friendly (`--json`/`--format`, meaningful exit codes). Stack:
+**Python 3.11+**, **Textual** (TUI), **httpx**, **icmplib**, **psutil**.
+Package manager: **uv**.
 
-> **Buyruqlar ro'yxati — yagona manba `cli.py`dagi `_build_parser()`.** Bu
-> yerdagi ro'yxatni qo'lda sanamang; u eskirsa `tests/test_docs.py` yiqiladi.
-> Yangi subbuyruq qo'shsangiz `cli.py` modul docstring'ini VA ikkala
-> README'ni ham yangilash SHART — parity testi aynan shuni tekshiradi.
+> **The single source of truth for the command list is `_build_parser()` in
+> `cli.py`.** Do not hand-maintain the list below by counting; when it drifts,
+> `tests/test_docs.py` fails. If you add a subcommand you MUST also update the
+> `cli.py` module docstring AND `README.md` — that is exactly what the parity
+> test verifies.
 
-## Buyruqlar
+## Commands
 
 ```bash
-uv sync                          # muhit + bog'liqliklar (dev uchun: uv sync --extra dev)
-uv run systop                    # dashboard (TUI) — default
-uv run systop {speed|ping|lan|info|conn}   # bir martalik buyruqlar
-uv run systop ping --watch       # doimiy ping monitor (rich.Live)
-uv run systop ping --ipv6        # IPv6 global nishonlarni ham qo'shadi
-uv run systop ping --targets 1.1.1.1,8.8.8.8   # aniq nishonlar (config'ni override)
+uv sync                          # environment + dependencies (for dev: uv sync --extra dev)
+uv run systop                    # dashboard (TUI) — the default
+uv run systop {speed|ping|lan|info|conn}   # one-shot commands
+uv run systop ping --watch       # continuous ping monitor (rich.Live)
+uv run systop ping --ipv6        # also include global IPv6 targets
+uv run systop ping --targets 1.1.1.1,8.8.8.8   # explicit targets (overrides the config)
 uv run systop trace <host> [--continuous]   # traceroute (--continuous == mtr)
-uv run systop mtr <host> [--interval 1.0 --cycles N]   # jonli mtr (per-hop loss/avg/best/worst)
-uv run systop scan <host> [--ports 22,80,443|1-1024]   # TCP port skaner
-uv run systop dns <name> [--resolvers ...]   # DNS resolve + serverlar latency taqqoslash
-uv run systop bw [--watch --interval 1.0]   # per-interfeys bandwidth (RX/TX/pps)
-uv run systop tls <host[:port]> [--warn-days 14]   # TLS sertifikat (muddat, issuer, SAN)
-uv run systop http <url>         # HTTP holat (status, redirect, vaqt)
-uv run systop conn [--listen]    # faol ulanishlar (faqat LISTEN ham)
-uv run systop web [HOST...]      # web xizmat + boshqaruv panellari (LAN avtomatik)
-uv run systop web --http80       # faqat 80-port: lokal HTTP ochiqligini topish
-uv run systop web --mgmt         # faqat tarmoqni boshqaruvchi qurilmalar
-uv run systop web --polite       # sekin rejim (IPS/anti-scan bor tarmoq uchun)
-uv run systop doctor             # tarmoq muammolarini avtomatik topish
-uv run systop doctor --quick     # tez rejim (web/IPv6 tashlanadi)
-uv run systop scan -6 HOST       # IPv6 port skan (-4 majburan IPv4)
-uv run systop lan -6             # LAN: IPv4 + IPv6 (ff02::1 + NDP jadval)
-uv run systop lan --global-only  # IPv6'da link-local'ni chiqarib tashlash
-uv run systop scan 10.0.0.0/24 --top 20   # LAN bo'ylab port sweep (nmap -sT)
-uv run systop scan HOST --banner          # xizmat versiyasi (nmap -sV yengil)
-uv run systop nc HOST PORT [--send 'PING\r\n'] [--tls] [--hex]   # ncat uslubi
-uv run systop speed --local      # lokal (IX) endpointlar vs xalqaro (speed_local_urls)
-uv run systop speed --local-url URL   # bir martalik lokal endpoint (config'ni bekor qiladi)
-uv run systop ntp [--servers a,b]     # soat siljishi (SNTP, clock skew)
-uv run systop route              # marshrut jadvali + next-hop yetishuvi
-uv run systop mtu [HOST] [--low 1200 --high 1500]   # path MTU (DF-ping ikkilik qidiruv)
-uv run systop dhcp [--listen 4.0]     # DHCP server(lar) — rogue DHCP aniqlash
-uv run systop arpwatch [--no-update|--reset]   # ARP/NDP diff (MAC almashishi, dublikat)
-uv run systop wifi [--neighbours]     # Wi-Fi signal/SNR/kanal (+ qo'shni AP'lar)
-uv run systop config [--path|--show]   # konfiguratsiya fayli / samarali sozlamalar
+uv run systop mtr <host> [--interval 1.0 --cycles N]   # live mtr (per-hop loss/avg/best/worst)
+uv run systop scan <host> [--ports 22,80,443|1-1024]   # TCP port scanner
+uv run systop dns <name> [--resolvers ...]   # DNS resolve + per-server latency comparison
+uv run systop bw [--watch --interval 1.0]   # per-interface bandwidth (RX/TX/pps)
+uv run systop tls <host[:port]> [--warn-days 14]   # TLS certificate (expiry, issuer, SAN)
+uv run systop http <url>         # HTTP status (status, redirects, timing)
+uv run systop conn [--listen]    # active connections (LISTEN only as well)
+uv run systop web [HOST...]      # web services + management panels (LAN detected automatically)
+uv run systop web --http80       # port 80 only: find plaintext HTTP exposure locally
+uv run systop web --mgmt         # network management devices only
+uv run systop web --polite       # slow mode (for networks with IPS/anti-scan)
+uv run systop doctor             # find network problems automatically
+uv run systop doctor --quick     # fast mode (skips web/IPv6)
+uv run systop scan -6 HOST       # IPv6 port scan (-4 forces IPv4)
+uv run systop lan -6             # LAN: IPv4 + IPv6 (ff02::1 + NDP table)
+uv run systop lan --global-only  # exclude link-local addresses on IPv6
+uv run systop scan 10.0.0.0/24 --top 20   # port sweep across the LAN (nmap -sT)
+uv run systop scan HOST --banner          # service version (lightweight nmap -sV)
+uv run systop nc HOST PORT [--send 'PING\r\n'] [--tls] [--hex]   # ncat style
+uv run systop speed --local      # local (IX) endpoints vs international (speed_local_urls)
+uv run systop speed --local-url URL   # one-off local endpoint (overrides the config)
+uv run systop ntp [--servers a,b]     # clock skew (SNTP)
+uv run systop route              # route table + next-hop reachability
+uv run systop mtu [HOST] [--low 1200 --high 1500]   # path MTU (DF-ping binary search)
+uv run systop dhcp [--listen 4.0]     # DHCP server(s) — rogue DHCP detection
+uv run systop arpwatch [--no-update|--reset]   # ARP/NDP diff (MAC change, duplicate)
+uv run systop wifi [--neighbours]     # Wi-Fi signal/SNR/channel (+ neighbouring APs)
+uv run systop config [--path|--show]   # config file path / effective settings
 
-# Global (skriptga mos) bayroqlar — har bir buyruqda:
-#   --json / --format {table,json,csv}   mashinaga mos chiqish (sof stdout)
-#   -q/--quiet, -v/--verbose, --no-color (NO_COLOR env ham)
-# Exit kodlari: 0 OK, 1 umumiy xato, 2 yetib bo'lmadi/o'lik/muddat tugagan/resolve yo'q
+# Global (script-friendly) flags — available on every command:
+#   --json / --format {table,json,csv}   machine-readable output (clean stdout)
+#   -q/--quiet, -v/--verbose, --no-color (NO_COLOR env is honoured too)
+# Exit codes: 0 OK, 1 general error, 2 unreachable/dead/expired/no resolution
 
-uv run pytest                    # barcha testlar (offline)
-uv run pytest tests/test_core.py::test_interface_cidr   # bitta test
+uv run pytest                    # the whole suite (offline)
+uv run pytest tests/test_core.py::test_interface_cidr   # a single test
 uv run ruff check .              # lint
 uv run ruff format .             # format
-uv run textual run --dev systop.app:SystopApp   # TUI'ni dev/debug rejimida (console: `textual console`)
+uv run textual run --dev systop.app:SystopApp   # TUI in dev/debug mode (console: `textual console`)
 ```
 
-## Arxitektura
+## Architecture
 
-Ikki qatlamga qat'iy ajratilgan — **core mantiq TUI'dan mustaqil**:
+Strictly split into two layers — **the core logic is independent of the TUI**:
 
-Quyidagi daraxt — **to'liq** ro'yxat (`src/` dagi har bir modul shu yerda).
-Yangi modul qo'shsangiz shu daraxtga ham qo'shing.
+The tree below is the **complete** list (every module under `src/` is here).
+When you add a module, add it to the tree as well.
 
 ```
 src/systop/
-  __main__.py       # `python -m systop` kirish nuqtasi -> cli.main()
-  cli.py            # argparse kirish nuqtasi; default -> dashboard, aks holda bir martalik buyruq
-                    #   + scriptability qatlami: _resolve_format, emit_json/emit_csv, _to_dict,
-                    #     status()/note()/error() (machine rejimda stdout toza), exit kodlar
-                    #   subbuyruqlar YAGONA manbasi: `_build_parser()` (docs parity testi shunga qaraydi)
-  app.py            # SystopApp (Textual App): status-bar + chap ustun (speed+ping) + topology
-  _render.py        # CLI (Rich) chiqishi uchun dizayn qatlami: styled_table + rtt_cell/loss_cell/
-                    #   alive_cell gradatsiyasi (30/100 ms, 50% loss chegaralari TUI bilan bir xil).
-                    #   FAQAT "table" rejimi; JSON/CSV bunga bog'liq emas.
-                    #   DIQQAT: `glyph`/`data_cell` bu yerda EMAS — `widgets/_glyphs.py` da
-                    #   (aylanma import'ni oldini olish uchun ataylab shunday joylashtirilgan)
-  styles.tcss       # dashboard CSS (grid, panel ramkalari, sparkline ranglari)
-  core/             # tarmoq mantiqi — async, Textual'ga bog'liq EMAS, alohida ham ishlatsa bo'ladi
-    _platform.py    #   ★ OS strategiya qatlami — HAR QANDAY platforma shoxi SHU YERDA:
+  __main__.py       # `python -m systop` entry point -> cli.main()
+  cli.py            # argparse entry point; default -> dashboard, otherwise a one-shot command
+                    #   + scriptability layer: _resolve_format, emit_json/emit_csv, _to_dict,
+                    #     status()/note()/error() (stdout stays clean in machine mode), exit codes
+                    #   SINGLE source of truth for subcommands: `_build_parser()` (the docs parity
+                    #     test reads it)
+  app.py            # SystopApp (Textual App): status bar + left column (speed+ping) + topology
+  _render.py        # design layer for the CLI (Rich) output: styled_table + rtt_cell/loss_cell/
+                    #   alive_cell gradation (30/100 ms, 50% loss thresholds — same as the TUI).
+                    #   "table" mode ONLY; JSON/CSV do not depend on it.
+                    #   NOTE: `glyph`/`data_cell` are NOT here — they live in `widgets/_glyphs.py`
+                    #   (deliberately placed there to avoid a circular import)
+  styles.tcss       # dashboard CSS (grid, panel borders, sparkline colours)
+  core/             # network logic — async, NOT tied to Textual, usable on its own
+    _platform.py    #   ★ OS strategy layer — EVERY platform branch belongs HERE:
                     #     IS_WINDOWS/IS_MACOS/IS_LINUX, `run_command(cmd, timeout, include_stderr)`
-                    #     (yagona async subprocess yordamchisi), decode_console (Windows OEM cp),
+                    #     (the one and only async subprocess helper), decode_console (Windows OEM cp),
                     #     init_console/unicode_ok, Win32 IcmpSendEcho ping/traceroute (ctypes),
                     #     parse_windows_ping / _tracert / _route_print.
-                    #     Yangi OS buyrug'i chaqirmoqchi bo'lsangiz `subprocess`ni O'ZINGIZ
-                    #     yozmang — `run_command` ni ishlating. `include_stderr=True` esdan
-                    #     chiqsa haqiqiy bug tug'iladi: macOS `ping` "Message too long" ni
-                    #     stderr'ga yozadi va path-MTU aniqlash butunlay ishlamay qolgan edi.
-    netinfo.py      #   interfeyslar (psutil), default_gateway (OS route jadvali), public_ip; gather_summary
+                    #     If you need to shell out to an OS command, do NOT write `subprocess`
+                    #     yourself — use `run_command`. Forgetting `include_stderr=True` produces
+                    #     real bugs: macOS `ping` writes "Message too long" to stderr, and that
+                    #     silently broke path-MTU detection completely.
+    netinfo.py      #   interfaces (psutil), default_gateway (OS route table), public_ip; gather_summary
     ping.py         #   ping_once/ping_many (icmplib async_*), build_targets(gateway), ping_stream (--watch)
-    speed.py        #   run_speedtest -> Cloudflare __down/__up, vaqt-cheklangan parallel oqim + warmup
+    speed.py        #   run_speedtest -> Cloudflare __down/__up, time-boxed parallel streams + warmup
     topology.py     #   trace_path/traceroute (asyncio.to_thread), trace_stream (mtr), discover_lan (ping+ARP+vendor)
-    ports.py        #   scan_host -> asyncio TCP connect port skaner (stdlib, parallel, semaphore), parse_ports
-                    #     + family (auto|ipv4|ipv6), family_of() sof funksiya
-    netcat.py       #   `nc` — xom TCP/TLS MIJOZ (listen rejimi yo'q, root kerak emas):
-                    #     ulanish + ixtiyoriy --send + javob (matn yoki hexdump), IPv6 to'liq
-    webscan.py      #   discover_web/probe_service -> HTTP barmoq izi + admin panel;
-                    #     classify() SOF funksiya (tarmoqsiz, offline sinaladi)
-    diagnose.py     #   run_diagnostics -> Report(Finding[]); evaluate_* SOF baholovchilar,
+    ports.py        #   scan_host -> asyncio TCP connect port scanner (stdlib, parallel, semaphore), parse_ports
+                    #     + family (auto|ipv4|ipv6), family_of() pure function
+    netcat.py       #   `nc` — raw TCP/TLS CLIENT (no listen mode, no root needed):
+                    #     connect + optional --send + response (text or hexdump), full IPv6
+    webscan.py      #   discover_web/probe_service -> HTTP fingerprint + admin panel;
+                    #     classify() is a PURE function (no network, tested offline)
+    diagnose.py     #   run_diagnostics -> Report(Finding[]); evaluate_* PURE evaluators,
                     #     Thresholds, RISKY_LISTENERS, is_management_device
-    dns.py          #   diagnose_dns -> tizim resolve + dig/nslookup bilan serverlar latency taqqoslash
-    bandwidth.py    #   sample_bandwidth/bandwidth_stream -> per-interfeys RX/TX/pps (psutil delta)
-    tls.py          #   check_tls (sertifikat: days_left/issuer/SAN/version), check_http (status/redirect/vaqt)
-    connections.py  #   list_connections -> psutil.net_connections + jarayon nomi (sinxron, to_thread orqali)
-                    #     + scan_connections -> ConnScan(permitted, source): macOS'da psutil root'siz
-                    #       HAR DOIM AccessDenied => `netstat -an -p tcp` zaxira yo'li
-    ntp.py          #   check_ntp -> SNTP (stdlib UDP/123), soat siljishi/offset/delay; root kerak emas
-    routes.py       #   marshrut jadvali (`ip route`/`netstat -rn`/`route print`) + next-hop yetishuvi;
-                    #     parse_* SOF funksiyalar (ikki default marshrut, VPN 0.0.0.0/1 nayrangi)
-    mtu.py          #   discover_path_mtu -> DF-ping ikkilik qidiruv; classify_ping_output SOF
-                    #     (ok | too_big | no_reply — aralashtirilsa ICMP bloklangan hostda MTU 0 chiqadi)
-    dhcp.py         #   DHCP DISCOVER (ephemeral portdan, root'siz) + lease manbasi; rogue DHCP.
-                    #     Javob kelmasligi "server yo'q" DEGANI EMAS => `partial=True`
-    arpwatch.py     #   ARP/NDP snapshot + baseline diff (MAC almashishi, IP dublikati, yangi host);
-                    #     diff_snapshots SOF funksiya, baseline config katalogida JSON
-    wifi.py         #   Wi-Fi signal/SNR/kanal/diapazon/PHY + qo'shni AP'lar; har OS'da root'siz
-                    #     manba (system_profiler / iw / netsh), parse'lar SOF funksiya
+    dns.py          #   diagnose_dns -> system resolution + per-server latency comparison via dig/nslookup
+    bandwidth.py    #   sample_bandwidth/bandwidth_stream -> per-interface RX/TX/pps (psutil deltas)
+    tls.py          #   check_tls (certificate: days_left/issuer/SAN/version), check_http (status/redirect/timing)
+    connections.py  #   list_connections -> psutil.net_connections + process name (sync, via to_thread)
+                    #     + scan_connections -> ConnScan(permitted, source): on macOS psutil without root
+                    #       ALWAYS raises AccessDenied => `netstat -an -p tcp` fallback path
+    ntp.py          #   check_ntp -> SNTP (stdlib UDP/123), clock skew/offset/delay; no root needed
+    routes.py       #   route table (`ip route`/`netstat -rn`/`route print`) + next-hop reachability;
+                    #     the parse_* helpers are PURE functions (two default routes, the VPN 0.0.0.0/1 trick)
+    mtu.py          #   discover_path_mtu -> DF-ping binary search; classify_ping_output is PURE
+                    #     (ok | too_big | no_reply — conflate them and a host that blocks ICMP reports MTU 0)
+    dhcp.py         #   DHCP DISCOVER (from an ephemeral port, no root) + lease source; rogue DHCP.
+                    #     No answer does NOT mean "no server" => `partial=True`
+    arpwatch.py     #   ARP/NDP snapshot + baseline diff (MAC change, duplicate IP, new host);
+                    #     diff_snapshots is a PURE function, baseline kept as JSON in the config dir
+    wifi.py         #   Wi-Fi signal/SNR/channel/band/PHY + neighbouring APs; a root-free source on
+                    #     each OS (system_profiler / iw / netsh), the parsers are PURE functions
     config.py       #   load_config -> ~/.config/systop/config.toml (tomllib), SystopConfig dataclass, SYSTOP_CONFIG
-                    #     speed_local_urls default'i ATAYLAB bo'sh (IX har mamlakatda boshqacha);
-                    #     http:// ham, https:// ham oq ro'yxatda
+                    #     speed_local_urls defaults to empty DELIBERATELY (the IX differs per country);
+                    #     both http:// and https:// are allow-listed
     oui.py          #   lookup_vendor(mac) -> OUI vendor (offline), normalize_oui, is_locally_administered
   data/
-    oui_min.py      #   o'rnatilgan kichik OUI->vendor jadvali (~60 vendor; to'liq IEEE bazasi emas)
-  widgets/          # core'ni chaqiruvchi Textual panellari (har biri @work bilan async ish bajaradi)
-    _glyphs.py      #   ★ glyph()/data_cell()/dash()/ellipsis() + unicode_ok() — Unicode yoki ASCII
-                    #     fallback (eski cmd.exe). `cli.py` VA barcha widget'lar belgini shu yerdan
-                    #     oladi. Nega `_render.py` da emas: `_render` <- `_glyphs` bog'lanishi bir
-                    #     tomonlama qolishi uchun (aylanma import'ni oldini olish)
-    status_bar.py   #   tepa holat-paneli (gateway/public IP/interfeys)
-    speed_panel.py  #   tezlik paneli (sparkline)
-    ping_panel.py   #   ping paneli (jonli jadval)
-    help_screen.py  #   `?` bilan ochiladigan yordam modali
-    topology_panel.py #   6 tab: LAN, traceroute, port skan, DNS, bandwidth, ulanishlar
-                      #   (har biri alohida @work group'i: lan/trace/scan/dns/bw/conn)
+    oui_min.py      #   small built-in OUI->vendor table (~60 vendors; not the full IEEE database)
+  widgets/          # Textual panels that call into core (each does its async work under @work)
+    _glyphs.py      #   ★ glyph()/data_cell()/dash()/ellipsis() + unicode_ok() — Unicode with an ASCII
+                    #     fallback (old cmd.exe). `cli.py` AND every widget take their symbols from
+                    #     here. Why not in `_render.py`: so that the `_render` <- `_glyphs` dependency
+                    #     stays one-way (avoids a circular import)
+    status_bar.py   #   top status bar (gateway/public IP/interface)
+    speed_panel.py  #   speed panel (sparkline)
+    ping_panel.py   #   ping panel (live table)
+    help_screen.py  #   help modal, opened with `?`
+    topology_panel.py #   6 tabs: LAN, traceroute, port scan, DNS, bandwidth, connections
+                      #   (each in its own @work group: lan/trace/scan/dns/bw/conn)
 ```
 
-**Ma'lumot oqimi:** `widgets/*` va `cli.py` — bu yagona ikki chaqiruvchi.
-Ikkalasi ham `core/*` ning bir xil async funksiyalarini chaqiradi. Yangi
-o'lchov qo'shganda: avval `core/`da sof async funksiya yoz (UI'siz, dataclass
-qaytar), keyin uni `cli.py`da Rich jadval + JSON/CSV bilan, `widgets/`da panel
-bilan ulang. CLI'da JSON/CSV avtomatik ishlaydi: `_to_dict` dataclass'larni
-(va `loss_pct`/`cidr`/`total_bps`/`is_open` kabi property'larni) seriyalashtirib
-beradi — yangi dataclass faqat shu property'larni mos nomlasa kifoya.
+**Data flow:** `widgets/*` and `cli.py` are the only two callers. Both call the
+same async functions from `core/*`. To add a new measurement: first write a
+pure async function in `core/` (no UI, return a dataclass), then wire it into
+`cli.py` with a Rich table + JSON/CSV, and into `widgets/` with a panel.
+JSON/CSV work automatically in the CLI: `_to_dict` serialises dataclasses (and
+properties such as `loss_pct`/`cidr`/`total_bps`/`is_open`) — a new dataclass
+only has to name those properties consistently.
 
-### Muhim qarorlar (kontekstdan ko'rinmaydigan)
+### Key decisions (not visible from the code)
 
-- **`getaddrinfo` AAAA'ni YASHIRADI.** Hostda global IPv6 marshruti bo'lmasa OS
-  AAAA'ni butunlay filtrlab, `::ffff:1.2.3.4` (IPv4-mapped) beradi — RFC 6724
-  manzil tanlash. Diagnostika tooli DNS **nima deyotganini** ko'rsatishi kerak,
-  shuning uchun haqiqiy AAAA `dig +short AAAA` orqali alohida olinadi va
-  `::ffff:` shakllari A ro'yxatidan tashlanadi.
-- **Banner: TLS portlarini avval handshake qiling.** 443/4081/8006/8443... ga
-  ochiq matnli HTTP yuborish faqat "400 Bad Request" beradi. `_TLS_PORTS`
-  ro'yxatidagi portlar `ssl=` bilan ulanadi, shundan keyin so'rov ketadi.
-- **`idna` kodeki `errors=` argumentini QO'LLAB-QUVVATLAMAYDI.**
-  `host.encode("idna", "ignore")` -> `UnicodeError`, keng `except` esa uni yutib,
-  banner'ni jimgina yo'q qilardi. Host header uchun ASCII kifoya.
-- **IPv6 CIDR sweep qilinmaydi.** `parse_targets` IPv6 `/64` ni ataylab rad
-  etadi (2^64 manzil); bitta IPv6 manzil esa qabul qilinadi. IPv6 hostlarni
-  topish uchun `discover_lan6`.
-- **`trace` IPv6'da root talab qiladi (macOS).** ICMPv6 datagram socket'i
-  privileged — ICMPv4'dan farqli. Bu OS cheklovi, kodda tuzatilmaydi.
+- **`getaddrinfo` HIDES AAAA records.** If the host has no global IPv6 route
+  the OS filters AAAA out entirely and hands back `::ffff:1.2.3.4`
+  (IPv4-mapped) — RFC 6724 address selection. A diagnostic tool has to show
+  **what DNS actually says**, so the real AAAA is fetched separately via
+  `dig +short AAAA` and `::ffff:` forms are dropped from the A list.
+- **Banner grabbing: handshake TLS ports first.** Sending cleartext HTTP to
+  443/4081/8006/8443… gets you nothing but "400 Bad Request". Ports listed in
+  `_TLS_PORTS` are connected with `ssl=`, and only then is the request sent.
+- **The `idna` codec does NOT support the `errors=` argument.**
+  `host.encode("idna", "ignore")` -> `UnicodeError`, and a broad `except`
+  swallowed it, silently destroying the banner. ASCII is enough for the Host
+  header.
+- **IPv6 CIDR ranges are never swept.** `parse_targets` deliberately rejects an
+  IPv6 `/64` (2^64 addresses); a single IPv6 address is accepted. Use
+  `discover_lan6` to find IPv6 hosts.
+- **`trace` requires root on IPv6 (macOS).** The ICMPv6 datagram socket is
+  privileged — unlike ICMPv4. That is an OS restriction, not something that can
+  be fixed in code.
 
-- **Admin panel aniqlash — mahsulot izi YOLG'IZ yetarli emas.** `webscan`da
-  barmoq izlari ikki sinfga bo'lingan: `admin` (Kerio/Hikvision/Proxmox — +2
-  ball) va `infra` (nginx/Apache/Caddy/Traefik — **0 ball**, faqat
-  identifikatsiya). Bu bo'linishsiz oddiy nginx welcome sahifasi "admin panel"
-  deb belgilanardi. Naqshlar ham ataylab uzun: qisqa bo'lak (`hass`, `syno`,
-  yalang'och `docker`) boshqa so'z ichiga tushib soxta natija beradi
-  (`chassis` -> `hass`).
-- **IPv6 LAN discovery sweep EMAS.** /64 da 2^64 manzil bor — ping sweep
-  imkonsiz. `discover_lan6` `ff02::1` (all-nodes multicast) ga ping yuborib,
-  keyin OS qo'shni jadvalini o'qiydi (`ip -6 neigh` / `ndp -an` / `netsh`).
-  Zona qo'shimchasi (`fe80::1%en0`) **saqlanadi** — link-local manzil zonasiz
-  ishlatilmaydi. macOS qisqa MAC oktet beradi (`0:1c:42:3:4:5`) — `parse_ndp_output`
-  ikki raqamga to'ldiradi.
-- **Skan tezligi ataylab past.** `web`/`doctor` default `concurrency=16`,
-  `--polite` esa 4 + 300 ms. Sabab: tez keng skan IPS/anti-scan himoyasini
-  qo'zg'atadi va skanerlovchi IP vaqtincha bloklanadi. Alomat chalg'ituvchi —
-  ICMP ishlaydi, mavjud ulanishlar ishlaydi, faqat YANGI TCP "Connection
-  refused" beradi (2026-07-28 da aynan shu bilan soatlab yo'ldan chiqilgan).
-- **`_to_dict` property ro'yxati — jim yo'qotish manbasi.** Yangi dataclass
-  property qo'shsangiz `cli.py`dagi ro'yxatga ham qo'shing, aks holda u
-  `--json`/`--format csv` chiqishida **jimgina yo'q** bo'ladi. Hozirgi ro'yxat:
+- **Admin-panel detection — a product fingerprint ALONE is not enough.** In
+  `webscan` the fingerprints are split into two classes: `admin`
+  (Kerio/Hikvision/Proxmox — +2 points) and `infra` (nginx/Apache/Caddy/Traefik
+  — **0 points**, identification only). Without that split a plain nginx welcome
+  page was being flagged as an "admin panel". The patterns are deliberately long
+  as well: a short fragment (`hass`, `syno`, bare `docker`) can land inside
+  another word and produce a false positive (`chassis` -> `hass`).
+- **IPv6 LAN discovery is NOT a sweep.** A /64 holds 2^64 addresses — a ping
+  sweep is impossible. `discover_lan6` pings `ff02::1` (all-nodes multicast) and
+  then reads the OS neighbour table (`ip -6 neigh` / `ndp -an` / `netsh`). The
+  zone suffix (`fe80::1%en0`) **is preserved** — a link-local address is
+  unusable without its zone. macOS prints short MAC octets (`0:1c:42:3:4:5`), so
+  `parse_ndp_output` pads them back to two digits.
+- **Scan speed is deliberately low.** `web`/`doctor` default to
+  `concurrency=16`, and `--polite` drops to 4 + 300 ms. The reason: a fast, wide
+  scan trips IPS/anti-scan protection and the scanning IP gets temporarily
+  blocked. The symptom is misleading — ICMP still works, existing connections
+  still work, only NEW TCP connections come back "Connection refused" (this cost
+  hours of chasing the wrong lead on 2026-07-28).
+- **The `_to_dict` property list is a silent-loss source.** When you add a
+  property to a dataclass, add it to the list in `cli.py` as well; otherwise it
+  **silently disappears** from `--json`/`--format csv` output. The current list:
   `loss_pct, cidr, total_bps, is_open, url, risk, is_link_local, is_problem,
   worst_severity, counts`.
-- **`diagnose` bosqichlari mustaqil.** `run_diagnostics`da har tekshiruv alohida
-  `try` ichida va xatoni `report.skipped`ga yozadi. Diagnostika tooli o'zi
-  yiqilsa foydasi yo'q — bitta tekshiruv (masalan DNS) buzilsa qolganlari
-  natija berishi kerak.
-- **`evaluate_*` sof, orkestrator emas.** Baholash mantiqi tarmoq chaqiruvidan
-  ajratilgan, shuning uchun butun test to'plami offline ishlaydi (aniq son
-  uchun `uv run pytest -q` ga qarang — bu yerga raqam yozmang, eskiradi).
-  Yangi tekshiruv qo'shganda ham shu shaklni saqlang: o'lchovni argument qilib
-  oling, `Finding` qaytaring.
+- **`diagnose` stages are independent.** In `run_diagnostics` every check sits
+  in its own `try` and records failures in `report.skipped`. A diagnostic tool
+  that falls over itself is useless — if one check (DNS, say) breaks, the rest
+  must still produce results.
+- **`evaluate_*` are pure, not orchestrators.** The evaluation logic is
+  separated from the network calls, which is why the whole test suite runs
+  offline (for the exact count run `uv run pytest -q` — don't write a number
+  here, it goes stale). Keep the same shape when you add a check: take the
+  measurement as an argument, return a `Finding`.
 
-- **Tezlik `speedtest-cli`siz.** Eskirgan kutubxona o'rniga Cloudflare'ning
-  ochiq endpointlari ishlatiladi (`speed.cloudflare.com/__down`, `/__up`).
-  O'lchov **vaqt bilan chegaralangan**: bir nechta parallel ulanish ochiladi,
-  `duration` soniya o'tgach umumiy `stop` event o'rnatilib, baytlar/elapsed dan
-  Mbps hisoblanadi. `_run_phase` va worker'lar **bitta `stop` event**ni baham
-  ko'rishi shart — alohida event berilsa to'xtatish ishlamaydi.
-- **ICMP root'siz.** `icmplib`ga hamma joyda `privileged=False` beriladi
-  (macOS/Linux SOCK_DGRAM ICMP). Standartni o'zgartirma — aks holda `sudo`
-  talab qilinadi. traceroute ham shu rejimda. Windows `icmplib`dan umuman
-  o'tmaydi: `_platform.win_icmp_ping`/`win_icmp_traceroute` (Win32
-  `IcmpSendEcho`) ishlatiladi va u ham Administrator talab qilmaydi. Yagona
-  istisno — macOS'da IPv6 `trace` (pastdagi qarorga qarang).
-- **LAN discovery scapy'siz.** Root kerak bo'lmasligi uchun: `/24` ni ping
-  sweep (`async_multiping`) + OS ARP jadvalini (`arp -a` / `ip neigh`) regex
-  bilan o'qish. `max_hosts` katta tarmoqlarni cheklaydi.
-- **traceroute sinxron.** `icmplib.traceroute` async emas, shuning uchun
-  `asyncio.to_thread` orqali chaqiriladi — event loop bloklanmasligi uchun.
-- **Textual worker'lari.** Panellardagi tarmoq ishi `@work(exclusive=True)`
-  metodlarda. Async worker'lar event loop'da ishlaydi, shuning uchun progress
-  callback'lardan widget'larni **to'g'ridan-to'g'ri** yangilash xavfsiz
-  (`call_from_thread` shart emas). `TopologyPanel`dagi 4 amal (LAN/trace/scan/dns)
-  **har biri alohida `group=`** bilan — aks holda bitta default group'da bo'lib,
-  biri ishga tushganda ikkinchisini bekor qilardi (masalan LAN skan + DNS birga
-  ishlay olmasdi).
-- **speed.py'da event loop starvation.** `_download_stream`/`_upload_stream`
-  `stop` o'rnatilguncha qayta-qayta so'rov yuboradi (Cloudflare `__down` 100 MB'ga
-  403 qaytargani uchun ~50 MB bo'laklab). Har so'rovdan keyin **`await
-  asyncio.sleep(0)`** SHART: darhol javob beruvchi transport (test mock'i)
-  bilan monitor coroutine och qolib, `stop` hech qachon o'rnatilmasligining
-  oldini oladi. `warmup` (default 1s) — TCP slow-start baytlarini o'lchovdan
-  chiqaradi (aniqroq Mbps).
-- **ICMP/port skan testsiz.** Tarmoqli funksiyalar (ping/traceroute/scan/dns)
-  offline sinab bo'lmaydi; speed.py esa `httpx.MockTransport` bilan tarmoqsiz
-  sinaladi (`tests/test_speed.py`). Mock darhol javob bergani uchun yuqoridagi
-  `sleep(0)` bo'lmasa test osilib qoladi.
-- **Scriptability — yagona JSON/CSV qatlami.** Chiqish formati `cli.py`dagi
-  global `_FORMAT` (table|json|csv) bilan boshqariladi (`_resolve_format`:
-  `--format` > `--json` > table). Mashina rejimida (`_is_machine()`) status
-  spinner, izoh va Rich jadval **bostiriladi** — faqat sof natija stdout'ga,
-  xato esa stderr'ga (`error()`). Buyruq handler'lari `core/` dataclass'ini
-  oladi va `emit_json`/`emit_csv`/Rich jadvalga uzatadi. **Yangi maydon =
-  yangi qator JSON'da avtomatik** — `_to_dict` `dataclasses.fields` bo'ylab
-  yuradi, `_`-prefiksli ichki maydonlarni tashlaydi va tanlangan property'larni
-  (`loss_pct`/`cidr`/`total_bps`/`is_open`) qo'lda qo'shadi.
-- **Exit-kod sxemasi.** `0` OK, `1` umumiy xato (noto'g'ri argument / istisno —
-  `main()`da tutiladi), `2` "yetib bo'lmadi" (host o'lik, hech bir port ochiq
-  emas, sertifikat muddati tugagan/yaqin, DNS resolve yo'q, traceroute hopsiz).
-  Har handler `int` qaytaradi; `tls`/`http` uchun alohida `_tls_exit_code`/
-  `_http_exit_code` (status>=400 yoki days_left<=warn_days => 2). `--watch`/`mtr`
-  jonli rejimi mashina formatida ishlamaydi (xato beradi); `mtr --json` bir
-  necha cycle olib oxirgi snapshot'ni chiqaradi.
-- **Upload bayt-fix.** `speed.py` upload fazasida **haqiqatda yuborilgan**
-  baytlar sanaladi (generator/streamda har chunk hisoblanadi), aks holda Mbps
-  noto'g'ri (juda yuqori) chiqardi. Download bilan bir xil `stop` event-time
-  mantiqi.
-- **`trace_stream` — mtr asosida.** `mtr` va `trace --continuous` `core`'dagi
-  `trace_stream(host, interval, cycles)` async generatoridan oziqlanadi: har
-  cycle'da hop'larni qayta probe qilib, per-hop `HopStat` (loss%/last/avg/best/
-  worst) ni yangilab beradi. CLI buni `rich.Live` bilan jonli ko'rsatadi;
-  `cycles=None` => cheksiz (Ctrl+C to'xtatadi).
-- **OUI vendor — offline.** LAN discovery'da MAC'dan vendor `core/oui.py` orqali
-  o'rnatilgan kichik jadvaldan (`data/oui_min.py`, ~60 vendor) aniqlanadi —
-  tarmoqqa chiqmaydi, qo'shimcha bog'liqlik yo'q. Lokal-tayinlangan
-  (locally-administered) MAC global vendorni bildirmaydi => `None`. To'liq IEEE
-  bazasi (~30k) maqsadli ravishda QO'SHILMAGAN (fayl hajmi).
-- **Konfiguratsiya — ixtiyoriy, jim default.** `core/config.py` faqat stdlib
-  (`tomllib`); fayl yo'q/buzuq/ruxsatsiz bo'lsa to'liq default `SystopConfig`
-  qaytadi (istisno YO'Q). Faqat tanilgan kalitlar, noto'g'ri turdagi qiymat jim
-  e'tiborsiz. Yo'l tartibi: argument > `SYSTOP_CONFIG` env > `~/.config/systop/
-  config.toml`. `core/config.py` boshqa core modullarni import qilmaydi.
+- **Speed without `speedtest-cli`.** Instead of the stale library, Cloudflare's
+  open endpoints are used (`speed.cloudflare.com/__down`, `/__up`). The
+  measurement is **time-boxed**: several parallel connections are opened, a
+  shared `stop` event is set once `duration` seconds have elapsed, and Mbps is
+  computed from bytes/elapsed. `_run_phase` and the workers MUST share **one
+  single `stop` event** — hand them separate events and stopping never works.
+- **ICMP without root.** `icmplib` is given `privileged=False` everywhere
+  (SOCK_DGRAM ICMP on macOS/Linux). Do not change that default, or `sudo`
+  becomes mandatory. traceroute runs in the same mode. Windows skips `icmplib`
+  entirely: `_platform.win_icmp_ping`/`win_icmp_traceroute` (Win32
+  `IcmpSendEcho`) are used, and they do not require Administrator either. The
+  single exception is IPv6 `trace` on macOS (see the `trace` decision).
+- **LAN discovery without scapy.** So that root is never needed: ping-sweep the
+  `/24` (`async_multiping`) plus read the OS ARP table (`arp -a` / `ip neigh`)
+  with a regex. `max_hosts` caps large networks.
+- **traceroute is synchronous.** `icmplib.traceroute` is not async, so it is
+  called through `asyncio.to_thread` to keep the event loop unblocked.
+- **Textual workers.** Network work in the panels lives in
+  `@work(exclusive=True)` methods. Async workers run on the event loop, so it is
+  safe to update widgets **directly** from progress callbacks
+  (`call_from_thread` is not required). The 4 operations in `TopologyPanel`
+  (LAN/trace/scan/dns) **each get their own `group=`** — otherwise they all land
+  in one default group and starting one cancels another (a LAN scan and DNS
+  could not run at the same time, for instance).
+- **Event-loop starvation in speed.py.** `_download_stream`/`_upload_stream`
+  re-issue requests until `stop` is set (in ~50 MB chunks, because Cloudflare
+  `__down` returns 403 for 100 MB). An **`await asyncio.sleep(0)`** after every
+  request is MANDATORY: with a transport that answers instantly (the test mock)
+  it prevents the monitor coroutine from being starved and `stop` from never
+  being set. `warmup` (1s by default) keeps TCP slow-start bytes out of the
+  measurement (more accurate Mbps).
+- **ICMP/port scanning are untested.** The network-bound functions
+  (ping/traceroute/scan/dns) cannot be exercised offline; speed.py, by contrast,
+  is tested without a network via `httpx.MockTransport` (`tests/test_speed.py`).
+  Because the mock answers instantly, the test hangs without the `sleep(0)`
+  above.
+- **Scriptability — a single JSON/CSV layer.** The output format is driven by
+  the global `_FORMAT` (table|json|csv) in `cli.py` (`_resolve_format`:
+  `--format` > `--json` > table). In machine mode (`_is_machine()`) the status
+  spinner, the notes and the Rich table are **suppressed** — only the pure
+  result goes to stdout, errors go to stderr (`error()`). Command handlers take
+  a `core/` dataclass and pass it to `emit_json`/`emit_csv`/a Rich table. **A new
+  field is automatically a new line in the JSON** — `_to_dict` walks
+  `dataclasses.fields`, drops internal `_`-prefixed fields, and manually adds the
+  selected properties (`loss_pct`/`cidr`/`total_bps`/`is_open`).
+- **Exit-code scheme.** `0` OK, `1` a general error (bad argument / exception —
+  caught in `main()`), `2` "unreachable" (host dead, no port open, certificate
+  expired or close to it, no DNS resolution, traceroute with no hops). Every
+  handler returns an `int`; `tls`/`http` have their own `_tls_exit_code`/
+  `_http_exit_code` (status>=400 or days_left<=warn_days => 2). The live
+  `--watch`/`mtr` mode does not work in a machine format (it errors out);
+  `mtr --json` runs several cycles and prints the final snapshot.
+- **Upload byte fix.** In the upload phase `speed.py` counts the bytes that were
+  **actually sent** (every chunk in the generator/stream is counted); otherwise
+  the Mbps figure came out wrong (far too high). Same `stop` event-time logic as
+  the download.
+- **`trace_stream` — the basis for mtr.** Both `mtr` and `trace --continuous`
+  are fed by the `trace_stream(host, interval, cycles)` async generator in
+  `core`: each cycle re-probes the hops and updates the per-hop `HopStat`
+  (loss%/last/avg/best/worst). The CLI renders that live with `rich.Live`;
+  `cycles=None` => run forever (Ctrl+C stops it).
+- **OUI vendor lookup — offline.** During LAN discovery the vendor is derived
+  from the MAC via `core/oui.py` using a small built-in table (`data/oui_min.py`,
+  ~60 vendors) — no network access, no extra dependency. A locally-administered
+  MAC does not identify a global vendor => `None`. The full IEEE database (~30k)
+  is intentionally NOT included (file size).
+- **Configuration — optional, silent defaults.** `core/config.py` is stdlib only
+  (`tomllib`); if the file is missing, malformed or unreadable, a fully default
+  `SystopConfig` is returned (NO exception). Only known keys are read, and a
+  value of the wrong type is silently ignored. Lookup order: argument >
+  `SYSTOP_CONFIG` env > `~/.config/systop/config.toml`. `core/config.py` imports
+  no other core module.
 
-## Konvensiyalar
+## Conventions
 
-- Foydalanuvchiga ko'rinadigan matn (panel sarlavhalari, jadval ustunlari,
-  xato xabarlari, docstring'lar) — **o'zbek tilida**. Kod identifikatorlari
-  ingliz tilida.
-- Har bir `core/` funksiyasi dataclass yoki oddiy qiymat qaytaradi (UI obyekti
-  emas), shunda CLI ham, TUI ham, testlar ham bir xil ishlatadi.
-- Testlar **offline** bo'lishi kerak (tarmoqqa kirmasin) — regex, dataclass,
-  `build_targets` kabi sof mantiqni sina. Tarmoqli funksiyalarni sinab bo'lmaydi.
-- **Hujjatlar kod bilan bir qadamda.** `tests/test_docs.py` `_build_parser()`
-  dagi har bir subbuyruq `README.md` va `README.uz.md` da uchrashini, hamda
-  `cli.py` modul docstring'idagi buyruqlar to'plami parser bilan AYNAN teng
-  ekanini tekshiradi. Yangi subbuyruq = uchala joyni ham yangilash.
-- **Platforma shoxi faqat `core/_platform.py` da.** Boshqa modulda
-  `platform.system()`/`subprocess` yozmang; `_platform.run_command(...)` ni
-  chaqiring va OS xabari stderr'ga chiqadigan bo'lsa `include_stderr=True` ni
-  unutmang.
+- All user-facing text (panel titles, table headers, error messages,
+  docstrings) is in **English**, code identifiers included.
+
+  > **Migration in progress.** A large part of `src/` and `tests/` is still
+  > written in Uzbek — the language the project was originally built in. New
+  > code must be English; existing text is being converted module by module.
+  > Do not treat the remaining Uzbek as the convention.
+- Every `core/` function returns a dataclass or a plain value (never a UI
+  object), so the CLI, the TUI and the tests can all consume it identically.
+- Tests must be **offline** (no network access) — exercise pure logic such as
+  regexes, dataclasses and `build_targets`. Network-bound functions cannot be
+  tested.
+- **Docs move in lockstep with the code.** `tests/test_docs.py` checks that
+  every subcommand in `_build_parser()` appears in `README.md`, and that the set
+  of commands in the `cli.py` module docstring matches the parser EXACTLY. A new
+  subcommand means updating all three: the parser, the docstring and the README.
+- **Platform branching belongs in `core/_platform.py` only.** Do not write
+  `platform.system()`/`subprocess` in any other module; call
+  `_platform.run_command(...)`, and don't forget `include_stderr=True` when the
+  OS writes its message to stderr.

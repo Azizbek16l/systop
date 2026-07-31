@@ -1,106 +1,110 @@
-# systop — standalone binar yig'ish (packaging/)
+# systop — building a standalone binary (packaging/)
 
-Maqsad: Python o'rnatilmagan mashinaga bitta fayl tashlab, `systop` ishlasin.
+The goal: drop a single file onto a machine with no Python installed and have
+`systop` run.
 
 ```
 packaging/
-  systop.spec        PyInstaller spec (onefile, console) — uchala OS uchun BITTA fayl
-  _common.sh         build-linux.sh / build-macos.sh uchun umumiy mantiq
-  build-linux.sh     Linux'da ishga tushiriladi
-  build-macos.sh     macOS'da ishga tushiriladi
-  build-windows.ps1  Windows'da ishga tushiriladi
-  smoke_test.py      yig'ilgan binarni HAQIQATAN tekshiradi (TUI'ni ham)
+  systop.spec        PyInstaller spec (onefile, console) — ONE file for all three OSes
+  _common.sh         shared logic for build-linux.sh / build-macos.sh
+  build-linux.sh     run this on Linux
+  build-macos.sh     run this on macOS
+  build-windows.ps1  run this on Windows
+  smoke_test.py      REALLY exercises the built binary (the TUI included)
 ```
 
 ---
 
-## 1. Qaysi artefaktni QAYERDA yig'sa bo'ladi
+## 1. Which artifact can be built WHERE
 
-| Artefakt | Yig'ish mumkin bo'lgan joy | macOS'dan yig'sa bo'ladimi? |
+| Artifact | Where it can be built | Buildable from macOS? |
 |---|---|---|
-| `systop-linux-x86_64` | Linux x86_64 | **Yo'q** |
-| `systop-windows-x86_64.exe` | Windows x86_64 | **Yo'q** |
-| `systop-macos-arm64` | Apple Silicon Mac | Ha (host arxitekturasi) |
-| `systop-macos-x86_64` | Intel Mac | Yo'q (arm64 Mac'da emas) |
+| `systop-linux-x86_64` | Linux x86_64 | **No** |
+| `systop-windows-x86_64.exe` | Windows x86_64 | **No** |
+| `systop-macos-arm64` | Apple Silicon Mac | Yes (host architecture) |
+| `systop-macos-x86_64` | Intel Mac | No (not on an arm64 Mac) |
 
-### Nega Windows .exe ni macOS/Linux'da yasab BO'LMAYDI
+### Why a Windows .exe CANNOT be produced on macOS/Linux
 
-PyInstaller (va Nuitka) **cross-compiler emas**. Yig'ilgan binar ichida:
+PyInstaller (and Nuitka) are **not cross-compilers**. The built binary contains:
 
-1. **host OS'ning CPython kutubxonasi** — macOS'da `libpython3.x.dylib`,
-   Windows'da `python3xx.dll`, Linux'da `libpython3.x.so`;
-2. **host uchun kompilyatsiya qilingan bootloader** (C dasturi, `PyInstaller/bootloader/`
-   ichida faqat joriy platforma uchun tayyor nusxa bor);
-3. **host uchun qurilgan C-kengaytmalar** — `psutil._psutil_osx.so` va h.k.
+1. **the host OS's CPython library** — `libpython3.x.dylib` on macOS,
+   `python3xx.dll` on Windows, `libpython3.x.so` on Linux;
+2. **a bootloader compiled for the host** (a C program; `PyInstaller/bootloader/`
+   ships a prebuilt copy for the current platform only);
+3. **C extensions built for the host** — `psutil._psutil_osx.so` and friends.
 
-Bularning hech biri boshqa OS'da almashtirilmaydi. Rasmiy pozitsiya ham shu:
+None of those can be swapped out for another OS. The official position says the
+same:
 <https://pyinstaller.org/en/stable/usage.html#supporting-multiple-operating-systems>
 
-> Wine orqali "Windows exe" yasash yo'li texnik jihatdan mavjud, lekin biz uni
-> ATAYIN qo'shmadik: C-kengaytmalar Wine ostida ishonchsiz bog'lanadi va natija
-> "yig'ildi, lekin foydalanuvchida yiqiladi" toifasidagi artefakt bo'ladi.
-> Sinadigan artefakt — yo'qdan battar.
+> There is a technically viable route to producing a "Windows exe" through Wine,
+> but we left it out DELIBERATELY: C extensions link unreliably under Wine and
+> the result is an artifact of the "it built, but it crashes for the user"
+> variety. An artifact that breaks is worse than no artifact at all.
 
-**Windows .exe olishning yagona to'g'ri yo'li** — `.github/workflows/release.yml`
-dagi `windows-latest` matritsasi (yoki qo'lingizdagi Windows mashina).
+**The only correct way to get a Windows .exe** is the `windows-latest` matrix
+entry in `.github/workflows/release.yml` (or a Windows machine you have on
+hand).
 
 ---
 
-## 2. Bitta buyruq bilan yig'ish
+## 2. Building with a single command
 
 ```bash
-# Linux'da
+# on Linux
 ./packaging/build-linux.sh
 
-# macOS'da
+# on macOS
 ./packaging/build-macos.sh
 ```
 
 ```powershell
-# Windows'da
+# on Windows
 .\packaging\build-windows.ps1
 ```
 
-Har bir skript: muhit tayyorlaydi → yig'adi → nomlaydi + SHA256 → **smoke test**.
+Each script: prepares the environment → builds → names the output + SHA256 →
+**smoke test**.
 
-**Muhit**: `uv` bo'lsa `uv run --with pyinstaller` ishlatiladi — loyihaning
-`.venv` iga va `pyproject.toml` ga **tegilmaydi**. `uv` bo'lmasa
-`build/.buildenv` da oddiy venv yaratiladi. Shu sababli `pyinstaller` ni
-`pyproject.toml` ga dev-qaramlik sifatida qo'shish **shart emas** va qo'shilmadi.
+**Environment**: if `uv` is available, `uv run --with pyinstaller` is used — the
+project's `.venv` and `pyproject.toml` are **left untouched**. Without `uv`, a
+plain venv is created in `build/.buildenv`. That is why adding `pyinstaller` to
+`pyproject.toml` as a dev dependency is **unnecessary**, and it was not added.
 
-Natija:
+Result:
 
 ```
-dist/systop                  # asosiy binar
-dist/systop-<os>-<arch>      # nomlangan nusxa
+dist/systop                  # the main binary
+dist/systop-<os>-<arch>      # named copy
 dist/systop-<os>-<arch>.sha256
 ```
 
 ---
 
-## 3. Smoke test nega `--help` dan ko'proq ish qiladi
+## 3. Why the smoke test does more than `--help`
 
-`src/systop/app.py:59` da:
+In `src/systop/app.py:59`:
 
 ```python
 CSS_PATH = Path(__file__).parent / "styles.tcss"
 ```
 
-Muzlatilgan holatda `systop.app.__file__` = `<_MEIPASS>/systop/app.pyc`, demak
-`styles.tcss` bundle ichida **aynan `systop/` papkasida** turishi shart. Spec
-buni `datas` orqali kafolatlaydi.
+In a frozen build `systop.app.__file__` = `<_MEIPASS>/systop/app.pyc`, which
+means `styles.tcss` must sit **in exactly that `systop/` directory** inside the
+bundle. The spec guarantees that through `datas`.
 
-Muhim nozik joy: agar `styles.tcss` bundle'ga tushmasa, **`--help` baribir
-`exit 0` qaytaradi** (argparse textual'ga umuman yetib bormaydi), TUI esa
-foydalanuvchi qo'lida yiqiladi. Shuning uchun `smoke_test.py`:
+The subtle part: if `styles.tcss` does not make it into the bundle, **`--help`
+still returns `exit 0`** (argparse never reaches textual at all) while the TUI
+crashes in the user's hands. Hence `smoke_test.py`:
 
-1. `--help` → exit 0 + `usage` bor
+1. `--help` → exit 0 and `usage` present
 2. `--version`
-3. **bundle TOC'da `systop/styles.tcss` bormi** (uchala OS'da ishlaydi)
-4. `doctor --quick --json` → exit ∈ {0,2} + `json.loads()` muvaffaqiyatli
-5. **TUI'ni haqiqiy PTY'da ochadi**, `q` yuboradi, chiqishda `Traceback` /
-   `StylesheetError` / `ModuleNotFoundError` yo'qligini va ANSI chizilganini
-   tekshiradi (POSIX; Windows'da 3-qadam o'rnini bosadi)
+3. **is `systop/styles.tcss` in the bundle TOC** (works on all three OSes)
+4. `doctor --quick --json` → exit ∈ {0,2} and `json.loads()` succeeds
+5. **opens the TUI on a real PTY**, sends `q`, and checks that the output
+   contains no `Traceback` / `StylesheetError` / `ModuleNotFoundError` and that
+   ANSI was actually drawn (POSIX; on Windows this substitutes for step 3)
 
 ```bash
 python3 packaging/smoke_test.py dist/systop
@@ -108,83 +112,84 @@ python3 packaging/smoke_test.py dist/systop
 
 ---
 
-## 4. Tekshirilgan natijalar
+## 4. Verified results
 
-| Platforma | Yig'ildi | Hajm | Smoke |
+| Platform | Built | Size | Smoke |
 |---|---|---|---|
-| macOS arm64 (Darwin 25.5, py3.11.15) | ha | 17.1 MiB | 5/5 |
-| Linux x86_64 (Ubuntu 26.04, py3.14.4, glibc 2.43) | ha | 16.5 MiB | 5/5 |
-| Windows x86_64 | **CI kutilmoqda** | — | — |
+| macOS arm64 (Darwin 25.5, py3.11.15) | yes | 17.1 MiB | 5/5 |
+| Linux x86_64 (Ubuntu 26.04, py3.14.4, glibc 2.43) | yes | 16.5 MiB | 5/5 |
+| Windows x86_64 | **awaiting CI** | — | — |
 
-### ⚠️ glibc ogohlantirishi
+### ⚠️ glibc warning
 
-Linux binari **yig'ilgan mashinaning glibc'idan pastroq** tizimda ishlamaydi.
-Yuqoridagi nusxa `glibc 2.43` (Ubuntu 26.04) da yig'ilgan → Ubuntu 22.04/24.04,
-Debian 12, RHEL 9 da **ishlamaydi** (`GLIBC_2.4x not found`).
+A Linux binary will not run on a system whose **glibc is older than the build
+machine's**. The copy above was built against `glibc 2.43` (Ubuntu 26.04), so it
+**will not run** on Ubuntu 22.04/24.04, Debian 12 or RHEL 9
+(`GLIBC_2.4x not found`).
 
-Shu sababli CI'da `ubuntu-22.04` tanlangan (`ubuntu-latest` emas) — eskiroq
-glibc = kengroq moslik. Umumiy tarqatish uchun binarni eng eski
-qo'llab-quvvatlanadigan distroda yoki `manylinux` konteynerida yig'ing.
+That is why CI pins `ubuntu-22.04` (not `ubuntu-latest`) — older glibc = wider
+compatibility. For general distribution, build the binary on the oldest
+supported distro or inside a `manylinux` container.
 
 ---
 
-## 5. Manba kodi haqiqatan yashiriladimi? — YO'Q
+## 5. Does this actually hide the source code? — NO
 
-**Halol javob: onefile PyInstaller manba kodini YASHIRMAYDI.** U faqat
-`.py` → `.pyc` (bytecode) ga aylantiradi va arxivga joylaydi.
+**The honest answer: onefile PyInstaller does NOT hide source code.** All it
+does is turn `.py` into `.pyc` (bytecode) and put it in an archive.
 
-Buni shu repodagi binarda amalda tekshirdik:
+We verified this on the actual binary from this repo:
 
 ```
-CArchive TOC yozuvlari: 415
-PYZ ichidagi modullar: 1275
-systop modullari: 36  ['systop', 'systop.__main__', 'systop._render', 'systop.app', ...]
-ochiq satr konstantalar: docstring'lar TO'LIQ, o'zgarishsiz
+CArchive TOC entries: 415
+modules inside the PYZ: 1275
+systop modules: 36  ['systop', 'systop.__main__', 'systop._render', 'systop.app', ...]
+plaintext string constants: docstrings FULLY INTACT, unchanged
 ```
 
-`dis.dis()` bilan mantiq to'liq o'qiladi, docstring va URL'lar umuman
-shifrlanmagan. Tashqi vosita ham kerak emas — PyInstaller'ning **o'z** o'quvchisi
-(`CArchiveReader` / `ZlibArchiveReader`) yetarli. `pyinstxtractor` +
-`decompyle3`/`pycdc` esa deyarli asl `.py` ni tiklaydi.
+`dis.dis()` reads the logic back in full, and docstrings and URLs are not
+encrypted at all. You don't even need an external tool — PyInstaller's **own**
+readers (`CArchiveReader` / `ZlibArchiveReader`) are enough. `pyinstxtractor` +
+`decompyle3`/`pycdc` will get you almost back to the original `.py`.
 
-Bu **PyInstaller kamchiligi emas** — u obfuskator emas, u to'plovchi (bundler).
-PyInstaller 6.x da eski `--key` AES shifrlash **butunlay olib tashlangan**,
-chunki kalit baribir binar ichida bo'lgan → soxta himoya edi.
+This is **not a PyInstaller shortcoming** — it is not an obfuscator, it is a
+bundler. PyInstaller 6.x **removed the old `--key` AES encryption entirely**,
+because the key sat inside the binary anyway → it was fake protection.
 
-**Amaliy darajalar:**
+**Practical levels:**
 
-| Daraja | Vosita | Beradigan himoyasi |
+| Level | Tool | Protection it gives |
 |---|---|---|
-| 0 | wheel / sdist | hech qanday — `.py` ochiq |
-| 1 | **PyInstaller onefile (hozirgi)** | tasodifiy ko'rishdan; bytecode tiklanadi |
-| 2 | PyInstaller + `pyarmor gen` | jiddiy to'siq, lekin buziladi; litsenziya pullik |
-| 3 | **Nuitka `--standalone`** | haqiqiy mashina kodi, bytecode YO'Q |
-| 4 | kritik mantiqni serverga ko'chirish | yagona haqiqiy himoya |
+| 0 | wheel / sdist | none — the `.py` is right there |
+| 1 | **PyInstaller onefile (current)** | against casual inspection; bytecode is recoverable |
+| 2 | PyInstaller + `pyarmor gen` | a serious hurdle, but breakable; paid licence |
+| 3 | **Nuitka `--standalone`** | real machine code, NO bytecode |
+| 4 | move the critical logic server-side | the only real protection |
 
-Agar maqsad **"tasodifan ochib o'qib qo'ymasin"** bo'lsa — hozirgi yechim
-yetarli. Agar maqsad **raqobatchidan yoki litsenziya buzilishidan himoya**
-bo'lsa — 1-daraja **yetarli emas**, bunga ishonmang.
+If the goal is **"don't let someone read it by accident"**, the current solution
+is sufficient. If the goal is **protection from a competitor or from licence
+violation**, level 1 is **not sufficient** — do not rely on it.
 
-### Nuitka arziydimi?
+### Is Nuitka worth it?
 
-Nuitka Python'ni C ga o'giradi va kompilyatsiya qiladi — natijada `.pyc` umuman
-bo'lmaydi, faqat mashina kodi. Himoya jihatidan sezilarli ustunlik.
+Nuitka translates Python to C and compiles it — the result contains no `.pyc` at
+all, only machine code. In protection terms that is a meaningful step up.
 
-Narxi: build vaqti **~30 soniyadan ~10–20 daqiqagacha** ko'tariladi (bu yerda
-uchala OS × CI = sezilarli), har bir OS'da C toolchain kerak (Windows'da MSVC
-yoki MinGW), va textual/rich kabi ko'p dinamik import qiluvchi paketlarda
-qo'shimcha `--include-package` sozlash talab qilinadi — ya'ni yangi nosozlik
-manbai. **Tavsiya: hozircha yo'q.** systop — ochiq MIT tarmoq utilitasi
-(`LICENSE` shuni aytadi), sir saqlaydigan mantiq yo'q. Nuitka'ga o'tish faqat
-yopiq/tijoriy versiya paydo bo'lsa mantiqiy bo'ladi.
+The price: build time goes from **~30 seconds to ~10–20 minutes** (multiplied by
+three OSes × CI, that adds up), every OS needs a C toolchain (MSVC or MinGW on
+Windows), and packages with a lot of dynamic imports such as textual/rich
+require extra `--include-package` tuning — i.e. a new source of breakage.
+**Recommendation: not for now.** systop is an open MIT network utility (as
+`LICENSE` states) with no secret logic in it. Moving to Nuitka only makes sense
+if a closed-source/commercial edition appears.
 
 ---
 
-## 6. Sysadmin uchun eng sodda o'rnatish UX'i
+## 6. The simplest install UX for a sysadmin
 
-**Umumiy tavsiya: PATH'dagi bitta binar.** systop — bitta fayl, demoni yo'q,
-konfig fayli ixtiyoriy, xizmat ro'yxatga olinmaydi. `.deb`/`MSI` bu yerda
-faqat qo'shimcha ish (paket metadata, repo, imzo) beradi, foyda bermaydi.
+**General recommendation: a single binary on the PATH.** systop is one file: no
+daemon, an optional config file, no service registration. A `.deb`/`MSI` only
+adds work here (package metadata, a repo, signing) without adding value.
 
 ### Linux
 ```bash
@@ -192,51 +197,54 @@ curl -fsSLO https://github.com/<org>/systop/releases/latest/download/systop-linu
 sudo install -m 0755 systop-linux-x86_64 /usr/local/bin/systop
 systop --version
 ```
-`.deb` faqat ichki APT repo bo'lsa va konfiguratsiya boshqaruvi (Ansible)
-paket versiyasini kuzatishi kerak bo'lsa arziydi. Aks holda ortiqcha.
+A `.deb` is only worth it if you run an internal APT repo and your configuration
+management (Ansible) needs to track the package version. Otherwise it is
+overhead.
 
 ### macOS
 ```bash
 sudo install -m 0755 systop-macos-arm64 /usr/local/bin/systop
-xattr -d com.apple.quarantine /usr/local/bin/systop   # notarizatsiya bo'lmaguncha
+xattr -d com.apple.quarantine /usr/local/bin/systop   # until notarization is in place
 ```
-Binar **ad-hoc imzolangan**, notarizatsiya qilinmagan → boshqa Mac'da
-Gatekeeper "damaged" deydi. To'g'ri yechim: Apple Developer ID + `notarytool`.
-Keng tarqatish uchun eng yaxshi UX — **Homebrew tap** (`brew install <org>/tap/systop`),
-u quarantine'ni o'zi hal qiladi.
+The binary is **ad-hoc signed** and not notarized → on another Mac, Gatekeeper
+calls it "damaged". The proper fix is an Apple Developer ID + `notarytool`. For
+wide distribution the best UX is a **Homebrew tap**
+(`brew install <org>/tap/systop`), which handles quarantine for you.
 
 ### Windows
-**`scoop` eng sodda** — administrator huquqi kerak emas, PATH'ni o'zi
-sozlaydi, yangilanish `scoop update systop`:
+**`scoop` is the simplest** — no administrator rights needed, it sets up PATH
+itself, and updates are `scoop update systop`:
 
 ```json
 {
   "version": "0.9.0",
   "url": "https://github.com/<org>/systop/releases/download/v0.9.0/systop-windows-x86_64.exe#/systop.exe",
   "bin": "systop.exe",
-  "hash": "<SHA256SUMS.txt dan>"
+  "hash": "<from SHA256SUMS.txt>"
 }
 ```
 
-`winget` kengroq auditoriya, lekin manifest markaziy repoga PR talab qiladi va
-ko'rib chiqish kutiladi. **MSI** faqat GPO orqali korporativ tarqatish kerak
-bo'lsagina arziydi — WiX loyihasi qo'shiladi, ya'ni sezilarli qo'shimcha ish.
+`winget` reaches a wider audience, but the manifest requires a PR to a central
+repo plus a review wait. **MSI** is only worth it if you need corporate
+distribution via GPO — it means adding a WiX project, i.e. significant extra
+work.
 
-**Imzo eslatmasi:** imzolanmagan `.exe` SmartScreen "Windows protected your PC"
-ogohlantirishini beradi. Buni faqat Authenticode sertifikati hal qiladi
-(EV sertifikat reputatsiyani darhol beradi).
+**A note on signing:** an unsigned `.exe` triggers the SmartScreen "Windows
+protected your PC" warning. Only an Authenticode certificate fixes that (an EV
+certificate grants reputation immediately).
 
 ---
 
-## 7. Nozik joylar (spec ichida izohlangan)
+## 7. Subtleties (annotated inside the spec)
 
-- **UPX o'chirilgan.** ~30% hajm tejaydi, lekin macOS imzosini buzadi va
-  Windows Defender / EDR uchun false-positive manbai. Arzimaydi.
-- **`console=True` majburiy.** `--windowed` Windows'da stdout/stderr'ni
-  yo'qotadi → `--json` chiqishi yo'qoladi va TUI umuman ishga tushmaydi.
-- **`collect_submodules("psutil")` ATAYIN ishlatilmagan** — u noto'g'ri
-  platforma modulini (`_pswindows`) majburan import qilib, build'ni yiqitadi.
-  PyInstaller'ning o'z hook'i psutil'ni to'g'ri hal qiladi.
-- **`strip` faqat Linux'da** — macOS'da imzoni buzadi.
-- **`anyio._backends._asyncio`** qo'lda `hiddenimports` ga qo'shilgan (httpx uni
-  satr orqali dinamik import qiladi).
+- **UPX is disabled.** It saves ~30% of the size, but it breaks the macOS
+  signature and is a false-positive source for Windows Defender / EDR. Not worth
+  it.
+- **`console=True` is mandatory.** `--windowed` loses stdout/stderr on Windows →
+  `--json` output disappears and the TUI does not start at all.
+- **`collect_submodules("psutil")` is DELIBERATELY unused** — it force-imports
+  the wrong platform module (`_pswindows`) and breaks the build. PyInstaller's
+  own hook handles psutil correctly.
+- **`strip` on Linux only** — it breaks the signature on macOS.
+- **`anyio._backends._asyncio`** is added to `hiddenimports` by hand (httpx
+  imports it dynamically by string).
