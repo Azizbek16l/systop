@@ -1,9 +1,9 @@
-"""Tarmoq topologiyasi: global yo'l (traceroute) + lokal hostlar (LAN discovery).
+"""Network topology: the global path (traceroute) + local hosts (LAN discovery).
 
-traceroute  — `icmplib.traceroute` (sinxron) thread'da ishlatiladi; har bir
-              "hop" — yo'ldagi marshrutizator.
-discover_lan — lokal /24 tarmoqni ping sweep qilib, tirik hostlarni topadi,
-              keyin OS ARP jadvalidan MAC manzillarni qo'shadi. Root kerak emas.
+traceroute   — `icmplib.traceroute` (synchronous) is run in a thread; every
+               "hop" is a router along the path.
+discover_lan — ping-sweeps the local /24 to find the alive hosts, then fills in
+               the MAC addresses from the OS ARP table. No root required.
 """
 
 from __future__ import annotations
@@ -26,14 +26,14 @@ from systop.core import _platform, netinfo, oui
 _ARP_RE = re.compile(r"\((\d+\.\d+\.\d+\.\d+)\)\s+at\s+([0-9a-fA-F:]+)")
 _NEIGH_RE = re.compile(r"(\d+\.\d+\.\d+\.\d+)\s+dev\s+\S+\s+lladdr\s+([0-9a-fA-F:]+)")
 # Windows `arp -a`: "  192.168.1.1    00-11-22-33-44-55     dynamic"
-# MAC tire (-) bilan, 6 oktet; "static"/"dynamic" turi qatorda bo'ladi.
-# Sarlavha ("Internet Address ... Physical Address") va invalid yozuvlar
-# (MAC "ff-ff-ff-ff-ff-ff" broadcast yoki manzilsiz) mos kelmaydi.
+# The MAC uses dashes (-), 6 octets; the "static"/"dynamic" type is on the line.
+# The header ("Internet Address ... Physical Address") and invalid entries
+# (the "ff-ff-ff-ff-ff-ff" broadcast MAC, or ones with no address) do not match.
 _ARP_WIN_RE = re.compile(
     r"(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F]{2}(?:-[0-9a-fA-F]{2}){5})\s+\w+",
 )
 
-# --- IPv6 qo'shni (neighbour) jadvali uchun regexlar ---
+# --- Regexes for the IPv6 neighbour table ---
 # macOS `ndp -an`:  "fe80::1%en0   aa:bb:cc:dd:ee:ff   en0   23h59m58s  S  R"
 _NDP_RE = re.compile(
     r"^([0-9a-fA-F:]+(?:%\w+)?)\s+([0-9a-fA-F]{1,2}(?::[0-9a-fA-F]{1,2}){5})\s+\S+",
@@ -48,18 +48,18 @@ _NEIGH6_WIN_RE = re.compile(
     r"^\s*([0-9a-fA-F:]+(?:%\d+)?)\s+([0-9a-fA-F]{2}(?:-[0-9a-fA-F]{2}){5})\s+\w+",
 )
 
-# Link-local "barcha nodelar" multicast manzili. IPv6'da /64 ni sweep qilish
-# imkonsiz (2^64 manzil), shuning uchun standart usul: shu manzilga ping
-# yuborib, javob berganlarni yig'ish (RFC 4291).
+# The link-local "all nodes" multicast address. Sweeping a /64 is impossible in
+# IPv6 (2^64 addresses), so the standard approach is to ping this address and
+# collect whoever answers (RFC 4291).
 ALL_NODES_MULTICAST = "ff02::1"
 
 
 @runtime_checkable
 class _HostLike(Protocol):
-    """Ping host obyektining minimal interfeysi (`discover_lan` o'qiydigan).
+    """The minimal interface of a ping host object (what `discover_lan` reads).
 
-    `icmplib` Host va Windows `_WinHost` ikkalasi ham shu shaklga mos keladi
-    (duck typing) — shuning uchun `discover_lan` ikkala manbadan bir xil ishlaydi.
+    Both `icmplib`'s Host and the Windows `_WinHost` fit this shape (duck typing)
+    — which is exactly why `discover_lan` works identically from either source.
     """
 
     @property
@@ -74,11 +74,11 @@ class _HostLike(Protocol):
 
 @runtime_checkable
 class _HopLike(Protocol):
-    """`icmplib.traceroute` qaytaradigan hop obyektining minimal interfeysi.
+    """The minimal interface of the hop object `icmplib.traceroute` returns.
 
-    Faqat shu modul o'qiydigan atributlar. Protocol typing'ni mypy-toza qiladi:
-    `icmplib` aniq tiplarni eksport qilmaydi, biz esa duck-typing ishlatamiz
-    (test'da `FakeRawHop` ham shu shaklga mos keladi).
+    Only the attributes this module reads. The Protocol keeps the typing
+    mypy-clean: `icmplib` does not export concrete types and we rely on duck
+    typing (the tests' `FakeRawHop` fits the same shape).
     """
 
     @property
@@ -96,7 +96,7 @@ class _HopLike(Protocol):
 
 @dataclass(slots=True)
 class Hop:
-    """traceroute'dagi bitta hop (marshrutizator)."""
+    """A single hop (router) in a traceroute."""
 
     index: int
     address: str | None
@@ -107,7 +107,7 @@ class Hop:
 
 @dataclass(slots=True)
 class TraceResult:
-    """traceroute natijasi: hop'lar + xato (agar bo'lsa, o'zbekcha)."""
+    """The result of a traceroute: the hops + an error message, if there was one."""
 
     address: str
     hops: list[Hop]
@@ -116,20 +116,20 @@ class TraceResult:
 
 @dataclass(slots=True)
 class LanHost:
-    """Lokal tarmoqdagi bitta topilgan host."""
+    """A single host discovered on the local network."""
 
     ip: str
     mac: str | None = None
     hostname: str | None = None
     rtt_ms: float = 0.0
     is_gateway: bool = False
-    vendor: str | None = None  # MAC OUI'dan aniqlangan ishlab chiqaruvchi
+    vendor: str | None = None  # vendor derived from the MAC OUI
     family: str = "ipv4"  # ipv4 | ipv6
-    source: str = "ping"  # ping | arp | ndp | multicast — qanday topilgani
+    source: str = "ping"  # ping | arp | ndp | multicast — how it was found
 
     @property
     def is_link_local(self) -> bool:
-        """IPv6 link-local (fe80::/10) bo'lsa True — routerdan o'tmaydigan manzil."""
+        """True for IPv6 link-local (fe80::/10) — an address that never crosses a router."""
         try:
             return ipaddress.ip_address(self.ip.split("%")[0]).is_link_local
         except ValueError:
@@ -138,11 +138,10 @@ class LanHost:
 
 @dataclass(slots=True)
 class HopStat:
-    """`trace_stream` uchun bitta hop bo'yicha jamlanma statistika (mtr uslubi).
+    """Cumulative per-hop statistics for `trace_stream` (mtr style).
 
-    Yo'l qayta-qayta probe qilinadi; har hop bo'yicha yuborilgan/qabul qilingan
-    paketlar va RTT statistikasi (oxirgi/o'rtacha/eng yaxshi/eng yomon) jonli
-    yangilanib boriladi.
+    The path is probed over and over; the sent/received packet counts and the
+    RTT statistics (last/average/best/worst) for each hop are updated live.
     """
 
     index: int
@@ -154,17 +153,17 @@ class HopStat:
     avg_rtt: float = 0.0
     best_rtt: float = 0.0
     worst_rtt: float = 0.0
-    _rtt_sum: float = 0.0  # ichki: avg hisoblash uchun
+    _rtt_sum: float = 0.0  # internal: used to compute avg
 
     @property
     def loss_pct(self) -> float:
-        """Paket yo'qotish foizi (0..100)."""
+        """Packet loss percentage (0..100)."""
         if self.sent == 0:
             return 0.0
         return (self.sent - self.recv) / self.sent * 100.0
 
     def update(self, address: str | None, alive: bool, rtt: float) -> None:
-        """Bitta probe natijasi bilan hop statistikasini yangilaydi."""
+        """Updates the hop statistics with the result of a single probe."""
         self.sent += 1
         if address and self.address is None:
             self.address = address
@@ -186,11 +185,11 @@ async def traceroute(
     privileged: bool = False,
     resolve: bool = True,
 ) -> list[Hop]:
-    """Berilgan manzilgacha bo'lgan yo'lni (hop'larni) qaytaradi.
+    """Returns the path (the hops) to the given address.
 
-    `icmplib.traceroute` sinxron bo'lgani uchun thread'da ishlatamiz, shunda
-    event loop bloklanmaydi. Xatolarga chidamli: resolve bo'lmasa yoki yo'lda
-    uzilish bo'lsa, bo'sh yoki qisman ro'yxat qaytaradi (istisno ko'tarmaydi).
+    `icmplib.traceroute` is synchronous, so we run it in a thread and the event
+    loop is never blocked. Fault-tolerant: if the name does not resolve, or the
+    path breaks somewhere, it returns an empty or partial list (it never raises).
     """
     result = await trace_path(
         address,
@@ -211,10 +210,10 @@ async def trace_path(
     privileged: bool = False,
     resolve: bool = True,
 ) -> TraceResult:
-    """`traceroute` ning xato-xabarli varianti: TraceResult qaytaradi.
+    """The error-reporting variant of `traceroute`: returns a TraceResult.
 
-    Resolve bo'lmasa yoki ICMP xatosi bo'lsa, `error` maydoni o'zbekcha xabar
-    bilan to'ldiriladi va `hops` bo'sh bo'ladi (CLI buni ko'rsata oladi).
+    If the name does not resolve or ICMP fails, the `error` field is filled in
+    with a message and `hops` comes back empty (so the CLI can display it).
     """
     if _platform.IS_WINDOWS:
         raw_hops: list[_HopLike] = await _win_traceroute(
@@ -224,7 +223,7 @@ async def trace_path(
             return TraceResult(
                 address=address,
                 hops=[],
-                error="Traceroute natija bermadi (host yetib bo'lmadi yoki nom resolve bo'lmadi).",
+                error="Traceroute returned nothing (host unreachable, or the name did not resolve).",
             )
         hops = await _map_hops(raw_hops, resolve=resolve)
         return TraceResult(address=address, hops=hops)
@@ -242,7 +241,7 @@ async def trace_path(
         return TraceResult(
             address=address,
             hops=[],
-            error=f"'{address}' nomini IP manzilga aylantirib bo'lmadi (DNS xato).",
+            error=f"Could not resolve the name '{address}' to an IP address (DNS error).",
         )
     except ICMPLibError as exc:
         # `SocketPermissionError` (ICMPLibError'dan meros) — macOS/Linux'da TTL

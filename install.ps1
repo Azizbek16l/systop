@@ -13,19 +13,19 @@
 
 .EXAMPLE
     # Eng oddiy — PowerShell'da:
-    irm https://raw.githubusercontent.com/Azizbek16l/systop/main/install.ps1 | iex
+    irm https://raw.githubusercontent.com/Azizbek16l/systop/master/install.ps1 | iex
 
 .EXAMPLE
     # CMD'dan:
-    powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/Azizbek16l/systop/main/install.ps1 | iex"
+    powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/Azizbek16l/systop/master/install.ps1 | iex"
 
 .EXAMPLE
     # Argument bilan (quvur orqali `param` ishlamaydi, shuning uchun scriptblock):
-    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/Azizbek16l/systop/main/install.ps1))) -Version v0.10.0
+    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/Azizbek16l/systop/master/install.ps1))) -Version v0.10.0
 
 .EXAMPLE
     # O'chirish:
-    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/Azizbek16l/systop/main/install.ps1))) -Uninstall
+    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/Azizbek16l/systop/master/install.ps1))) -Uninstall
 
 .NOTES
     Muhit o'zgaruvchilari bilan ham boshqariladi (quvur rejimida qulay):

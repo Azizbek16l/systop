@@ -1,34 +1,36 @@
-"""Platforma-bog'liq umumiy yordamchilar (cross-platform qatlam).
+"""Platform-dependent shared helpers (the cross-platform layer).
 
-Bu modul platforma aniqlashni, Windows konsol kodlash/Unicode masalalarini VA
-Windows ICMP'ni (ping/traceroute) bitta joyga jamlaydi. Boshqa `core/` modullari
-(`netinfo`, `ping`, `topology`, `dns`) platforma shoxini shu yerdan oladi —
-shunda mantiq takrorlanmaydi va offline sinaladi.
+This module gathers platform detection, Windows console encoding/Unicode issues
+AND Windows ICMP (ping/traceroute) into one place. The other `core/` modules
+(`netinfo`, `ping`, `topology`, `dns`) take their platform branch from here — so
+the logic is not duplicated and can be tested offline.
 
-Dizayn qarorlari:
+Design decisions:
 
-* **Windows'da ICMP — Win32 IcmpSendEcho (ildiz yechim).** Matn-parse o'rniga
-  `iphlpapi.dll`'ning `IcmpSendEcho`/`Icmp6SendEcho2` funksiyalari ctypes orqali
-  chaqiriladi. Bu admin talab qilmaydi VA tizim lokalizatsiyasi/kodlash sahifasi
-  (codepage)'dan butunlay mustaqil — ruscha/nemischa Windows ham bir xil ishlaydi.
-  `IcmpSendEcho` mavjud bo'lmasa (juda eski/g'ayrioddiy muhit), `ping.exe`/
-  `tracert.exe` chiqishini parse qiluvchi til-mustaqil zaxira ishlatiladi.
-* **OEM codepage decode.** Subprocess (route/arp/ip-neigh/dns) hali ham matn
-  qaytaradi; RUS konsoli cp866 yozadi (UTF-8 emas). `decode_console` haqiqiy
-  konsol kodlash sahifasini (`GetConsoleOutputCP`) o'qib to'g'ri dekodlaydi —
-  kirill mojibake'ning oldini oladi.
-* **Konsol init.** `init_console` Windows'da konsolni UTF-8 (65001) + VT
-  (virtual terminal) rejimiga o'tkazadi — Textual sparkline/braille/box
-  belgilari legacy cmd.exe'da ham to'g'ri ko'rinadi.
-* **Faqat stdlib.** `platform`, `subprocess`, `asyncio`, `re`, `ctypes`,
-  `socket`, `os` — qo'shimcha bog'liqlik yo'q.
-* **Parse funksiyalari sof.** Tarmoqqa chiqmaydi, faqat satr/bayt -> qiymat;
-  real chiqish namunalari (cp866 baytlari ham) bilan offline sinaladi.
+* **ICMP on Windows — Win32 IcmpSendEcho (the root fix).** Instead of parsing
+  text, `iphlpapi.dll`'s `IcmpSendEcho`/`Icmp6SendEcho2` functions are called
+  through ctypes. This requires no admin rights AND is completely independent of
+  the system locale/codepage — a Russian or German Windows behaves identically.
+  If `IcmpSendEcho` is unavailable (a very old/unusual environment), a
+  language-independent fallback that parses `ping.exe`/`tracert.exe` output is
+  used.
+* **OEM codepage decode.** Subprocesses (route/arp/ip-neigh/dns) still return
+  text; a Russian console writes cp866 (not UTF-8). `decode_console` reads the
+  real console codepage (`GetConsoleOutputCP`) and decodes with it — which
+  prevents Cyrillic mojibake.
+* **Console init.** On Windows `init_console` switches the console into UTF-8
+  (65001) + VT (virtual terminal) mode — so Textual's sparkline/braille/box
+  characters also render correctly in legacy cmd.exe.
+* **stdlib only.** `platform`, `subprocess`, `asyncio`, `re`, `ctypes`,
+  `socket`, `os` — no extra dependencies.
+* **The parse functions are pure.** They never touch the network, only
+  string/bytes -> value; they are tested offline against real output samples
+  (cp866 bytes included).
 
-Eslatma: bu konstantalar (`IS_WINDOWS` va h.k.) modul-darajasida; testlarda
-`monkeypatch.setattr(_platform, "IS_WINDOWS", True)` bilan almashtirilishi
-mumkin, lekin chaqiruvchi modullar ularni `_platform.IS_WINDOWS` orqali (atribut
-sifatida) o'qishi shart — shunda monkeypatch ta'sir qiladi.
+Note: these constants (`IS_WINDOWS` and so on) are module-level; tests may
+replace them with `monkeypatch.setattr(_platform, "IS_WINDOWS", True)`, but
+calling modules must read them through `_platform.IS_WINDOWS` (as an attribute)
+— that is what makes the monkeypatch take effect.
 """
 
 from __future__ import annotations
@@ -44,39 +46,40 @@ import socket
 import struct
 import subprocess
 
-# --- Platforma konstantalari (bitta manba) ----------------------------------
+# --- Platform constants (single source of truth) -----------------------------
 
 IS_WINDOWS = platform.system() == "Windows"
 IS_MACOS = platform.system() == "Darwin"
 IS_LINUX = platform.system() == "Linux"
 
-# Windows'da subprocess oynasi miltillamasligi uchun (faqat win32'da mavjud).
+# Keeps the subprocess window from flashing on Windows (only exists on win32).
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def subprocess_flags() -> int:
-    """Subprocess `creationflags` qiymati: Windows'da CREATE_NO_WINDOW, aks holda 0.
+    """Subprocess `creationflags` value: CREATE_NO_WINDOW on Windows, 0 elsewhere.
 
-    Konsol oynasining miltillashini (flash) oldini oladi. Boshqa OS'da 0
-    (`creationflags` POSIX'da ham qabul qilinadi, lekin ta'sirsiz).
+    Stops the console window from flashing. On other operating systems it is 0
+    (`creationflags` is also accepted on POSIX, but has no effect there).
     """
     return _CREATE_NO_WINDOW if IS_WINDOWS else 0
 
 
-# --- Konsol kodlash sahifasi (codepage) va Unicode --------------------------
+# --- Console codepage and Unicode --------------------------------------------
 
 
 def decode_console(data: bytes | str) -> str:
-    """Bayt chiqishini to'g'ri dekodlaydi (Windows konsol OEM codepage'ini hisobga olib).
+    """Decodes byte output correctly, honouring the Windows console OEM codepage.
 
-    Windows konsoli (cmd.exe) UTF-8 emas, OEM kodlash sahifasida yozadi
-    (RUS = cp866, DE = cp850 va h.k.). Default UTF-8 dekodlash kirill/lotin
-    bo'lmagan belgilarni mojibake qiladi. Bu funksiya `GetConsoleOutputCP` orqali
-    haqiqiy sahifani aniqlab, `cp<N>` bilan dekodlaydi.
+    The Windows console (cmd.exe) does not write UTF-8, it writes in an OEM
+    codepage (RU = cp866, DE = cp850 and so on). Decoding that as UTF-8 turns
+    every non-Latin character into mojibake. This function asks
+    `GetConsoleOutputCP` for the real codepage and decodes with `cp<N>`.
 
-    Boshqa OS'da (yoki codepage aniqlanmasa) UTF-8 ishlatiladi. Har holatda
-    `errors="replace"` — buzuq bayt istisno ko'tarmaydi. Allaqachon `str` kelsa
-    (masalan `text=True` subprocess yoki test fixture) — o'zgartirmasdan qaytaradi.
+    On other operating systems (or when the codepage cannot be determined) UTF-8
+    is used. In every case `errors="replace"` — a corrupt byte never raises. If a
+    `str` arrives already (e.g. a `text=True` subprocess or a test fixture) it is
+    returned unchanged.
     """
     if isinstance(data, str):
         return data
@@ -86,20 +89,21 @@ def decode_console(data: bytes | str) -> str:
             try:
                 return data.decode(f"cp{cp}", errors="replace")
             except LookupError:
-                # Noma'lum/qo'llab-quvvatlanmaydigan codepage — UTF-8'ga tushamiz.
+                # Unknown/unsupported codepage — fall back to UTF-8.
                 pass
     return data.decode("utf-8", errors="replace")
 
 
 def _console_output_cp() -> int:
-    """Joriy konsol chiqish kodlash sahifasini (codepage) qaytaradi; xato bo'lsa 0."""
+    """Returns the current console output codepage; 0 on any error."""
     try:
         return int(ctypes.windll.kernel32.GetConsoleOutputCP())  # type: ignore[attr-defined]
     except (AttributeError, OSError, ValueError):
         return 0
 
 
-# ENABLE_VIRTUAL_TERMINAL_PROCESSING (konsol ANSI/VT ketma-ketliklarini tushunadi).
+# ENABLE_VIRTUAL_TERMINAL_PROCESSING (makes the console understand ANSI/VT
+# escape sequences).
 _ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
 _STD_OUTPUT_HANDLE = -11
 _STD_ERROR_HANDLE = -12
@@ -107,18 +111,18 @@ _CP_UTF8 = 65001
 
 
 def init_console() -> None:
-    """Konsolni UTF-8 (65001) + VT rejimiga o'tkazadi (Windows'da; aks holda no-op).
+    """Switches the console into UTF-8 (65001) + VT mode (Windows only; else no-op).
 
-    Textual TUI va Rich chiqishi Unicode (braille sparkline, box belgilar) va
-    ANSI ranglardan foydalanadi. Legacy cmd.exe default'da OEM codepage va
-    VT'siz — natija mojibake bo'ladi. Bu funksiya:
+    The Textual TUI and Rich output rely on Unicode (braille sparklines, box
+    characters) and ANSI colours. Legacy cmd.exe defaults to an OEM codepage with
+    no VT support — the result is mojibake. This function:
 
-    * `SetConsoleOutputCP(65001)` + `SetConsoleCP(65001)` — UTF-8 kirish/chiqish;
-    * stdout/stderr handle'lariga `ENABLE_VIRTUAL_TERMINAL_PROCESSING` qo'shadi.
+    * `SetConsoleOutputCP(65001)` + `SetConsoleCP(65001)` — UTF-8 input/output;
+    * adds `ENABLE_VIRTUAL_TERMINAL_PROCESSING` to the stdout/stderr handles.
 
-    Har bir qadam xatosi JIM yutiladi (qayta yo'naltirilgan oqim / eski Windows /
-    ruxsat yo'q holatlarida ilova baribir ishlashda davom etadi). cli/app
-    ishga tushishda bir marta chaqiradi.
+    Every step swallows its errors SILENTLY (with a redirected stream / an old
+    Windows / no permission the application still carries on working). cli/app
+    calls it once at start-up.
     """
     if not IS_WINDOWS:
         return
@@ -143,14 +147,14 @@ def init_console() -> None:
 
 
 def unicode_ok() -> bool:
-    """Terminal Unicode blok/emoji ko'rsata olishini taxmin qiladi (heuristika).
+    """Guesses whether the terminal can display Unicode blocks/emoji (a heuristic).
 
-    * Windows: Windows Terminal (`WT_SESSION` env) ostida YOKI konsol UTF-8
-      (codepage 65001) bo'lsa True; aks holda (legacy raster cmd.exe) False.
-    * Boshqa OS (macOS/Linux): har doim True.
+    * Windows: True under Windows Terminal (the `WT_SESSION` env var) OR when the
+      console is UTF-8 (codepage 65001); otherwise (legacy raster cmd.exe) False.
+    * Other operating systems (macOS/Linux): always True.
 
-    Layer B (cli/app) ASCII-fallback (sodda jadval/belgilar) tanlash uchun
-    ishlatadi — shunda eski cmd.exe'da ham mojibake bo'lmaydi.
+    Layer B (cli/app) uses this to pick the ASCII fallback (plain tables and
+    characters) — so there is no mojibake on an old cmd.exe either.
     """
     if not IS_WINDOWS:
         return True
@@ -159,28 +163,28 @@ def unicode_ok() -> bool:
     return _console_output_cp() == _CP_UTF8
 
 
-# --- Windows ICMP: Win32 IcmpSendEcho (iphlpapi.dll) ------------------------
+# --- Windows ICMP: Win32 IcmpSendEcho (iphlpapi.dll) -------------------------
 #
-# Til/codepage'dan mustaqil ildiz yechim. `iphlpapi.dll`'ning ICMP API'si
-# admin talab qilmaydi (ping.exe ham shuni ishlatadi). Quyidagi struct'lar
-# Win32 SDK (ipexport.h) ta'riflariga mos.
+# The root fix, independent of language and codepage. The ICMP API in
+# `iphlpapi.dll` requires no admin rights (ping.exe uses the same thing). The
+# structs below match the Win32 SDK (ipexport.h) definitions.
 
-# IP status kodlari (ipexport.h).
+# IP status codes (ipexport.h).
 IP_SUCCESS = 0
-IP_TTL_EXPIRED_TRANSIT = 11013  # TTL nolga yetdi — oraliq hop (traceroute uchun).
+IP_TTL_EXPIRED_TRANSIT = 11013  # TTL hit zero — an intermediate hop (for traceroute).
 IP_REQ_TIMED_OUT = 11010
 
 
 class _ICMP_ECHO_REPLY(ctypes.Structure):
-    """ICMP_ECHO_REPLY (IPv4) — `IcmpSendEcho` to'ldiradigan struktura.
+    """ICMP_ECHO_REPLY (IPv4) — the structure `IcmpSendEcho` fills in.
 
-    Faqat o'qiydigan maydonlar: `Status` (IP_* kodi) va `RoundTripTime` (ms).
-    Reply ma'lumotlarining qolgan qismi (`Data`, `Options`) bizga kerak emas,
-    lekin struct hajmi to'g'ri bo'lishi shart (API buffer'ga yozadi).
+    The only fields we read are `Status` (an IP_* code) and `RoundTripTime` (ms).
+    The rest of the reply data (`Data`, `Options`) is of no use to us, but the
+    struct size must still be correct (the API writes into the buffer).
     """
 
     _fields_ = (
-        ("Address", ctypes.c_uint32),  # javob bergan manba IP (network byte order)
+        ("Address", ctypes.c_uint32),  # source IP that replied (network byte order)
         ("Status", ctypes.c_uint32),
         ("RoundTripTime", ctypes.c_uint32),
         ("DataSize", ctypes.c_uint16),
@@ -195,10 +199,10 @@ class _ICMP_ECHO_REPLY(ctypes.Structure):
 
 
 class _IP_OPTION_INFORMATION(ctypes.Structure):
-    """IP_OPTION_INFORMATION — TTL'ni boshqarish uchun (traceroute hop'lari).
+    """IP_OPTION_INFORMATION — used to control the TTL (the traceroute hops).
 
-    `Ttl` ni 1..max_hops qilib ketma-ket yuborib, TTL_EXPIRED javob bergan
-    oraliq router IP'sini olamiz.
+    By sending `Ttl` as 1..max_hops in sequence we get back the IP of each
+    intermediate router that answered with TTL_EXPIRED.
     """
 
     _fields_ = (
@@ -210,16 +214,16 @@ class _IP_OPTION_INFORMATION(ctypes.Structure):
     )
 
 
-# IcmpSendEcho'ga yuboriladigan "payload" (ixtiyoriy 32 bayt — ping.exe kabi).
-_ICMP_PAYLOAD = b"systop-icmp-probe-padding-32byte"  # 32 bayt
-# Javob buferi: ECHO_REPLY + payload + qo'shimcha (8 bayt ICMP header zaxirasi).
+# The "payload" sent to IcmpSendEcho (an arbitrary 32 bytes — same as ping.exe).
+_ICMP_PAYLOAD = b"systop-icmp-probe-padding-32byte"  # 32 bytes
+# Reply buffer: ECHO_REPLY + payload + extra (8 bytes reserved for an ICMP header).
 _ICMP_REPLY_BUF_SIZE = ctypes.sizeof(_ICMP_ECHO_REPLY) + len(_ICMP_PAYLOAD) + 8
 
 _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 
 
 def _iphlpapi() -> ctypes.WinDLL | None:  # type: ignore[name-defined]
-    """`iphlpapi.dll`'ni yuklaydi; mavjud bo'lmasa None (zaxiraga o'tiladi)."""
+    """Loads `iphlpapi.dll`; None if it is not available (we fall back)."""
     try:
         return ctypes.WinDLL("iphlpapi.dll")  # type: ignore[attr-defined]
     except (AttributeError, OSError):
@@ -227,10 +231,10 @@ def _iphlpapi() -> ctypes.WinDLL | None:  # type: ignore[name-defined]
 
 
 def _resolve_ipv4(address: str) -> str | None:
-    """Manzilni IPv4 nuqta-o'nlik satrga aylantiradi (nom bo'lsa resolve qiladi).
+    """Turns an address into a dotted-decimal IPv4 string (resolving a name if given).
 
-    IcmpSendEcho faqat IPv4 manzil (DWORD) qabul qiladi; nomni o'zimiz resolve
-    qilamiz. Resolve bo'lmasa None.
+    IcmpSendEcho only accepts an IPv4 address (a DWORD), so we resolve the name
+    ourselves. None if it does not resolve.
     """
     try:
         infos = socket.getaddrinfo(address, None, family=socket.AF_INET)
@@ -242,7 +246,7 @@ def _resolve_ipv4(address: str) -> str | None:
 
 
 def _addr_to_dword(ipv4: str) -> int | None:
-    """IPv4 satrni IcmpSendEcho kutgan DWORD (network byte order) ga aylantiradi."""
+    """Converts an IPv4 string into the DWORD (network byte order) IcmpSendEcho wants."""
     try:
         packed = socket.inet_aton(ipv4)
     except OSError:
@@ -251,7 +255,7 @@ def _addr_to_dword(ipv4: str) -> int | None:
 
 
 def _dword_to_addr(dword: int) -> str:
-    """ECHO_REPLY.Address (network byte order DWORD) -> IPv4 satr."""
+    """ECHO_REPLY.Address (a network byte order DWORD) -> IPv4 string."""
     return socket.inet_ntoa(struct.pack("<I", dword & 0xFFFFFFFF))
 
 
@@ -260,20 +264,22 @@ def icmp_ping_ipv4(
     timeout_ms: int,
     ttl: int | None = None,
 ) -> tuple[int, float, str | None]:
-    """Bitta IPv4 ICMP echo yuboradi (Win32 IcmpSendEcho).
+    """Sends a single IPv4 ICMP echo (Win32 IcmpSendEcho).
 
-    Argumentlar:
-        ipv4 — nuqta-o'nlik IPv4 manzil (oldindan resolve qilingan).
-        timeout_ms — javob kutish (millisekund).
-        ttl — None bo'lsa standart; aks holda IP_OPTION_INFORMATION.Ttl
-            (traceroute hop'i uchun 1..max_hops).
+    Arguments:
+        ipv4 — a dotted-decimal IPv4 address (already resolved).
+        timeout_ms — how long to wait for the reply (milliseconds).
+        ttl — None for the default; otherwise IP_OPTION_INFORMATION.Ttl
+            (1..max_hops for a traceroute hop).
 
-    Qaytaradi: `(status, rtt_ms, reply_source_ip)`.
-        status — IP_* kodi (0=SUCCESS, 11013=TTL_EXPIRED, 11010=TIMED_OUT, ...).
-        rtt_ms — RoundTripTime (status SUCCESS/TTL_EXPIRED bo'lsa ma'noli).
-        reply_source_ip — javob bergan manba IP (TTL_EXPIRED'da oraliq router).
+    Returns: `(status, rtt_ms, reply_source_ip)`.
+        status — an IP_* code (0=SUCCESS, 11013=TTL_EXPIRED, 11010=TIMED_OUT, ...).
+        rtt_ms — RoundTripTime (meaningful when the status is SUCCESS/TTL_EXPIRED).
+        reply_source_ip — the source IP that replied (on TTL_EXPIRED, the
+            intermediate router).
 
-    `iphlpapi` yo'q / handle ochilmasa -> `(IP_REQ_TIMED_OUT, 0.0, None)`.
+    If `iphlpapi` is missing / the handle will not open -> `(IP_REQ_TIMED_OUT,
+    0.0, None)`.
     """
     dll = _iphlpapi()
     if dll is None:
@@ -307,9 +313,9 @@ def icmp_ping_ipv4(
             ctypes.c_uint32(max(1, timeout_ms)),
         )
         if n == 0:
-            # Javob yo'q (timeout yoki xato). GetLastError ham status berishi
-            # mumkin (TTL_EXPIRED ba'zi versiyalarda n=0 + LastError bilan),
-            # lekin biz buni "javob yo'q" deb degrade qilamiz (oddiy/barqaror).
+            # No reply (timeout or error). GetLastError can also carry a status
+            # (on some versions TTL_EXPIRED arrives as n=0 + LastError), but we
+            # degrade that to "no reply" (simple and predictable).
             return IP_REQ_TIMED_OUT, 0.0, None
         reply = ctypes.cast(reply_buf, ctypes.POINTER(_ICMP_ECHO_REPLY)).contents
         status = int(reply.Status)
@@ -330,15 +336,16 @@ def win_icmp_ping(
     count: int,
     timeout: float,
 ) -> tuple[bool, list[float], float] | None:
-    """Windows ICMP ping (IcmpSendEcho) — (alive, rtts_ms, loss) yoki None.
+    """Windows ICMP ping (IcmpSendEcho) — (alive, rtts_ms, loss) or None.
 
-    `count` marta IPv4 echo yuborib, SUCCESS javoblardan RTT yig'adi.
-    Loss = (yuborilgan - qabul qilingan) / yuborilgan.
+    Sends an IPv4 echo `count` times and collects the RTT of every SUCCESS reply.
+    Loss = (sent - received) / sent.
 
-    None qaytaradi, agar:
-      * manzil IPv4'ga resolve bo'lmasa (chaqiruvchi nom/IPv6 zaxirasiga o'tadi),
-      * `iphlpapi` umuman mavjud bo'lmasa (DLL yo'q).
-    Bu holda chaqiruvchi (`ping._win_ping`) `ping.exe` parse zaxirasiga o'tadi.
+    Returns None if:
+      * the address does not resolve to IPv4 (the caller falls back to the
+        name/IPv6 path),
+      * `iphlpapi` is not available at all (no DLL).
+    In that case the caller (`ping._win_ping`) falls back to parsing `ping.exe`.
     """
     if _iphlpapi() is None:
         return None
@@ -364,17 +371,17 @@ def win_icmp_traceroute(
     max_hops: int,
     timeout: float,
 ) -> list[tuple[int, str | None, float, bool]] | None:
-    """Windows traceroute (IcmpSendEcho + TTL) — hop ro'yxati yoki None.
+    """Windows traceroute (IcmpSendEcho + TTL) — a list of hops, or None.
 
-    Har TTL (1..max_hops) uchun bitta echo yuboradi:
-      * status SUCCESS  -> manzilga yetdi (oxirgi hop), to'xtaymiz;
-      * status TTL_EXPIRED -> oraliq router (reply.Address), davom etamiz;
-      * javob yo'q -> `* * *` hop (addr=None, alive=False).
+    Sends one echo per TTL (1..max_hops):
+      * status SUCCESS  -> the target was reached (the last hop), we stop;
+      * status TTL_EXPIRED -> an intermediate router (reply.Address), we go on;
+      * no reply -> a `* * *` hop (addr=None, alive=False).
 
-    Qaytaradi: har element `(hop_index, address|None, rtt_ms, alive)` —
-    `parse_windows_tracert` bilan bir xil shakl. None qaytaradi, agar manzil
-    IPv4'ga resolve bo'lmasa yoki `iphlpapi` yo'q bo'lsa (chaqiruvchi `tracert`
-    parse zaxirasiga o'tadi).
+    Returns: each element is `(hop_index, address|None, rtt_ms, alive)` — the
+    same shape as `parse_windows_tracert`. Returns None if the address does not
+    resolve to IPv4 or `iphlpapi` is missing (the caller falls back to parsing
+    `tracert`).
     """
     if _iphlpapi() is None:
         return None
@@ -392,29 +399,29 @@ def win_icmp_traceroute(
         if status == IP_TTL_EXPIRED_TRANSIT and src is not None:
             hops.append((ttl, src, rtt, True))
             continue
-        # Javob yo'q / boshqa xato -> timeout hop.
+        # No reply / some other error -> a timeout hop.
         hops.append((ttl, None, 0.0, False))
     return hops
 
 
-# --- Windows `ping` chiqishini parse qilish (TIL-MUSTAQIL ZAXIRA) ------------
+# --- Parsing Windows `ping` output (LANGUAGE-INDEPENDENT FALLBACK) -----------
 #
-# IcmpSendEcho mavjud bo'lmasa (juda kam) `ping.exe` chiqishini parse qilamiz.
-# Regexlar TILGA BOG'LIQ EMAS: ASCII 'ms' VA kirill 'мс' (м=U+043C) ni ham
-# tushunadi, o'nlik vergulni ham (RUS/DE `время=1,5 мс`).
+# When IcmpSendEcho is not available (very rare) we parse `ping.exe` output. The
+# regexes are NOT TIED TO A LANGUAGE: they understand ASCII 'ms' AND Cyrillic
+# 'мс' (м=U+043C), and the decimal comma too (RU/DE `время=1,5 мс`).
 
 # RTT: "time=12ms", "time<1ms", "время=84мс", "Zeit=12ms", "1,5 ms".
-# "=" yoki "<" + raqam (vergul/nuqta o'nlik) + birlik (ascii m / kirill м).
+# "=" or "<" + a number (comma/dot decimal) + a unit (ascii m / Cyrillic м).
 _WIN_PING_RTT_RE = re.compile(
     r"[=<]\s*([0-9]+(?:[.,][0-9]+)?)\s*(?:ms|мс|m|м)",
     re.IGNORECASE | re.UNICODE,
 )
-# "time<1ms" / "время<1мс" => 1ms'dan kichik -> 0.5ms (taxminiy).
+# "time<1ms" / "время<1мс" => less than 1ms -> 0.5ms (an approximation).
 _WIN_PING_SUBMS_RE = re.compile(r"<\s*1\s*(?:ms|мс|m|м)", re.IGNORECASE | re.UNICODE)
-# Yakuniy statistika: "(0% loss)" / "(0% потерь)" / "(0% Verlust)" — foiz.
+# The closing statistics: "(0% loss)" / "(0% потерь)" / "(0% Verlust)" — a percentage.
 _WIN_PING_LOSS_PCT_RE = re.compile(r"\(\s*([0-9]+)\s*%")
-# `Packets:` statistika qatori — Sent/Received (RTT qatorlaridan farqlash uchun).
-# RUS: "Отправлено = 4, получено = 4, потеряно = 0".
+# The `Packets:` statistics line — Sent/Received (to tell it apart from the RTT
+# lines). RU: "Отправлено = 4, получено = 4, потеряно = 0".
 _WIN_PING_STATS_LINE_RE = re.compile(
     r"(?:Sent|Received|Lost|Отправлено|Получено|Потеряно|Gesendet|Empfangen|Verloren)"
     r"\s*=\s*\d",

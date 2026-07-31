@@ -1,18 +1,19 @@
-"""Tarmoq muammolarini avtomatik topish — "doctor" qatlami.
+"""Automatic detection of network problems — the "doctor" layer.
 
-Boshqa `core/*` modullari **o'lchov** beradi (RTT, loss, ochiq portlar, DNS
-vaqti). Bu modul o'lchovlarni **xulosa**ga aylantiradi: nima buzuq, qanchalik
-jiddiy va nima qilish kerak. Ya'ni "ping 12% loss" o'rniga "gateway'ga paket
-yo'qotish 12% — kabel yoki Wi-Fi muammosi, kommutator portini tekshiring".
+The other `core/*` modules produce **measurements** (RTT, loss, open ports, DNS
+timings). This module turns measurements into **conclusions**: what is broken,
+how serious it is and what to do about it. That is, instead of "ping 12% loss"
+it says "12% packet loss to the gateway — a cable or Wi-Fi problem, check the
+switch port".
 
-Arxitektura (loyiha qoidasi: testlar offline):
-  * `evaluate_*` — SOF funksiyalar. Tayyor o'lchovni oladi, `Finding` qaytaradi.
-    Tarmoqqa chiqmaydi => to'liq offline sinaladi.
-  * `run_diagnostics` — orkestrator. Tarmoq chaqiruvlarini bajarib, natijalarni
-    `evaluate_*` ga uzatadi.
+Architecture (project rule: tests run offline):
+  * `evaluate_*` — pure functions. They take a finished measurement and return
+    `Finding`s. They never touch the network => fully testable offline.
+  * `run_diagnostics` — the orchestrator. It performs the network calls and
+    hands the results to `evaluate_*`.
 
-Chegaralar (thresholds) bir joyda — `Thresholds` dataclass'ida, shunda
-tarmoqqa qarab moslash mumkin (Wi-Fi va optika uchun bir xil emas).
+The thresholds live in one place — the `Thresholds` dataclass — so they can be
+adapted per network (Wi-Fi and fibre do not deserve the same numbers).
 """
 
 from __future__ import annotations
@@ -20,12 +21,12 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
-# --- Jiddiylik darajalari (tartib muhim: saralashda ishlatiladi) -------------
-SEV_CRITICAL = "critical"  # xizmat ishlamaydi
-SEV_HIGH = "high"  # jiddiy xavf yoki sezilarli buzilish
-SEV_MEDIUM = "medium"  # muammo bor, lekin ish davom etadi
-SEV_LOW = "low"  # kichik nuqson / kuzatish kerak
-SEV_INFO = "info"  # ma'lumot, muammo emas
+# --- Severity levels (the order matters: it drives sorting) ------------------
+SEV_CRITICAL = "critical"  # the service is down
+SEV_HIGH = "high"  # serious risk or noticeable breakage
+SEV_MEDIUM = "medium"  # there is a problem, but work carries on
+SEV_LOW = "low"  # minor defect / worth keeping an eye on
+SEV_INFO = "info"  # information, not a problem
 
 _SEV_ORDER: dict[str, int] = {
     SEV_CRITICAL: 0,
@@ -35,51 +36,51 @@ _SEV_ORDER: dict[str, int] = {
     SEV_INFO: 4,
 }
 
-# --- Kategoriyalar -----------------------------------------------------------
-CAT_CONNECTIVITY = "ulanish"
-CAT_LATENCY = "kechikish"
+# --- Categories --------------------------------------------------------------
+CAT_CONNECTIVITY = "connectivity"
+CAT_LATENCY = "latency"
 CAT_DNS = "DNS"
 CAT_IPV6 = "IPv6"
-CAT_EXPOSURE = "ochiqlik"
-CAT_INTERFACE = "interfeys"
+CAT_EXPOSURE = "exposure"
+CAT_INTERFACE = "interface"
 CAT_LAN = "LAN"
 CAT_TLS = "TLS"
 
 
 @dataclass(slots=True)
 class Thresholds:
-    """Baholash chegaralari — tarmoq turiga qarab moslash mumkin."""
+    """Evaluation thresholds — adjustable per network type."""
 
-    loss_high_pct: float = 20.0  # bundan yuqori yo'qotish = high
+    loss_high_pct: float = 20.0  # loss above this = high
     loss_medium_pct: float = 5.0
-    gateway_rtt_ms: float = 50.0  # LAN gateway shundan sekin bo'lmasligi kerak
+    gateway_rtt_ms: float = 50.0  # the LAN gateway must not be slower than this
     internet_rtt_ms: float = 200.0
-    jitter_ms: float = 30.0  # VoIP uchun muhim
+    jitter_ms: float = 30.0  # matters for VoIP
     dns_slow_ms: float = 500.0
-    iface_error_rate: float = 0.001  # xato/paket nisbati (0.1%)
+    iface_error_rate: float = 0.001  # error/packet ratio (0.1%)
     tls_warn_days: int = 14
 
 
-# Tashqariga ochilishi xavfli xizmatlar: port -> (nom, jiddiylik, sabab).
-# "0.0.0.0"/"::" da tinglash = butun tarmoqqa ochiq degani.
+# Services that are dangerous to expose: port -> (name, severity, reason).
+# Listening on "0.0.0.0"/"::" means exposed to the whole network.
 RISKY_LISTENERS: dict[int, tuple[str, str, str]] = {
     2375: (
-        "Docker API (TLS'siz)",
+        "Docker API (no TLS)",
         SEV_CRITICAL,
-        "Autentifikatsiyasiz Docker API — kim ulansa hostda root oladi",
+        "Unauthenticated Docker API — whoever connects gets root on the host",
     ),
-    23: ("Telnet", SEV_HIGH, "Parol ochiq matnda uzatiladi"),
-    6379: ("Redis", SEV_HIGH, "Odatda parolsiz — ma'lumot o'qish/yozish mumkin"),
-    27017: ("MongoDB", SEV_HIGH, "Odatda parolsiz — butun baza ochiq"),
-    9200: ("Elasticsearch", SEV_HIGH, "Odatda autentifikatsiyasiz — indekslar ochiq"),
-    11211: ("Memcached", SEV_HIGH, "Autentifikatsiya yo'q + UDP amplifikatsiya xavfi"),
-    5900: ("VNC", SEV_HIGH, "Ekranga to'g'ridan-to'g'ri kirish"),
-    445: ("SMB", SEV_MEDIUM, "Fayl almashish — ransomware nishoni"),
-    3389: ("RDP", SEV_MEDIUM, "Brute-force nishoni; VPN orqasiga oling"),
-    5432: ("PostgreSQL", SEV_MEDIUM, "Baza tarmoqqa ochiq"),
-    3306: ("MySQL", SEV_MEDIUM, "Baza tarmoqqa ochiq"),
-    9000: ("Portainer/PHP-FPM", SEV_MEDIUM, "Boshqaruv paneli tarmoqqa ochiq"),
-    2049: ("NFS", SEV_MEDIUM, "Fayl tizimi tarmoqqa ochiq"),
+    23: ("Telnet", SEV_HIGH, "The password is transmitted in clear text"),
+    6379: ("Redis", SEV_HIGH, "Usually passwordless — data can be read and written"),
+    27017: ("MongoDB", SEV_HIGH, "Usually passwordless — the whole database is exposed"),
+    9200: ("Elasticsearch", SEV_HIGH, "Usually unauthenticated — the indices are exposed"),
+    11211: ("Memcached", SEV_HIGH, "No authentication + UDP amplification risk"),
+    5900: ("VNC", SEV_HIGH, "Direct access to the screen"),
+    445: ("SMB", SEV_MEDIUM, "File sharing — a ransomware target"),
+    3389: ("RDP", SEV_MEDIUM, "Brute-force target; put it behind a VPN"),
+    5432: ("PostgreSQL", SEV_MEDIUM, "Database exposed to the network"),
+    3306: ("MySQL", SEV_MEDIUM, "Database exposed to the network"),
+    9000: ("Portainer/PHP-FPM", SEV_MEDIUM, "Management panel exposed to the network"),
+    2049: ("NFS", SEV_MEDIUM, "File system exposed to the network"),
 }
 
 _WILDCARD_HOSTS = ("0.0.0.0", "::", "*")
@@ -87,7 +88,7 @@ _WILDCARD_HOSTS = ("0.0.0.0", "::", "*")
 
 @dataclass(slots=True)
 class Finding:
-    """Topilgan bitta muammo."""
+    """A single problem that was found."""
 
     severity: str
     category: str
@@ -104,13 +105,13 @@ class Finding:
 
 @dataclass(slots=True)
 class Report:
-    """Diagnostika hisoboti."""
+    """A diagnostics report."""
 
     findings: list[Finding] = field(default_factory=list)
     checks_run: int = 0
     duration_ms: float = 0.0
     skipped: list[str] = field(default_factory=list)
-    link_type: str = "unknown"  # wired | wifi | cellular | vpn — chegaralar shunga moslandi
+    link_type: str = "unknown"  # wired | wifi | cellular | vpn — thresholds adapted to this
 
     @property
     def problems(self) -> list[Finding]:

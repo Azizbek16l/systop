@@ -1,7 +1,7 @@
 #!/bin/sh
 # systop — Linux va macOS uchun bir qatorlik o'rnatgich.
 #
-#   curl -fsSL https://raw.githubusercontent.com/Azizbek16l/systop/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/Azizbek16l/systop/master/install.sh | sh
 #
 # Sozlash (muhit o'zgaruvchilari bilan — quvur rejimida yagona yo'l):
 #   SYSTOP_VERSION=v0.10.0   aniq relise tegi (default: eng so'nggisi)
@@ -73,7 +73,13 @@ case "$OS" in
     Darwin)
         case "$ARCH" in
             arm64) ASSET="systop-macos-arm64" ;;
-            x86_64) ASSET="systop-macos-x86_64" ;;
+            x86_64)
+                # Intel Mac uchun tayyor binar YO'Q: GitHub `macos-13`
+                # runner'ini iste'foga chiqargan va PyInstaller cross-compile
+                # qilmaydi. 404 berib "yuklab bo'lmadi" deyishdan ko'ra
+                # sababni aytgan ma'qul.
+                die "Intel Mac uchun tayyor binar yo'q (CI runner'i iste'foda).
+     Manbadan yig'ing:  git clone https://github.com/$REPO && cd systop && ./packaging/build-macos.sh" ;;
             *) die "qo'llab-quvvatlanmaydigan arxitektura: $ARCH" ;;
         esac ;;
     *) die "qo'llab-quvvatlanmaydigan OS: $OS (Windows uchun install.ps1)" ;;
