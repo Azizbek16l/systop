@@ -2,7 +2,7 @@
 
 > A no-root terminal network toolkit (TUI + CLI) for sysadmins — speedtest, ping, traceroute/mtr, LAN discovery, port scan, DNS, bandwidth, TLS/HTTP and connections, in one tool.
 
-[O'zbekcha](README.uz.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md)
+[Changelog](CHANGELOG.md) · [Architecture](ARCHITECTURE.md) · [Contributing](CONTRIBUTING.md)
 
 <!-- Badges: wire these up once the repo is public and CI runs. -->
 [![CI](https://img.shields.io/badge/CI-pending-lightgrey)](#)

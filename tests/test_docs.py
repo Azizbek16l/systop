@@ -3,7 +3,7 @@
 Hujjatlar koddan orqada qolib ketishining oldini oladi. Yagona haqiqat manbai
 — `cli.py`dagi `_build_parser()`. Bu yerda uch narsa tekshiriladi:
 
-1. Har bir subbuyruq `README.md` da ham, `README.uz.md` da ham `systop <cmd>`
+1. Har bir subbuyruq `README.md` da `systop <cmd>`
    ko'rinishida uchraydi;
 2. `cli.py` modul docstring'idagi buyruqlar to'plami parser bilan AYNAN teng
    (kam ham emas, ortiq ham emas — o'chirilgan buyruq ham ushlanadi);
@@ -25,8 +25,7 @@ import systop.cli as cli
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _README_EN = _REPO_ROOT / "README.md"
-_README_UZ = _REPO_ROOT / "README.uz.md"
-_READMES = (_README_EN, _README_UZ)
+_READMES = (_README_EN,)
 
 
 def _subcommands() -> set[str]:
