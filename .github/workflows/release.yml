@@ -4,122 +4,166 @@ on:
   push:
     tags:
       - "v*"
+  # Tegsiz ham qo'lda ishga tushirish — binarlarni tekshirib ko'rish uchun
+  # (release yaratilmaydi, faqat artefaktlar).
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  build:
-    name: Build distributions (wheel + sdist)
+  # ---------------------------------------------------------------------------
+  # 1. Python distributivlari (wheel + sdist) — PyPI uchun.
+  #    DIQQAT: wheel/sdist MANBA KODINI OCHIQ tashiydi. Yopiq tarqatish uchun
+  #    faqat quyidagi `binaries` job'ining chiqishi ishlatilsin.
+  # ---------------------------------------------------------------------------
+  sdist-wheel:
+    name: Build wheel + sdist
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
           enable-cache: true
-
-      - name: Build sdist and wheel
-        run: uv build
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - run: uv build
+      - uses: actions/upload-artifact@v4
         with:
-          name: dist
-          path: dist/
+          name: python-dist
+          path: dist/*
 
+  # ---------------------------------------------------------------------------
+  # 2. Standalone onefile binarlar — HAR BIR OS O'Z OS'IDA.
+  #
+  #    NEGA MATRITSA MAJBURIY: PyInstaller cross-compile QILMAYDI. U host
+  #    OS'ning CPython kutubxonasini (libpython / python3xx.dll) va host uchun
+  #    kompilyatsiya qilingan bootloader'ni binarga joylaydi. Shuning uchun
+  #    macOS'da o'tirib Windows .exe yasab bo'lmaydi — bu ish oqimi Windows
+  #    .exe olishning YAGONA ishonchli yo'li.
+  # ---------------------------------------------------------------------------
   binaries:
-    # Har bir OS uchun standalone ijro etiluvchi ("Windows/Linux/macOS edition").
-    # Python o'rnatilmagan foydalanuvchilar uchun — PyInstaller bilan onefile.
-    name: Build ${{ matrix.os }} executable
+    name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # ubuntu-22.04 ATAYIN tanlangan (ubuntu-latest emas): PyInstaller
+          # binari yig'ilgan glibc'dan PASTROQ tizimda ishlamaydi
+          # (`GLIBC_2.xx not found`). Eski runner'da yig'ish = kengroq moslik.
+          - os: ubuntu-22.04
+            label: linux-x86_64
             asset: systop-linux-x86_64
-            ext: ""
+            exe: dist/systop
           - os: windows-latest
+            label: windows-x86_64
             asset: systop-windows-x86_64.exe
-            ext: ".exe"
-          - os: macos-latest
+            exe: dist/systop.exe
+          - os: macos-14 # Apple Silicon
+            label: macos-arm64
             asset: systop-macos-arm64
-            ext: ""
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+            exe: dist/systop
+          - os: macos-13 # Intel
+            label: macos-x86_64
+            asset: systop-macos-x86_64
+            exe: dist/systop
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
           enable-cache: true
 
-      - name: Sync deps
+      - name: Sync project deps
         run: uv sync
 
-      # MUHIM: `--console` (console=True) — systop terminal ilovasi (TUI + CLI).
-      # `--windowed`/`--noconsole` (console=False) Windows'da konsolsiz GUI EXE
-      # yasaydi: stdout/stderr bo'lmaydi, `--json` skript chiqishi yo'qoladi va
-      # Textual TUI ishlamaydi. `console=True` bo'lgani uchun `init_console()`
-      # konsolni UTF-8 (65001) + VT rejimiga o'tkaza oladi — RUS/DE Windows'da
-      # ham sparkline/box belgilar mojibake bo'lmaydi. Bu flag default bilan mos,
-      # ammo regressiya bo'lmasligi uchun ATAYIN ko'rsatilgan.
-      - name: Build standalone binary (PyInstaller, console=True)
-        run: >
-          uv run --with pyinstaller pyinstaller --onefile --console --name systop
-          --collect-all systop --collect-all textual --collect-all rich
-          --collect-submodules systop
-          src/systop/__main__.py
+      # Spec fayli uchala OS'da bir xil — `--add-data` ajratuvchisi muammosi
+      # (POSIX `:` / Windows `;`) spec ichida umuman yo'q.
+      - name: Build onefile binary
+        run: uv run --with pyinstaller pyinstaller --noconfirm --clean packaging/systop.spec
 
-      - name: Rename artifact
+      # Smoke test binarni HAQIQATAN tekshiradi: --help, --version,
+      # `doctor --quick --json` (JSON parse), bundle ichida styles.tcss bormi,
+      # va POSIX'da TUI'ni PTY'da ochib ko'radi. `--help` yolg'iz yetarli emas —
+      # u textual'ni umuman ushlamaydi.
+      - name: Smoke test binary
+        run: uv run --with pyinstaller python packaging/smoke_test.py ${{ matrix.exe }}
+
+      - name: Rename + checksum
         shell: bash
-        run: mv "dist/systop${{ matrix.ext }}" "dist/${{ matrix.asset }}"
+        run: |
+          mv "${{ matrix.exe }}" "dist/${{ matrix.asset }}"
+          cd dist
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+          else
+            shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+          fi
+          cat "${{ matrix.asset }}.sha256"
+          ls -lh "${{ matrix.asset }}"
 
-      - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset }}
-          path: dist/${{ matrix.asset }}
+          name: bin-${{ matrix.label }}
+          path: |
+            dist/${{ matrix.asset }}
+            dist/${{ matrix.asset }}.sha256
+          if-no-files-found: error
 
+  # ---------------------------------------------------------------------------
+  # 3. GitHub Release — barcha binarlar bitta joyda.
+  # ---------------------------------------------------------------------------
   github-release:
-    name: Attach binaries to GitHub Release
+    name: Attach binaries to Release
     needs: binaries
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # release yaratish/yangilash uchun
+      contents: write
     steps:
-      - name: Download all binary artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
+          pattern: bin-*
           path: artifacts
           merge-multiple: true
 
-      - name: Create / update GitHub Release with binaries
-        uses: softprops/action-gh-release@v2
-        with:
-          files: artifacts/systop-*
-          generate_release_notes: true
+      - name: Collect checksums into one file
+        run: |
+          cd artifacts
+          cat *.sha256 > SHA256SUMS.txt
+          rm -f *.sha256
+          ls -lh
 
-  publish:
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/systop-*
+            artifacts/SHA256SUMS.txt
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+  # ---------------------------------------------------------------------------
+  # 4. PyPI (Trusted Publishing / OIDC — token saqlanmaydi).
+  # ---------------------------------------------------------------------------
+  pypi:
     name: Publish to PyPI
-    needs: build
+    needs: sdist-wheel
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     environment:
       name: pypi
       url: https://pypi.org/p/systop
     permissions:
-      id-token: write  # OIDC — Trusted Publishing uchun majburiy
+      id-token: write
     steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          name: dist
+          name: python-dist
           path: dist/
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@release/v1
