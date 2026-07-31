@@ -8,6 +8,12 @@
 #   SYSTOP_INSTALL_DIR=...   o'rnatish katalogi (default: quyidagi mantiq)
 #   SYSTOP_NO_SUDO=1         sudo ishlatilmasin, ~/.local/bin ga qo'yilsin
 #
+# DIQQAT — o'zgaruvchini QUVURNING QAYSI TOMONIGA qo'yish muhim:
+#     SYSTOP_INSTALL_DIR=/opt/bin curl -fsSL ... | sh      # NOTO'G'RI
+#     curl -fsSL ... | SYSTOP_INSTALL_DIR=/opt/bin sh      # to'g'ri
+# Birinchi shaklda o'zgaruvchi `curl` ga beriladi, `sh` uni umuman ko'rmaydi
+# va skript jimgina standart katalogga o'rnatadi.
+#
 # O'chirish:
 #   curl -fsSL .../install.sh | sh -s -- --uninstall
 #
