@@ -5,6 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.2] — 2026-07-31
+
+### Fixed
+
+- **`doctor` reported false "all DNS servers down" on localized Windows.**
+  Found on a live server (Russian Windows 10, a Hyper-V host): `ipconfig
+  /all` prints `DNS-серверы`, not `DNS Servers`, so the label regex never
+  matched, `system_resolvers()` returned empty, and the check fell back to
+  public resolvers only — producing exactly the false HIGH this release series
+  set out to eliminate, just on a different OS.
+  This is the same class of defect as the v0.3.2 ping bug, where English-only
+  output parsing made every target look dead on Russian Windows. The lesson was
+  already learned once; the new code reintroduced it.
+  Two changes: `Get-DnsClientServerAddress` (structured, locale-independent) is
+  now the primary Windows source, and the `ipconfig` fallback no longer matches
+  on the English label — it accepts any `DNS`-bearing label and decides by the
+  *shape of the value*, so `DNS-суффикс` / `DNS Suffix` lines drop out on their
+  own. Tested against Russian, German and English output.
+
 ## [0.10.1] — 2026-07-31
 
 ### Fixed

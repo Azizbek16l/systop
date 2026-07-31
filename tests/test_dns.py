@@ -382,3 +382,73 @@ def test_parserlar_ip_bolmagan_qiymatni_rad_etadi():
     """Har uchala parser oxirida bir xil IP tekshiruvidan o'tadi."""
     assert parse_resolv_conf("nameserver not-an-ip\n") == []
     assert parse_scutil_dns("  nameserver[0] : hostname.local\n") == []
+
+
+# --------------------------------------------------------------------------- #
+# Windows ipconfig — TILGA BOG'LIQ EMAS
+# --------------------------------------------------------------------------- #
+
+# Bu bug ruscha Windows serverida (ruscha Windows 10) topildi: `systop doctor`
+# "Barcha DNS serverlar javob bermayapti" degan soxta HIGH bergan edi, chunki
+# `DNS Servers` yorlig'i topilmagan. v0.3.2 da ping'da AYNAN shu sabab RUS
+# Windows'da hamma nishonni "o'lik" ko'rsatgandi — bir xil xato ikkinchi marta.
+
+IPCONFIG_RU = """
+Настройка протокола IP для Windows
+
+   Основной DNS-суффикс  . . . . . . :
+   DNS-суффикс подключения . . . . . : corp.local
+   IPv4-адрес. . . . . . . . . . . . : 192.168.10.2(Основной)
+   Основной шлюз. . . . . . . . . : 192.168.10.1
+   DNS-серверы. . . . . . . . . . . : 192.168.10.1
+                                       8.8.8.8
+   NetBios через TCP/IP. . . . . . . : Включен
+"""
+
+IPCONFIG_DE = """   DNS-Suffixsuchliste . . . . . . . : example.local
+   DNS-Server  . . . . . . . . . . . : 192.168.1.1
+                                       1.1.1.1
+   NetBIOS uber TCP/IP . . . . . . . : Aktiviert
+"""
+
+
+def test_ruscha_windows_dns_topiladi():
+    """`DNS-серверы` — inglizcha yorliqni izlagan regex buni ko'rmaydi."""
+    assert parse_ipconfig_all_dns(IPCONFIG_RU) == ["192.168.10.1", "8.8.8.8"]
+
+
+def test_nemischa_windows_dns_topiladi():
+    assert parse_ipconfig_all_dns(IPCONFIG_DE) == ["192.168.1.1", "1.1.1.1"]
+
+
+def test_dns_suffiks_qatori_royxatni_boshlamaydi():
+    """`DNS-суффикс` yorlig'ida ham `DNS` bor, lekin qiymati IP emas.
+
+    Uni ro'yxat boshi deb olsak, keyingi `Основной шлюз` (gateway) DNS deb
+    yig'ilib ketardi — ya'ni gateway'ni resolver deb ko'rsatardik.
+    """
+    got = parse_ipconfig_all_dns(IPCONFIG_RU)
+    assert "corp.local" not in got
+    # 192.168.10.1 bu yerda HAM gateway, HAM DNS — lekin u DNS qatoridan
+    # olingan bo'lishi kerak, gateway qatoridan emas.
+    assert got[0] == "192.168.10.1"
+    assert len(got) == 2
+
+
+def test_uchala_til_bir_xil_ishlaydi():
+    """Tool xulosasi Windows TILIGA qarab o'zgarmasligi kerak."""
+    en = parse_ipconfig_all_dns(IPCONFIG_ALL)
+    ru = parse_ipconfig_all_dns(IPCONFIG_RU)
+    de = parse_ipconfig_all_dns(IPCONFIG_DE)
+    assert all(len(x) >= 2 for x in (en, ru, de))
+    assert all(all(_is_ip_like(v) for v in x) for x in (en, ru, de))
+
+
+def _is_ip_like(v: str) -> bool:
+    import ipaddress
+
+    try:
+        ipaddress.ip_address(v.split("%")[0])
+    except ValueError:
+        return False
+    return True

@@ -34,8 +34,16 @@ _NSLOOKUP_ADDR_RE = re.compile(r"^Address:\s*([0-9a-fA-F.:]+)", re.MULTILINE)
 
 # macOS `scutil --dns`: "  nameserver[0] : 192.168.10.1"
 _SCUTIL_NS_RE = re.compile(r"^\s*nameserver\[\d+\]\s*:\s*(\S+)", re.MULTILINE)
-# Windows `ipconfig /all`: "   DNS Servers . . . . . . . . . . . : 192.168.1.1"
-_IPCONFIG_DNS_RE = re.compile(r"^\s*DNS\s+Servers[\s.]*:\s*(\S*)", re.IGNORECASE)
+# Windows `ipconfig /all` — yorliq TILGA BOG'LIQ:
+#   inglizcha: "   DNS Servers . . . . . . . . . . . : 192.168.1.1"
+#   ruscha:    "   DNS-серверы. . . . . . . . . . . : 192.168.1.1"
+#   nemischa:  "   DNS-Server  . . . . . . . . . . . : 192.168.1.1"
+#
+# Shuning uchun "DNS Servers" ni QIDIRMAYMIZ. Yorliqda `DNS` bo'lsa kifoya,
+# qolganini QIYMAT SHAKLI hal qiladi (IP bo'lsa oladi). `DNS-суффикс` /
+# `DNS Suffix` qatorlari tabiiy ravishda tushib qoladi — ularning qiymati
+# IP emas.
+_IPCONFIG_DNS_RE = re.compile(r"^\s*[^:]*DNS[^:]*:\s*(\S*)\s*$", re.IGNORECASE)
 
 
 # --------------------------------------------------------------------------- #
@@ -50,6 +58,15 @@ _IPCONFIG_DNS_RE = re.compile(r"^\s*DNS\s+Servers[\s.]*:\s*(\S*)", re.IGNORECASE
 #
 # Endi avval mashina HAQIQATDA ishlatayotgan resolver so'raladi; ommaviylar
 # faqat TAQQOSLASH guruhi bo'lib qoladi.
+
+
+def _is_ip(value: str) -> bool:
+    """Satr IP manzilmi (zona qo'shimchasi bilan ham) — SOF funksiya."""
+    try:
+        ipaddress.ip_address(value.strip().split("%")[0])
+    except ValueError:
+        return False
+    return True
 
 
 def _dedupe_ips(values: list[str]) -> list[str]:
@@ -124,16 +141,20 @@ def parse_ipconfig_all_dns(text: str) -> list[str]:
     for line in text.splitlines():
         m = _IPCONFIG_DNS_RE.match(line)
         if m:
-            in_dns = True
-            if m.group(1):
+            # Yorliqda `DNS` bor — lekin bu `DNS-суффикс` ham bo'lishi mumkin.
+            # Faqat qiymati IP bo'lgan qatorni ro'yxat boshi deb olamiz;
+            # aks holda `DNS Suffix` qatoridan keyingi har qanday IP
+            # (masalan `Default Gateway`) noto'g'ri yig'ilib ketardi.
+            if _is_ip(m.group(1)):
+                in_dns = True
                 out.append(m.group(1))
+            else:
+                in_dns = False
             continue
         if not in_dns:
             continue
         stripped = line.strip()
-        try:
-            ipaddress.ip_address(stripped.split("%")[0])
-        except ValueError:
+        if not _is_ip(stripped):
             in_dns = False  # yorliqli yangi qator — ro'yxat tugadi
             continue
         out.append(stripped)
@@ -169,6 +190,26 @@ async def system_resolvers() -> list[str]:
         return parse_scutil_dns(out) if out else []
 
     if _platform.IS_WINDOWS:
+        # Avval PowerShell: `Get-DnsClientServerAddress` STRUKTURALI javob
+        # beradi va tilga umuman bog'liq emas. `ipconfig` yorlig'i esa
+        # lokalizatsiya qilinadi (`DNS-серверы`, `DNS-Server`) — v0.3.2 da
+        # ping'da xuddi shu sabab RUS Windows'da hamma nishon "o'lik"
+        # ko'rinardi. Bir xil xatoni ikkinchi marta qilmaymiz.
+        out = await _platform.run_command(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "(Get-DnsClientServerAddress -AddressFamily IPv4,IPv6"
+                " -ErrorAction SilentlyContinue).ServerAddresses",
+            ],
+            timeout=15.0,
+        )
+        found = _dedupe_ips(out.splitlines()) if out else []
+        if found:
+            return found
+        # PowerShell yo'q/cheklangan bo'lsa — matn yo'li (tildan mustaqil parse).
         out = await _platform.run_command(["ipconfig", "/all"], timeout=8.0)
         return parse_ipconfig_all_dns(out) if out else []
 
