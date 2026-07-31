@@ -342,7 +342,7 @@ Three defects found by looking at the running TUI, plus subnet scanning there.
   emoji, and applied it to every MAC / IP / hostname / address / service cell in
   the TUI. A test asserts the hex-only shortcode set, so a future Rich release
   adding one (e.g. `:dead:`) fails the suite instead of silently corrupting output.
-- **Traceroute returned no hops at all on macOS** ("Yo'l aniqlanmadi" in the
+- **Traceroute returned no hops at all on macOS** ("Route not detected" in the
   TUI) while ping to the same host worked. Cause: changing TTL needs a **raw**
   socket, so `icmplib.traceroute(privileged=False)` raises
   `SocketPermissionError`; ping only needs a datagram socket, which is why one
@@ -487,16 +487,16 @@ Dashboard idle-state redesign.
   and grouped left (`width: auto` + panel background) instead of stretched across
   the full width with `1fr`.
 - **Compact speed button** (`width: auto`) and **panel key hints** in the border
-  subtitle (`s boshlash` / `r yangilash` / `l LAN skan`).
+  subtitle (`s start` / `r refresh` / `l LAN scan`).
 - **Richer empty states** — centered glyph + title + "what to expect" hint
   (e.g. the LAN tab explains the `/24` ping-sweep + ARP it will run).
 - **CLI output redesigned to match the TUI design language** (audit C-1/C-2,
   M-1…M-3): one light-chrome table helper (`_render.styled_table`, horizontal
   rules only — no heavy box/vertical bars, left-aligned title); symbols come from
   `glyph()` (no emoji — fixes mojibake and makes `--no-color`/`NO_COLOR` truly
-  monochrome via `Console(emoji=False)`); the same `tirik`/`o'lik` lexicon and
+  monochrome via `Console(emoji=False)`); the same `alive`/`dead` lexicon and
   RTT/loss color gradation as the TUI; a dim summary line under each result
-  (e.g. `4 nishon — 3 tirik · 1 o'lik`). `--json`/`--format csv` output and exit
+  (e.g. `4 targets — 3 alive · 1 dead`). `--json`/`--format csv` output and exit
   codes are unchanged.
 
 ## [0.3.2] — 2026-06-10

@@ -20,7 +20,8 @@ Header, Footer {
     color: $foreground;
 }
 
-/* Chiplar: 1fr emas, auto en — chapga ixcham guruhlanadi (tarqoqlik yo'qoladi).
+/* Chips: auto width, not 1fr — they group tightly to the left instead of
+   spreading out.
    Each one gets its own background and right margin so it reads as a real
    "chip". */
 #status-bar > Static {
@@ -42,8 +43,8 @@ Header, Footer {
     color: $success;
 }
 
-/* --- Asosiy layout: chap ustun (tezlik+ping) | o'ng ustun (topologiya) ---
-   Ikki ustun ham 1fr en, butun bo'sh balandlikni to'ldiradi (full-screen). */
+/* --- Main layout: left column (speed+ping) | right column (topology) ---
+   Both columns are 1fr wide and fill the available height (full-screen). */
 
 #main {
     layout: horizontal;
@@ -58,8 +59,8 @@ Header, Footer {
     margin-right: 1;
 }
 
-/* Speed paneli kontentga mos (auto) — idle holatda ~70% bo'sh qolmaydi;
-   bo'shagan balandlik ping paneliga (1fr) o'tadi. */
+/* The speed panel sizes to its content (auto) so it does not sit ~70% empty
+   while idle; the freed height goes to the ping panel (1fr). */
 #speed {
     height: auto;
     margin-bottom: 1;
@@ -68,7 +69,7 @@ Header, Footer {
     height: 1fr;
 }
 
-/* O'ng ustun: topologiya — to'liq balandlik. */
+/* Right column: topology — full height. */
 #topology {
     width: 1fr;
     height: 1fr;
@@ -78,7 +79,7 @@ SpeedPanel, PingPanel, TopologyPanel {
     border: round $primary 60%;
     border-title-color: $primary;
     border-title-style: bold;
-    /* Panel sarlavhasi o'ngida klavish hint (border_subtitle) — masalan "s boshlash". */
+    /* Key hint to the right of the panel title (border_subtitle), e.g. "s start". */
     border-subtitle-color: $secondary;
     border-subtitle-align: right;
     background: transparent;
@@ -86,17 +87,17 @@ SpeedPanel, PingPanel, TopologyPanel {
     min-height: 8;
 }
 
-/* Fokus holatida ramka aksent rangiga o'tadi. */
+/* On focus the border switches to the accent colour. */
 SpeedPanel:focus-within, PingPanel:focus-within, TopologyPanel:focus-within {
     border: round $accent;
     border-title-color: $accent;
 }
 
-/* --- ASCII-degrade rejimi (legacy Windows konsol, Unicode'siz) ---
+/* --- ASCII degrade mode (legacy Windows console, no Unicode) ---
    The `Screen.-ascii` class is added in `app.py` when unicode_ok() is False.
-   Yumaloq (round) ramka Unicode box belgilaridan iborat — legacy cmd.exe'da
-   mojibake bo'ladi. Shu sababli ASCII ramka (+- |) ga o'tamiz va braille/block
-   sparkline'larni yashiramiz (numeric stats caption baribir ko'rsatadi). */
+   The round border is made of Unicode box characters, which in a legacy
+   would be mojibake. So we fall back to ASCII borders (+- |) and hide the
+   the sparklines are hidden (the numeric caption still shows the values). */
 
 .-ascii SpeedPanel, .-ascii PingPanel, .-ascii TopologyPanel {
     border: ascii $primary 60%;
@@ -114,7 +115,7 @@ SpeedPanel:focus-within, PingPanel:focus-within, TopologyPanel:focus-within {
 }
 /* The sparkline block glyphs (▁▂▃▅▆▇) do not exist in legacy codepages,
    so they are hidden there.
-   O'rnida grafik ostidagi joriy/min/o'rt/maks caption qoladi. */
+   What remains is the current/min/avg/max caption under the chart. */
 .-ascii Sparkline {
     display: none;
 }
@@ -176,8 +177,8 @@ DataTable > .datatable--cursor {
     background: $accent 25%;
 }
 
-/* Ping jadvali kontentga mos (auto) — grafik to'g'ridan-to'g'ri jadval ostiga
-   yopishadi (1fr cho'zilib grafikni panel pastiga itarmaydi). */
+/* The ping table sizes to its content (auto) so the chart sits directly under
+   it (1fr would stretch and push the chart to the bottom of the panel). */
 #ping-table {
     height: auto;
     max-height: 14;
@@ -190,7 +191,8 @@ Button {
     min-width: 16;
 }
 
-/* Tugma to'liq kenglik emas — ixcham (bu yordamchi amal, `s` ham bor). */
+/* The button is compact, not full width — it is a secondary affordance
+   (the `s` key does the same thing). */
 #run-speed {
     margin: 1 0 0 0;
     width: auto;
@@ -238,9 +240,9 @@ TabbedContent {
     content-align: left middle;
 }
 
-/* --- Bo'sh / xato holatlari (placeholder) --- */
+/* --- Empty / error states (placeholder) --- */
 
-/* Bo'sh holat panel markazida (1fr to'ldiradi, matn markazlashadi):
+/* Empty state centred in the panel (1fr fills, the text centres):
    glyph qatori + sarlavha + "nima kutiladi" izohi + inline tugma. */
 .empty-state {
     height: 1fr;

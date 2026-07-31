@@ -43,8 +43,8 @@ jobs:
       matrix:
         include:
           # ubuntu-22.04 is DELIBERATE (not ubuntu-latest): a PyInstaller
-          # binari yig'ilgan glibc'dan PASTROQ tizimda ishlamaydi
-          # (`GLIBC_2.xx not found`). Eski runner'da yig'ish = kengroq moslik.
+          # binary never runs on a glibc OLDER than the one it was built
+          # against (`GLIBC_2.xx not found`). Older runner = wider compatibility.
           - os: ubuntu-22.04
             label: linux-x86_64
             asset: systop-linux-x86_64
@@ -56,7 +56,7 @@ jobs:
           # Intel Mac (`macos-13`) is DELIBERATELY absent: GitHub retired that
           # chiqargan va job abadiy `queued` da qotib qoladi. `fail-fast: false`
           # tufayli qolgan uchtasi tugaydi, lekin relise job'i HAMMASINI kutadi —
-          # ya'ni bitta o'lik matritsa yozuvi butun relise'ni to'xtatib qo'yadi
+          # i.e. a single dead matrix entry stalls the whole release
           # (that is why one release sat queued for 58 minutes). If an Intel Mac
           # build is needed, run `packaging/build-macos.sh` on an Intel machine.
           - os: macos-14 # Apple Silicon

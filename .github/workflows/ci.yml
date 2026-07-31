@@ -119,10 +119,11 @@ jobs:
           uv run systop config --show
 
   # ---------------------------------------------------------------------------
-  # Windows tirik (live) smoke-test: bu OFFLINE EMAS — localhost/gateway'ga
+  # Windows live smoke test: this is NOT offline — it really pings
   # tegadi. Maqsad: ruscha simptomning ASOSIY sababini (ICMP parse/codepage)
   # to'g'ri OS'da, haqiqiy konsolda ushlash. `--json` toza JSON berishi va
-  # exit kodi mazmunli bo'lishi tekshiriladi (loopback har doim tirik).
+  # localhost/the gateway and checks the exit code is meaningful
+  # (loopback is always alive).
   windows-smoke:
     name: Windows live smoke (ping/info --json)
     runs-on: windows-latest
@@ -151,7 +152,7 @@ jobs:
           $json = $out | ConvertFrom-Json
           if ($null -eq $json.interfaces) { throw "info --json: no interfaces" }
 
-      - name: systop ping --json (localhost — har doim tirik)
+      - name: systop ping --json (localhost — always alive)
         shell: pwsh
         run: |
           # 127.0.0.1 loopback must be alive even with no internet at all.
@@ -161,7 +162,7 @@ jobs:
           $json = $out | ConvertFrom-Json
           $loop = $json | Where-Object { $_.address -eq "127.0.0.1" } | Select-Object -First 1
           if ($null -eq $loop) { throw "ping --json: no result for 127.0.0.1" }
-          if (-not $loop.alive) { throw "ping --json: loopback 'o'lik' deb topildi (ICMP/codepage regressiyasi!)" }
+          if (-not $loop.alive) { throw "ping --json: loopback reported DEAD (ICMP/codepage regression!)" }
 
       - name: systop ping --json has a meaningful exit code (dead target -> 2)
         shell: pwsh

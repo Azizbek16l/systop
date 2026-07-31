@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""Yig'ilgan systop binarini HAQIQATAN tekshiradi (nafaqat `--help`).
+"""Actually tests the built systop binary (not just `--help`).
 
-Ishlatish:
+Usage:
     python3 packaging/smoke_test.py dist/systop
     python3 packaging/smoke_test.py dist/systop.exe
 
-Nega bu fayl bor:
+Why this file exists:
   `--help` never gets past argparse — it touches neither textual nor
   styles.tcss. With styles.tcss missing from the bundle `--help` still comes
   back GREEN while the TUI dies in the user's hands. Hence:
     1) --help / --version         -> argparse and binary integrity
-    2) doctor --quick --json      -> haqiqiy kod yo'li + JSON parse
-    3) TUI'ni PTY'da ochish       -> textual + styles.tcss (POSIX)
-    4) arxiv TOC tekshiruvi       -> styles.tcss bundle ichida (uchala OS)
+    2) doctor --quick --json      -> a real code path + JSON parse
+    3) opening the TUI in a PTY   -> textual + styles.tcss (POSIX)
+    4) archive TOC check          -> styles.tcss inside the bundle (all three OSes)
 
-Exit: 0 = hammasi o'tdi, 1 = kamida bitta test yiqildi.
+Exit: 0 = everything passed, 1 = at least one test failed.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ def skip(name: str, why: str) -> None:
 
 def run(binary: Path, args: list[str], timeout: int = 90) -> subprocess.CompletedProcess:
     env = dict(os.environ)
-    # Onefile birinchi ishga tushishda o'zini tmp'ga ochadi — rangsiz, tor
+    # A onefile binary unpacks itself to tmp on first launch — no color, fixed width,
     # so the result is identical in any terminal.
     env["NO_COLOR"] = "1"
     env["COLUMNS"] = "120"
@@ -73,7 +73,7 @@ def test_help(binary: Path) -> None:
     if "usage" not in p.stdout.lower():
         fail(name, f"no 'usage': {p.stdout[:200]!r}")
         return
-    ok(name, f"{len(p.stdout)} bayt yordam matni")
+    ok(name, f"{len(p.stdout)} bytes of help text")
 
 
 def test_version(binary: Path) -> None:
@@ -87,7 +87,7 @@ def test_version(binary: Path) -> None:
     if p.returncode != 0:
         fail(name, f"exit={p.returncode} out={out[:200]!r}")
         return
-    ok(name, out.splitlines()[0] if out else "(bo'sh)")
+    ok(name, out.splitlines()[0] if out else "(empty)")
 
 
 def test_doctor_json(binary: Path) -> None:
@@ -99,51 +99,51 @@ def test_doctor_json(binary: Path) -> None:
         return
     # doctor returns 0 or 2 depending on finding severity — both are normal.
     if p.returncode not in (0, 2):
-        fail(name, f"kutilmagan exit={p.returncode} stderr={p.stderr[:400]!r}")
+        fail(name, f"unexpected exit={p.returncode} stderr={p.stderr[:400]!r}")
         return
     try:
         data = json.loads(p.stdout)
     except json.JSONDecodeError as exc:
-        fail(name, f"JSON parse bo'lmadi: {exc}; stdout[:300]={p.stdout[:300]!r}")
+        fail(name, f"JSON parse failed: {exc}; stdout[:300]={p.stdout[:300]!r}")
         return
-    ok(name, f"exit={p.returncode}, JSON turi={type(data).__name__}")
+    ok(name, f"exit={p.returncode}, JSON type={type(data).__name__}")
 
 
 def test_bundle_contains_assets(binary: Path) -> None:
-    """Onefile arxiv TOC ichida systop/styles.tcss bormi — uchala OS'da ishlaydi."""
-    name = "bundle'da systop/styles.tcss bor"
+    """Whether systop/styles.tcss is in the onefile archive TOC — works on all three OSes."""
+    name = "bundle contains systop/styles.tcss"
     try:
         from PyInstaller.archive.readers import CArchiveReader
     except Exception as exc:  # pragma: no cover
-        skip(name, f"PyInstaller import bo'lmadi ({exc})")
+        skip(name, f"PyInstaller import failed ({exc})")
         return
     try:
         reader = CArchiveReader(str(binary))
         names = list(reader.toc)
     except Exception as exc:
-        skip(name, f"arxivni o'qib bo'lmadi ({exc})")
+        skip(name, f"could not read the archive ({exc})")
         return
     if any(n.replace("\\", "/").endswith("systop/styles.tcss") for n in names):
-        ok(name, f"TOC'da {len(names)} ta yozuv")
+        ok(name, f"{len(names)} entries in TOC")
     else:
-        fail(name, "styles.tcss TOC'da YO'Q — TUI ishga tushmaydi")
+        fail(name, "styles.tcss is MISSING from TOC — the TUI will not start")
     tcss = [n for n in names if n.endswith(".tcss")]
     if len(tcss) > 1:
-        ok("bundle'da textual .tcss asset'lari", f"{len(tcss)} ta .tcss")
+        ok("textual .tcss assets in bundle", f"{len(tcss)} .tcss files")
 
 
 def test_tui_starts(binary: Path) -> None:
     """Opens the TUI in a real PTY and closes it with 'q' (POSIX)."""
-    name = "TUI PTY'da ishga tushadi"
+    name = "TUI starts in a PTY"
     if os.name != "posix":
-        skip(name, "PTY faqat POSIX'da; Windows'da TOC tekshiruvi qoladi")
+        skip(name, "PTY is POSIX-only; the TOC check still covers Windows")
         return
     import pty
     import select
     import signal
 
     pid, fd = pty.fork()
-    if pid == 0:  # bola jarayon
+    if pid == 0:  # child process
         os.environ["TERM"] = "xterm-256color"
         os.environ["LINES"] = "40"
         os.environ["COLUMNS"] = "120"
@@ -154,7 +154,7 @@ def test_tui_starts(binary: Path) -> None:
             os._exit(127)
 
     buf = b""
-    deadline = time.time() + 45  # onefile birinchi ochilishi sekin bo'lishi mumkin
+    deadline = time.time() + 45  # a onefile binary's first launch can be slow
     sent_quit = False
     status = None
     try:
@@ -168,7 +168,7 @@ def test_tui_starts(binary: Path) -> None:
                 if not chunk:
                     break
                 buf += chunk
-            # TUI chizilganiga ishonch hosil bo'lgach 'q' yuboramiz.
+            # Send 'q' once we're confident the TUI has drawn.
             if not sent_quit and (len(buf) > 2000 or time.time() > deadline - 33):
                 time.sleep(2.0)
                 try:
@@ -210,17 +210,17 @@ def test_tui_starts(binary: Path) -> None:
     hit = [b for b in bad if b in text]
     if hit:
         tail = text[-1500:]
-        fail(name, f"chiqishda xato belgilari {hit}; tail={tail!r}")
+        fail(name, f"error markers in output {hit}; tail={tail!r}")
         return
     if len(buf) < 200:
-        fail(name, f"TUI deyarli hech narsa chizmadi ({len(buf)} bayt) — ishga tushmagan")
+        fail(name, f"the TUI drew almost nothing ({len(buf)} bytes) — it didn't start")
         return
-    # ANSI ekran boshqaruvi = textual haqiqatan chizdi.
+    # ANSI screen control = textual actually drew something.
     drew = "\x1b[" in text
     if not drew:
         fail(name, f"no ANSI escapes — the TUI never drew; head={text[:300]!r}")
         return
-    ok(name, f"{len(buf)} bayt ANSI chizildi, toza chiqdi")
+    ok(name, f"{len(buf)} bytes of ANSI drawn, exited cleanly")
 
 
 def main() -> int:
@@ -238,7 +238,7 @@ def main() -> int:
     size = binary.stat().st_size
     print(f"\nsystop smoke test: {binary}")
     print(f"size: {size:,} bytes ({size / 1024 / 1024:.1f} MiB)")
-    print(f"platforma: {sys.platform} / {os.uname().machine if hasattr(os, 'uname') else 'win'}")
+    print(f"platform: {sys.platform} / {os.uname().machine if hasattr(os, 'uname') else 'win'}")
     print(f"`file`: {_file_type(binary)}\n")
 
     test_help(binary)
@@ -261,7 +261,7 @@ def _file_type(binary: Path) -> str:
             ["file", "-b", str(binary)], capture_output=True, text=True, timeout=20
         ).stdout.strip()
     except Exception:
-        return "(aniqlanmadi)"
+        return "(undetermined)"
 
 
 if __name__ == "__main__":

@@ -1,31 +1,31 @@
 #!/bin/sh
-# systop — Linux va macOS uchun bir qatorlik o'rnatgich.
+# systop — a one-line installer for Linux and macOS.
 #
 #   curl -fsSL https://raw.githubusercontent.com/Azizbek16l/systop/master/install.sh | sh
 #
-# Sozlash (muhit o'zgaruvchilari bilan — quvur rejimida yagona yo'l):
-#   SYSTOP_VERSION=v0.10.0   aniq relise tegi (default: eng so'nggisi)
-#   SYSTOP_INSTALL_DIR=...   o'rnatish katalogi (default: quyidagi mantiq)
-#   SYSTOP_NO_SUDO=1         sudo ishlatilmasin, ~/.local/bin ga qo'yilsin
+# Configuration (via environment variables — the only way in pipe mode):
+#   SYSTOP_VERSION=v0.10.0   exact release tag (default: latest)
+#   SYSTOP_INSTALL_DIR=...   install directory (default: logic below)
+#   SYSTOP_NO_SUDO=1         don't use sudo, install to ~/.local/bin
 #
-# DIQQAT — o'zgaruvchini QUVURNING QAYSI TOMONIGA qo'yish muhim:
-#     SYSTOP_INSTALL_DIR=/opt/bin curl -fsSL ... | sh      # NOTO'G'RI
-#     curl -fsSL ... | SYSTOP_INSTALL_DIR=/opt/bin sh      # to'g'ri
-# Birinchi shaklda o'zgaruvchi `curl` ga beriladi, `sh` uni umuman ko'rmaydi
-# va skript jimgina standart katalogga o'rnatadi.
+# WARNING — which SIDE OF THE PIPE you put the variable on matters:
+#     SYSTOP_INSTALL_DIR=/opt/bin curl -fsSL ... | sh      # WRONG
+#     curl -fsSL ... | SYSTOP_INSTALL_DIR=/opt/bin sh      # correct
+# In the first form the variable is passed to `curl`; `sh` never sees it
+# at all, and the script silently installs to the default directory.
 #
-# O'chirish:
+# Uninstall:
 #   curl -fsSL .../install.sh | sh -s -- --uninstall
 #
-# POSIX `sh` uchun yozilgan (bash EMAS): Debian/Ubuntu'da `sh` = dash,
-# Alpine'da busybox ash. `[[ ]]`, massiv va `local` ATAYIN ishlatilmagan.
+# Written for POSIX `sh` (NOT bash): on Debian/Ubuntu `sh` = dash,
+# on Alpine it's busybox ash. `[[ ]]`, arrays and `local` are DELIBERATELY not used.
 
 set -eu
 
 REPO="Azizbek16l/systop"
 BIN_NAME="systop"
 
-# --- ko'rinish -------------------------------------------------------------
+# --- appearance -------------------------------------------------------------
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
     C_STEP=$(printf '\033[36m'); C_OK=$(printf '\033[32m')
@@ -37,9 +37,9 @@ fi
 step() { printf '%s==> %s%s\n' "$C_STEP" "$1" "$C_OFF"; }
 ok()   { printf '%s    %s%s\n' "$C_OK" "$1" "$C_OFF"; }
 warn() { printf '%s    %s%s\n' "$C_WARN" "$1" "$C_OFF"; }
-die()  { printf '%sXATO: %s%s\n' "$C_ERR" "$1" "$C_OFF" >&2; exit 1; }
+die()  { printf '%sERROR: %s%s\n' "$C_ERR" "$1" "$C_OFF" >&2; exit 1; }
 
-# --- argumentlar -----------------------------------------------------------
+# --- arguments ---------------------------------------------------------------
 
 UNINSTALL=0
 for arg in "$@"; do
@@ -48,15 +48,15 @@ for arg in "$@"; do
         --version=*) SYSTOP_VERSION="${arg#--version=}" ;;
         --dir=*)     SYSTOP_INSTALL_DIR="${arg#--dir=}" ;;
         --help|-h)
-            sed -n '2,20p' "$0" 2>/dev/null || printf 'Yordam faqat fayldan ishga tushirilganda.\n'
+            sed -n '2,20p' "$0" 2>/dev/null || printf 'Help is only available when run from the file.\n'
             exit 0 ;;
-        *) die "noma'lum argument: $arg" ;;
+        *) die "unknown argument: $arg" ;;
     esac
 done
 
 VERSION="${SYSTOP_VERSION:-}"
 
-# --- platforma aniqlash ----------------------------------------------------
+# --- platform detection ------------------------------------------------------
 
 OS=$(uname -s)
 ARCH=$(uname -m)
@@ -66,33 +66,33 @@ case "$OS" in
         case "$ARCH" in
             x86_64|amd64) ASSET="systop-linux-x86_64" ;;
             aarch64|arm64)
-                die "Linux ARM64 uchun tayyor binar yo'q.
-     Manbadan yig'ing:  git clone https://github.com/$REPO && cd systop && ./packaging/build-linux.sh" ;;
-            *) die "qo'llab-quvvatlanmaydigan arxitektura: $ARCH" ;;
+                die "No prebuilt binary for Linux ARM64.
+     Build from source:  git clone https://github.com/$REPO && cd systop && ./packaging/build-linux.sh" ;;
+            *) die "unsupported architecture: $ARCH" ;;
         esac ;;
     Darwin)
         case "$ARCH" in
             arm64) ASSET="systop-macos-arm64" ;;
             x86_64)
-                # Intel Mac uchun tayyor binar YO'Q: GitHub `macos-13`
-                # runner'ini iste'foga chiqargan va PyInstaller cross-compile
-                # qilmaydi. 404 berib "yuklab bo'lmadi" deyishdan ko'ra
-                # sababni aytgan ma'qul.
-                die "Intel Mac uchun tayyor binar yo'q (CI runner'i iste'foda).
-     Manbadan yig'ing:  git clone https://github.com/$REPO && cd systop && ./packaging/build-macos.sh" ;;
-            *) die "qo'llab-quvvatlanmaydigan arxitektura: $ARCH" ;;
+                # No prebuilt binary for Intel Mac: GitHub retired the
+                # `macos-13` runner and PyInstaller doesn't cross-compile.
+                # Better to state the reason than to 404 and say "download
+                # failed."
+                die "No prebuilt binary for Intel Mac (the CI runner was retired).
+     Build from source:  git clone https://github.com/$REPO && cd systop && ./packaging/build-macos.sh" ;;
+            *) die "unsupported architecture: $ARCH" ;;
         esac ;;
-    *) die "qo'llab-quvvatlanmaydigan OS: $OS (Windows uchun install.ps1)" ;;
+    *) die "unsupported OS: $OS (use install.ps1 for Windows)" ;;
 esac
 
-# --- o'rnatish katalogi ----------------------------------------------------
+# --- install directory --------------------------------------------------------
 #
-# Tartib: foydalanuvchi bergani > yozish mumkin bo'lgan /usr/local/bin >
-# sudo bilan /usr/local/bin > ~/.local/bin.
+# Order: user-supplied > writable /usr/local/bin >
+# /usr/local/bin with sudo > ~/.local/bin.
 #
-# `sudo` MAJBURLANMAYDI: parol so'rab, quvurdan (`curl | sh`) o'qiyotgan
-# skript stdin'ni band qilgani uchun terminal qotib qolardi. Buning o'rniga
-# oldindan tekshiramiz.
+# sudo is NOT FORCED: a script reading from a pipe (`curl | sh`) holds
+# stdin, so a sudo password prompt would hang the terminal. Instead we
+# check in advance.
 
 NEED_SUDO=0
 if [ -n "${SYSTOP_INSTALL_DIR:-}" ]; then
@@ -109,28 +109,28 @@ fi
 
 TARGET="$DEST/$BIN_NAME"
 
-# --- o'chirish -------------------------------------------------------------
+# --- uninstall ----------------------------------------------------------------
 
 if [ "$UNINSTALL" = "1" ]; then
-    step "systop o'chirilmoqda"
+    step "removing systop"
     for d in "$DEST" /usr/local/bin "$HOME/.local/bin"; do
         if [ -f "$d/$BIN_NAME" ]; then
             if [ -w "$d" ]; then rm -f "$d/$BIN_NAME"; else sudo rm -f "$d/$BIN_NAME"; fi
-            ok "o'chirildi: $d/$BIN_NAME"
+            ok "removed: $d/$BIN_NAME"
         fi
     done
     exit 0
 fi
 
-# --- yuklab olish ----------------------------------------------------------
+# --- download ------------------------------------------------------------------
 #
-# `releases/latest/download/...` — GitHub o'zi eng so'nggi relisega
-# yo'naltiradi. `api.github.com` ATAYIN ishlatilmaydi: autentifikatsiyasiz
-# soatiga 60 so'rov, korporativ NAT ortidagi bir necha mashina uni darrov
-# tugatadi.
+# `releases/latest/download/...` — GitHub itself redirects to the latest
+# release. `api.github.com` is DELIBERATELY not used: unauthenticated it's
+# limited to 60 requests/hour, and a handful of machines behind a
+# corporate NAT exhaust that in no time.
 if [ -z "$VERSION" ]; then
     BASE="https://github.com/$REPO/releases/latest/download"
-    VER_LABEL="eng so'nggi"
+    VER_LABEL="latest"
 else
     BASE="https://github.com/$REPO/releases/download/$VERSION"
     VER_LABEL="$VERSION"
@@ -141,25 +141,25 @@ if command -v curl >/dev/null 2>&1; then
 elif command -v wget >/dev/null 2>&1; then
     DL='wget -q -O'
 else
-    die "curl ham, wget ham topilmadi"
+    die "neither curl nor wget found"
 fi
 
 TMP=$(mktemp -d 2>/dev/null || mktemp -d -t systop)
 # shellcheck disable=SC2064
 trap "rm -rf '$TMP'" EXIT INT TERM
 
-step "systop yuklab olinmoqda ($VER_LABEL, $ASSET)"
+step "downloading systop ($VER_LABEL, $ASSET)"
 # shellcheck disable=SC2086
-$DL "$TMP/$BIN_NAME" "$BASE/$ASSET" || die "yuklab bo'lmadi: $BASE/$ASSET"
+$DL "$TMP/$BIN_NAME" "$BASE/$ASSET" || die "download failed: $BASE/$ASSET"
 SIZE=$(wc -c < "$TMP/$BIN_NAME" | tr -d ' ')
-[ "$SIZE" -gt 1000000 ] || die "yuklangan fayl juda kichik ($SIZE bayt) — relise topilmadimi?"
-ok "yuklandi: $SIZE bayt"
+[ "$SIZE" -gt 1000000 ] || die "downloaded file is too small ($SIZE bytes) — release not found?"
+ok "downloaded: $SIZE bytes"
 
-# --- SHA256 tekshiruvi -----------------------------------------------------
-# Tekshirmaslik — o'rnatgichdagi eng keng tarqalgan kamchilik: yarim
-# yuklangan yoki almashtirilgan fayl JIMGINA o'rnatiladi.
+# --- SHA256 verification -------------------------------------------------------
+# Skipping verification is the most common installer flaw: a half-
+# downloaded or tampered file gets installed SILENTLY.
 
-step "SHA256 tekshirilmoqda"
+step "verifying SHA256"
 if command -v sha256sum >/dev/null 2>&1; then
     HASH_CMD="sha256sum"
 elif command -v shasum >/dev/null 2>&1; then
@@ -175,74 +175,74 @@ if [ -n "$HASH_CMD" ]; then
         EXPECTED=$(grep -E "[[:space:]]\*?$ASSET\$" "$TMP/SHA256SUMS.txt" 2>/dev/null | awk '{print $1}' | head -1)
         ACTUAL=$($HASH_CMD "$TMP/$BIN_NAME" | awk '{print $1}')
         if [ -z "$EXPECTED" ]; then
-            warn "SHA256SUMS.txt da '$ASSET' yozuvi yo'q — tekshirib bo'lmadi"
+            warn "SHA256SUMS.txt has no entry for '$ASSET' — cannot verify"
         elif [ "$EXPECTED" != "$ACTUAL" ]; then
-            die "SHA256 MOS KELMADI.
-     Kutilgan: $EXPECTED
-     Olingan:  $ACTUAL
-     Fayl o'rnatilMADI."
+            die "SHA256 MISMATCH.
+     Expected: $EXPECTED
+     Got:      $ACTUAL
+     File NOT installed."
         else
-            ok "sha256 mos: $(echo "$ACTUAL" | cut -c1-16)..."
+            ok "sha256 matches: $(echo "$ACTUAL" | cut -c1-16)..."
             VERIFIED=1
         fi
     else
-        warn "SHA256SUMS.txt olinmadi — tekshiruvsiz davom etilyapti"
+        warn "SHA256SUMS.txt could not be fetched — continuing without verification"
     fi
 else
-    warn "sha256sum/shasum topilmadi — tekshirib bo'lmadi"
+    warn "sha256sum/shasum not found — cannot verify"
 fi
-[ "$VERIFIED" = "1" ] || warn "OGOHLANTIRISH: yuklama tekshirilmadi."
+[ "$VERIFIED" = "1" ] || warn "WARNING: the download was not verified."
 
 chmod +x "$TMP/$BIN_NAME"
 
-# macOS: yuklangan faylga karantin bayrog'i qo'yiladi va Gatekeeper
-# "damaged / cannot be opened" deydi. Binar ad-hoc imzolangan (Apple
-# Developer ID emas), shuning uchun bayroqni olib tashlaymiz.
+# macOS: the downloaded file gets a quarantine flag and Gatekeeper says
+# "damaged / cannot be opened". The binary is ad-hoc signed (not an Apple
+# Developer ID), so we strip the flag.
 if [ "$OS" = "Darwin" ] && command -v xattr >/dev/null 2>&1; then
     xattr -d com.apple.quarantine "$TMP/$BIN_NAME" 2>/dev/null || true
 fi
 
-# --- ishlaydimi? -----------------------------------------------------------
-# PATH'ga qo'yishdan OLDIN sinaymiz. Linux'da eng ko'p uchraydigan xato —
-# glibc mos kelmasligi; uni "systop ishlamayapti" emas, aniq sabab bilan
-# aytish kerak.
+# --- does it work? ---------------------------------------------------------
+# We test it BEFORE putting it on PATH. The most common failure on
+# Linux is a glibc mismatch; it needs to be reported with the specific
+# cause, not "systop doesn't work".
 
-step "binar tekshirilmoqda"
+step "verifying the binary"
 if ! VER_OUT=$("$TMP/$BIN_NAME" --version 2>&1); then
     case "$VER_OUT" in
         *GLIBC*|*glibc*)
-            die "Bu binar tizimingizdagidan YANGIROQ glibc talab qiladi.
+            die "This binary requires a NEWER glibc than what's on your system.
      $VER_OUT
-     Sizda: $(ldd --version 2>/dev/null | head -1)
-     Yechim: manbadan yig'ing —
+     You have: $(ldd --version 2>/dev/null | head -1)
+     Fix: build from source —
        git clone https://github.com/$REPO && cd systop && ./packaging/build-linux.sh" ;;
-        *) die "binar ishga tushmadi: $VER_OUT" ;;
+        *) die "binary failed to run: $VER_OUT" ;;
     esac
 fi
 ok "$VER_OUT"
 
-# --- joyiga qo'yish --------------------------------------------------------
+# --- installing --------------------------------------------------------------
 
-step "o'rnatilmoqda: $TARGET"
+step "installing: $TARGET"
 if [ "$NEED_SUDO" = "1" ]; then
-    warn "/usr/local/bin ga yozish uchun sudo so'raladi"
-    sudo install -m 0755 "$TMP/$BIN_NAME" "$TARGET" || die "o'rnatib bo'lmadi"
+    warn "requesting sudo to write to /usr/local/bin"
+    sudo install -m 0755 "$TMP/$BIN_NAME" "$TARGET" || die "install failed"
 else
     mkdir -p "$DEST"
     install -m 0755 "$TMP/$BIN_NAME" "$TARGET" 2>/dev/null \
         || { cp "$TMP/$BIN_NAME" "$TARGET" && chmod 0755 "$TARGET"; } \
-        || die "o'rnatib bo'lmadi: $TARGET"
+        || die "install failed: $TARGET"
 fi
 ok "$TARGET"
 
 # --- PATH ------------------------------------------------------------------
-# POSIX shell boshqa jarayonning PATH'ini o'zgartira olmaydi va foydalanuvchi
-# rc-fayliga jimgina yozish qo'pol. Shuning uchun aniq ko'rsatma beramiz.
+# A POSIX shell cannot change another process's PATH, and silently writing
+# to the user's rc file is rude. So we give an explicit instruction instead.
 
 case ":$PATH:" in
     *":$DEST:"*) ;;
     *)
-        printf '\n%sPATH sozlanishi kerak%s — %s hozircha PATH da emas:\n' "$C_WARN" "$C_OFF" "$DEST"
+        printf '\n%sPATH setup needed%s — %s is not yet on PATH:\n' "$C_WARN" "$C_OFF" "$DEST"
         SHELL_NAME=$(basename "${SHELL:-sh}")
         case "$SHELL_NAME" in
             zsh)  RC="$HOME/.zshrc" ;;
@@ -259,8 +259,8 @@ case ":$PATH:" in
         ;;
 esac
 
-printf '\n%sTayyor.%s\n' "$C_OK" "$C_OFF"
-printf '  systop doctor        tarmoq muammolarini avtomatik topish\n'
-printf '  systop wifi          Wi-Fi signal/SNR/kanal\n'
-printf '  systop lan -6        LAN inventari (IPv4 + IPv6)\n'
-printf '  systop               to%sliq TUI dashboard\n' "'"
+printf '\n%sDone.%s\n' "$C_OK" "$C_OFF"
+printf '  systop doctor        automatically find network problems\n'
+printf '  systop wifi          Wi-Fi signal/SNR/channel\n'
+printf '  systop lan -6        LAN inventory (IPv4 + IPv6)\n'
+printf '  systop               full TUI dashboard\n'
