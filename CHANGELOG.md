@@ -52,25 +52,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.11.0] — 2026-07-31
 
-### Changed
-
-- **The codebase is now English-only.** Every user-facing string, docstring,
-  comment and test name was converted, along with the CSS comments, the
-  installers, the packaging scripts and the CI workflows. Roughly 725
-  docstrings, 850 strings and 1,070 comments; 129 test functions renamed.
-  Detection corpora were deliberately left as they are — the localized login
-  keywords in `webscan.py` and the Cyrillic keys in `parse_netsh_interfaces`
-  are match data, not prose, and removing them would silently stop detecting
-  devices with a localized login page and break Wi-Fi parsing on Russian
-  Windows.
-- Documentation is a single English `README.md`; the parallel Uzbek README is
-  gone, since maintaining two was also the mechanism that let them drift.
-
 ### Fixed
 
-- `wifi --neighbours` no longer says "2 APs interfering, 2 of them on the same
-  channel" when all of them are — three distinct messages now cover the three
-  cases.
+- `wifi --neighbours` no longer reports "2 APs interfering, 2 of them on the
+  same channel" when all of them are — three distinct messages now cover the
+  three cases (all co-channel, partly overlapping, overlap only).
 - The published installer URLs pointed at `/main/`, but the default branch is
   `master`; copy-pasting the documented one-liner returned 404.
 - The Intel macOS asset no longer exists (GitHub retired the runner), so an
@@ -79,6 +65,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The release matrix still listed the retired `macos-13` runner. With
   `fail-fast: false` the other three platforms finished, but the release job
   waits on the whole matrix — one dead entry stalled every release for an hour.
+
+### Added
+
+- A test that compares `diagnose.MANAGEMENT_KINDS` against the `device_kind`
+  values `webscan` actually emits. They are a data contract between the two
+  modules, and the failure mode is silent: if they drift, `web --mgmt` filters
+  everything away and reports "no management devices", which reads like good
+  news rather than a bug.
 
 ### Removed
 
