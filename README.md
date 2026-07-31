@@ -10,9 +10,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](pyproject.toml)
 
-![demo](assets/demo.gif)
-
-<!-- The GIF above is produced from `demo.tape` with charmbracelet/vhs (`vhs demo.tape`). -->
+<!-- A terminal recording can be produced from `demo.tape` with charmbracelet/vhs
+     (`vhs demo.tape`); it is not committed yet, so no image is embedded here. -->
 
 ---
 
@@ -23,12 +22,13 @@ Diagnosing a network usually means juggling a fistful of single-purpose tools:
 `ss`/`netstat`, plus a browser tab open on a speed-test site. Each has its own
 flags, its own output format, and several need root.
 
-`systop` folds 12 common network tasks into **one tool** that:
+`systop` folds a sysadmin's day-to-day network tasks into **one tool** that:
 
-- **Cross-platform, no root.** Runs on **Linux, macOS and Windows**. ICMP uses
-  unprivileged datagram sockets (`SOCK_DGRAM`) on Linux/macOS and the system
-  `ping`/`tracert` on Windows — so `ping`, `traceroute` and `mtr` work without
-  `sudo` or Administrator on every platform.
+- **Cross-platform, no root.** Runs on **Linux, Windows and macOS**. ICMP uses
+  unprivileged datagram sockets (`SOCK_DGRAM`) on Linux/macOS and the Win32
+  `IcmpSendEcho` API on Windows — so `ping`, `traceroute` and `mtr` work without
+  `sudo` or Administrator on every platform. See
+  [Platform support](#platform-support) for the handful of per-OS caveats.
 - **Works two ways.** A full-screen **Textual TUI dashboard** for interactive
   monitoring, and **one-shot CLI commands** for everything else.
 - **Is scriptable.** Every command speaks `--json` / `--format csv` with clean
@@ -38,7 +38,8 @@ flags, its own output format, and several need root.
   `scapy`, or `speedtest-cli`. The OUI (MAC vendor) lookup ships built in.
 
 The network logic lives in a UI-independent `core/` layer, so the same async
-functions back the TUI, the CLI, and the test suite — 200+ offline tests.
+functions back the TUI, the CLI, and the test suite — which runs entirely
+offline (`uv run pytest` needs no network at all).
 
 ---
 
@@ -62,6 +63,18 @@ binary, not beating each specialist at its own depth.
 | TLS certificate check   |   ✅   |  —    |   —    |  —  |   —   |    —      |
 | HTTP status check       |   ✅   |  —    |   —    |  —  |   —   |    —      |
 | Active connections      |   ✅   |  —    |   —    |  —  |   —   |    —      |
+| **Admin-panel discovery** |   ✅   |  —    |   —    |  —  |   —   |    —      |
+| **Auto problem finder**   |   ✅   |  —    |   —    |  —  |   —   |    —      |
+| **IPv6 (scan + discovery)** |   ✅   |  —    |   —    |  ✅ |   —   |    —      |
+| **LAN-wide port sweep**   |   ✅   |  —    |   —    |  —  |   ✅  |    —      |
+| **Service banners (-sV)** |   ✅   |  —    |   —    |  —  |   ✅  |    —      |
+| **Raw TCP/TLS client**    |   ✅   |  —    |   —    |  —  |   —   |    —      |
+| **Clock skew (SNTP)**     |   ✅   |  —    |   —    |  —  |   —   |    —      |
+| **Route table + next-hop**|   ✅   |  —    |   —    |  —  |   —   |    —      |
+| **Path MTU discovery**    |   ✅   |  —    |   —    |  —  |   —   |    —      |
+| **Rogue DHCP detection**  |   ✅   |  —    |   —    |  —  |   —   |    —      |
+| **ARP/NDP change watch**  |   ✅   |  —    |   —    |  —  |   —   |    —      |
+| **Wi-Fi signal / channel**|   ✅   |  —    |   —    |  —  |   —   |    —      |
 | Interactive TUI         |   ✅   |  ✅   |   ✅   |  —  |   —   |    ✅     |
 | JSON output             |   ✅   |  —    |   ✅   |  ✅ |   ✅  |    —      |
 | No root required        |   ✅   |  ✅   |  ⚠️*  |  ✅ |   ✅  |   ⚠️*    |
@@ -75,7 +88,7 @@ deeper in their own niche.</sub>
 
 ## Install
 
-systop targets **Python 3.11+** and runs on **Linux, macOS and Windows**.
+systop targets **Python 3.11+** and runs on **Linux, Windows and macOS**.
 
 ### Standalone binary (no Python required)
 
@@ -136,8 +149,11 @@ subcommand below also works as a one-shot, script-friendly call.
 
 ```bash
 systop                       # interactive TUI dashboard (default)
+systop dashboard             # the same, spelled out
 
 systop speed                 # download / upload / latency / jitter
+systop speed --local         # also measure local/IX endpoints (see speed_local_urls)
+systop speed --local-url URL # ad-hoc local endpoint (repeatable; overrides config)
 systop ping                  # local gateway + global targets
 systop ping --watch          # live ping monitor (Ctrl+C to stop)
 systop ping --ipv6           # add IPv6 global targets
@@ -150,9 +166,18 @@ systop mtr 1.1.1.1           # live mtr-style: per-hop loss% / avg / best / wors
 systop scan example.com                 # TCP port scan (common ports)
 systop scan example.com --ports 22,80,443
 systop scan example.com --ports 1-1024
+systop scan 10.0.0.0/24 --top 20        # LAN-wide port sweep
+systop scan example.com --banner        # service/version banners
+systop scan -6 example.com              # IPv6 scan (-4 forces IPv4)
+
+systop nc example.com 25                # raw TCP client (ncat-style)
+systop nc example.com 6379 --send 'PING\r\n'
+systop nc example.com 443 --tls --hex   # TLS handshake, hexdump the reply
 
 systop dns example.com       # resolve + compare public DNS resolver latency
 systop lan                   # LAN host discovery (IP / MAC / vendor / hostname)
+systop lan -6                # also IPv6 (ff02::1 multicast + NDP table)
+systop lan -6 --global-only  # drop link-local (fe80::) addresses
 
 systop bw                    # per-interface bandwidth (RX/TX) snapshot
 systop bw --watch            # live bandwidth monitor
@@ -163,6 +188,23 @@ systop http https://example.com   # HTTP status, redirects, timing
 
 systop conn                  # active network connections
 systop conn --listen         # only listening sockets
+
+systop web                   # web services + admin panels across the LAN
+systop web --http80          # only port 80 (find plaintext HTTP exposure)
+systop web --mgmt            # only network gear (router / firewall / switch / NVR)
+systop web --polite          # slow mode for networks with IPS / anti-scan
+
+systop doctor                # auto-find network problems, ranked by severity
+systop doctor --quick        # fast mode (skips the web scan and IPv6)
+
+systop ntp                   # clock skew (SNTP) — the silent cause of auth/TLS failures
+systop route                 # route table + next-hop reachability
+systop mtu                   # path MTU via DF-ping binary search (default 1.1.1.1)
+systop mtu example.com --low 1200 --high 1500
+systop dhcp                  # detect DHCP server(s) — catches a rogue DHCP
+systop arpwatch              # ARP/NDP changes since the last run (MAC swap, dup IP)
+systop wifi                  # Wi-Fi signal / SNR / channel / band / PHY rate
+systop wifi --neighbours     # also list nearby APs (channel congestion)
 
 systop info                  # interfaces, gateway, public IP
 systop config                # show config file path + effective settings
@@ -234,6 +276,36 @@ theme          = "dark"                     # "dark" or "light"
 scan_ports     = "1-1024"                   # default port set for `scan`
 ```
 
+### `speed_local_urls` — local (IX) speed endpoints
+
+`systop speed --local` measures your throughput to *local* endpoints and
+compares it with the international figure. That answers the question a
+speed-test site cannot: "is my uplink slow, or is only the route abroad slow?"
+
+The endpoints are **deliberately not hardcoded** — they are per-country. Baking
+a list of Uzbek TAS-IX mirrors into the source would bind the tool to one
+country and quietly produce wrong numbers everywhere else, so `core/config.py`
+ships an empty default and you supply your own IX. No code change is needed for
+plain-HTTP mirrors either: `config.py` already whitelists both `http://` and
+`https://` (anything else in the list is dropped).
+
+```toml
+speed_local_urls = [
+  "https://speedtest.uz/backend/garbage.php?ckSize=100",
+  "http://speedtest.spy.uz/backend/garbage.php?ckSize=100",  # http:// — the cert is issued to another name
+  "http://mirror.dc.uz/rockylinux/9/isos/x86_64/Rocky-9-latest-x86_64-boot.iso",
+]
+```
+
+The example above is a working Uzbek (TAS-IX) set. Elsewhere, point it at your
+own IX mirror — any URL that serves a large file over HTTP(S) works. Ad-hoc
+runs do not need the config file at all:
+
+```bash
+systop speed --local                     # use speed_local_urls from config
+systop speed --local-url https://mirror.example.uz/100MB.bin   # repeatable
+```
+
 ```bash
 systop config           # show path, existence, env override, effective settings
 systop config --path    # print only the config file path (script-friendly)
@@ -264,13 +336,33 @@ rule and the Uzbek user-facing-text rule.
 
 ---
 
-## Notes on permissions (ICMP)
+## Platform support
 
-`ping`, `traceroute` and `mtr` use `privileged=False` (unprivileged ICMP
-datagram sockets), so no root is needed on macOS or Linux. If your system blocks
-unprivileged ICMP sockets, run with `sudo` or set `privileged=True` in the core
-functions. The active-connections view (`conn`) may show a fuller table with
-root on macOS.
+systop runs on **Linux, Windows and macOS**, and every command is designed to
+work as an ordinary user. Where an OS makes that impossible, systop degrades to
+a weaker source rather than failing — and says so in its output.
+
+| Area | Linux | Windows | macOS |
+|------|-------|---------|-------|
+| `ping` / `trace` / `mtr` (IPv4) | `icmplib`, `SOCK_DGRAM`, no root | Win32 `IcmpSendEcho` via ctypes, no Administrator | `icmplib`, `SOCK_DGRAM`, no root |
+| `trace` over IPv6 | no root | no Administrator | **needs root** — ICMPv6 datagram sockets are privileged on macOS. An OS restriction, not a systop bug |
+| `conn` | psutil (process names) | psutil (process names) | psutil always raises `AccessDenied` without root, so systop falls back to `netstat -an -p tcp` — full port list, **no PID/process name**. `--json` reports the source |
+| `mtu` | `ping -M do` | `ping -f -l` | `ping -D` (the "Message too long" line arrives on **stderr**, which systop reads) |
+| `route` | `ip route` | `route print` | `netstat -rn` |
+| `wifi` | `iw dev <iface> link` / `scan` | `netsh wlan show interfaces` (output is localized; systop parses several languages) | `system_profiler SPAirPortDataType` (`airport -I` was removed in macOS 14.4 and `wdutil` needs sudo, so neither is used) |
+| `dhcp` | `dhclient` lease files | `ipconfig /all` | `ipconfig getpacket` |
+| Console encoding / glyphs | UTF-8 | OEM codepage decoded explicitly; Unicode glyphs fall back to ASCII on a legacy `cmd.exe` | UTF-8 |
+
+Cross-OS behaviour lives in one place, `core/_platform.py`, so a command never
+grows its own subprocess or encoding handling.
+
+### A note on ICMP permissions
+
+No `sudo` is required. `ping`, `traceroute` and `mtr` pass `privileged=False`
+to `icmplib` everywhere (unprivileged ICMP datagram sockets on Linux/macOS),
+and Windows uses the `IcmpSendEcho` API, which does not need Administrator.
+The two exceptions above are the only ones: IPv6 `trace` on macOS, and the
+`conn` process-name column on macOS.
 
 ---
 
