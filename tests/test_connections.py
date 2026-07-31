@@ -343,12 +343,12 @@ Active Connections
 
 def test_manzil_ajratgich_uchala_shaklni_tushunadi():
     """BSD nuqta, Linux/Windows ikki nuqta, Windows kvadrat qavs."""
-    assert _split_listen_addr("127.0.0.1.7265") == ("127.0.0.1", 7265)   # BSD
-    assert _split_listen_addr("::1.8443") == ("::1", 8443)               # BSD IPv6
-    assert _split_listen_addr("0.0.0.0:6379") == ("0.0.0.0", 6379)       # Linux
-    assert _split_listen_addr(":::8443") == ("::", 8443)                 # Linux IPv6
-    assert _split_listen_addr("[::]:8443") == ("::", 8443)               # Windows IPv6
-    assert _split_listen_addr("*.6379") == ("*", 6379)                   # BSD wildcard
+    assert _split_listen_addr("127.0.0.1.7265") == ("127.0.0.1", 7265)  # BSD
+    assert _split_listen_addr("::1.8443") == ("::1", 8443)  # BSD IPv6
+    assert _split_listen_addr("0.0.0.0:6379") == ("0.0.0.0", 6379)  # Linux
+    assert _split_listen_addr(":::8443") == ("::", 8443)  # Linux IPv6
+    assert _split_listen_addr("[::]:8443") == ("::", 8443)  # Windows IPv6
+    assert _split_listen_addr("*.6379") == ("*", 6379)  # BSD wildcard
 
 
 def test_manzil_ajratgich_portsizni_rad_etadi():
@@ -387,6 +387,7 @@ def test_uchala_os_bir_xil_natija_beradi():
     Bu toolning asosiy va'dasi: `doctor` xulosasi OS'ga qarab o'zgarmasligi
     kerak. Parser farqi shu yerda ushlanadi.
     """
+
     def listen_set(text):
         return {(r.laddr, r.proto) for r in parse_netstat_listeners(text, states=["LISTEN"])}
 

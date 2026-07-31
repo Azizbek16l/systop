@@ -52,9 +52,7 @@ class SystopConfig:
     speed_parallel: int = DEFAULT_SPEED_PARALLEL
     theme: str = DEFAULT_THEME
     scan_ports: str = DEFAULT_SCAN_PORTS
-    speed_local_urls: list[str] = field(
-        default_factory=lambda: list(DEFAULT_SPEED_LOCAL_URLS)
-    )
+    speed_local_urls: list[str] = field(default_factory=lambda: list(DEFAULT_SPEED_LOCAL_URLS))
 
 
 def _resolve_path(path: str | Path | None) -> Path:

@@ -390,8 +390,7 @@ async def diagnose_dns(
     aaaa: list[str] = []
     if tool is not None:
         tasks = [
-            _query_resolver(name, srv, tool, timeout, label=lbl)
-            for lbl, srv in servers.items()
+            _query_resolver(name, srv, tool, timeout, label=lbl) for lbl, srv in servers.items()
         ]
         # AAAA so'rovi resolverlar bilan parallel ketadi — qo'shimcha vaqt olmaydi.
         resolver_results_and_aaaa = await asyncio.gather(

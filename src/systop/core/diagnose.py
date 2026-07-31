@@ -63,8 +63,11 @@ class Thresholds:
 # Tashqariga ochilishi xavfli xizmatlar: port -> (nom, jiddiylik, sabab).
 # "0.0.0.0"/"::" da tinglash = butun tarmoqqa ochiq degani.
 RISKY_LISTENERS: dict[int, tuple[str, str, str]] = {
-    2375: ("Docker API (TLS'siz)", SEV_CRITICAL,
-           "Autentifikatsiyasiz Docker API — kim ulansa hostda root oladi"),
+    2375: (
+        "Docker API (TLS'siz)",
+        SEV_CRITICAL,
+        "Autentifikatsiyasiz Docker API — kim ulansa hostda root oladi",
+    ),
     23: ("Telnet", SEV_HIGH, "Parol ochiq matnda uzatiladi"),
     6379: ("Redis", SEV_HIGH, "Odatda parolsiz — ma'lumot o'qish/yozish mumkin"),
     27017: ("MongoDB", SEV_HIGH, "Odatda parolsiz — butun baza ochiq"),
@@ -130,9 +133,7 @@ class Report:
 
 def sort_findings(findings: list[Finding]) -> list[Finding]:
     """Jiddiylik bo'yicha saralaydi (critical -> info), keyin kategoriya bo'yicha."""
-    return sorted(
-        findings, key=lambda f: (_SEV_ORDER.get(f.severity, 9), f.category, f.title)
-    )
+    return sorted(findings, key=lambda f: (_SEV_ORDER.get(f.severity, 9), f.category, f.title))
 
 
 # ===========================================================================
@@ -157,17 +158,21 @@ def evaluate_ping(
     where = "gateway" if is_lan else "internet nishoni"
 
     if not alive or loss_pct >= 100.0:
-        out.append(Finding(
-            severity=SEV_CRITICAL if is_lan else SEV_HIGH,
-            category=CAT_CONNECTIVITY,
-            title=f"{label} javob bermayapti",
-            detail=f"{address} — 100% paket yo'qotish, {where} yetib bo'lmadi.",
-            fix=("Kabel/Wi-Fi ulanishini, interfeys holatini va gateway manzilini "
-                 "tekshiring." if is_lan else
-                 "Provayder ulanishini yoki firewall ICMP qoidasini tekshiring."),
-            host=address,
-            evidence={"loss_pct": loss_pct, "alive": alive},
-        ))
+        out.append(
+            Finding(
+                severity=SEV_CRITICAL if is_lan else SEV_HIGH,
+                category=CAT_CONNECTIVITY,
+                title=f"{label} javob bermayapti",
+                detail=f"{address} — 100% paket yo'qotish, {where} yetib bo'lmadi.",
+                fix=(
+                    "Kabel/Wi-Fi ulanishini, interfeys holatini va gateway manzilini tekshiring."
+                    if is_lan
+                    else "Provayder ulanishini yoki firewall ICMP qoidasini tekshiring."
+                ),
+                host=address,
+                evidence={"loss_pct": loss_pct, "alive": alive},
+            )
+        )
         return out  # javob bermasa RTT/jitter ma'nosiz
 
     if loss_pct >= th.loss_high_pct:
@@ -179,43 +184,54 @@ def evaluate_ping(
     else:
         sev = None
     if sev:
-        out.append(Finding(
-            severity=sev,
-            category=CAT_CONNECTIVITY,
-            title=f"{label}: paket yo'qotish {loss_pct:.0f}%",
-            detail=f"{address} — {loss_pct:.1f}% paket yetib bormadi.",
-            fix=("Kabel/konnektor, kommutator porti yoki Wi-Fi signalini tekshiring."
-                 if is_lan else
-                 "Provayder kanalini va yo'ldagi hop'larni (mtr) tekshiring."),
-            host=address,
-            evidence={"loss_pct": loss_pct},
-        ))
+        out.append(
+            Finding(
+                severity=sev,
+                category=CAT_CONNECTIVITY,
+                title=f"{label}: paket yo'qotish {loss_pct:.0f}%",
+                detail=f"{address} — {loss_pct:.1f}% paket yetib bormadi.",
+                fix=(
+                    "Kabel/konnektor, kommutator porti yoki Wi-Fi signalini tekshiring."
+                    if is_lan
+                    else "Provayder kanalini va yo'ldagi hop'larni (mtr) tekshiring."
+                ),
+                host=address,
+                evidence={"loss_pct": loss_pct},
+            )
+        )
 
     if avg_rtt > rtt_limit:
-        out.append(Finding(
-            severity=SEV_MEDIUM,
-            category=CAT_LATENCY,
-            title=f"{label}: kechikish yuqori ({avg_rtt:.0f} ms)",
-            detail=f"{address} — o'rtacha RTT {avg_rtt:.1f} ms, kutilgan chegara "
-                   f"{rtt_limit:.0f} ms.",
-            fix=("LAN'da bu 1-10 ms bo'lishi kerak — kommutator yuki, duplex "
-                 "nomuvofiqligi yoki Wi-Fi shovqinini tekshiring." if is_lan else
-                 "Yo'lni mtr bilan tekshiring — qaysi hop kechiktirayotganini toping."),
-            host=address,
-            evidence={"avg_rtt_ms": avg_rtt, "limit_ms": rtt_limit},
-        ))
+        out.append(
+            Finding(
+                severity=SEV_MEDIUM,
+                category=CAT_LATENCY,
+                title=f"{label}: kechikish yuqori ({avg_rtt:.0f} ms)",
+                detail=f"{address} — o'rtacha RTT {avg_rtt:.1f} ms, kutilgan chegara "
+                f"{rtt_limit:.0f} ms.",
+                fix=(
+                    "LAN'da bu 1-10 ms bo'lishi kerak — kommutator yuki, duplex "
+                    "nomuvofiqligi yoki Wi-Fi shovqinini tekshiring."
+                    if is_lan
+                    else "Yo'lni mtr bilan tekshiring — qaysi hop kechiktirayotganini toping."
+                ),
+                host=address,
+                evidence={"avg_rtt_ms": avg_rtt, "limit_ms": rtt_limit},
+            )
+        )
 
     if jitter > th.jitter_ms:
-        out.append(Finding(
-            severity=SEV_MEDIUM,
-            category=CAT_LATENCY,
-            title=f"{label}: jitter yuqori ({jitter:.0f} ms)",
-            detail=f"{address} — kechikish tebranishi {jitter:.1f} ms. VoIP/video "
-                   "qo'ng'iroqlarda uzilish va metall ovoz beradi.",
-            fix="QoS sozlang, kanal bandligini va Wi-Fi shovqinini tekshiring.",
-            host=address,
-            evidence={"jitter_ms": jitter},
-        ))
+        out.append(
+            Finding(
+                severity=SEV_MEDIUM,
+                category=CAT_LATENCY,
+                title=f"{label}: jitter yuqori ({jitter:.0f} ms)",
+                detail=f"{address} — kechikish tebranishi {jitter:.1f} ms. VoIP/video "
+                "qo'ng'iroqlarda uzilish va metall ovoz beradi.",
+                fix="QoS sozlang, kanal bandligini va Wi-Fi shovqinini tekshiring.",
+                host=address,
+                evidence={"jitter_ms": jitter},
+            )
+        )
     return out
 
 
@@ -233,44 +249,50 @@ def evaluate_interface(
     out: list[Finding] = []
 
     if is_up and ipv4 and ipv4.startswith("169.254."):
-        out.append(Finding(
-            severity=SEV_HIGH,
-            category=CAT_INTERFACE,
-            title=f"{name}: APIPA manzil ({ipv4})",
-            detail="Interfeys DHCP'dan manzil olmagan va o'ziga 169.254.x.x "
-                   "bergan — tarmoqqa ulanmagan holat.",
-            fix="DHCP serverni, VLAN'ni va kabel ulanishini tekshiring.",
-            host=name,
-            evidence={"ipv4": ipv4},
-        ))
+        out.append(
+            Finding(
+                severity=SEV_HIGH,
+                category=CAT_INTERFACE,
+                title=f"{name}: APIPA manzil ({ipv4})",
+                detail="Interfeys DHCP'dan manzil olmagan va o'ziga 169.254.x.x "
+                "bergan — tarmoqqa ulanmagan holat.",
+                fix="DHCP serverni, VLAN'ni va kabel ulanishini tekshiring.",
+                host=name,
+                evidence={"ipv4": ipv4},
+            )
+        )
 
     if packets > 0:
         err_rate = errors / packets
         drop_rate = drops / packets
         if err_rate > th.iface_error_rate:
-            out.append(Finding(
-                severity=SEV_HIGH,
-                category=CAT_INTERFACE,
-                title=f"{name}: paket xatolari {err_rate * 100:.2f}%",
-                detail=f"{errors} xato / {packets} paket. Bu apparat belgisi — "
-                       "kabel, konnektor, SFP yoki port nosozligi.",
-                fix="Kabelni almashtirib ko'ring, kommutator portini o'zgartiring, "
+            out.append(
+                Finding(
+                    severity=SEV_HIGH,
+                    category=CAT_INTERFACE,
+                    title=f"{name}: paket xatolari {err_rate * 100:.2f}%",
+                    detail=f"{errors} xato / {packets} paket. Bu apparat belgisi — "
+                    "kabel, konnektor, SFP yoki port nosozligi.",
+                    fix="Kabelni almashtirib ko'ring, kommutator portini o'zgartiring, "
                     "duplex/speed sozlamalarini tekshiring.",
-                host=name,
-                evidence={"errors": errors, "packets": packets, "rate": err_rate},
-            ))
+                    host=name,
+                    evidence={"errors": errors, "packets": packets, "rate": err_rate},
+                )
+            )
         if drop_rate > th.iface_error_rate:
-            out.append(Finding(
-                severity=SEV_MEDIUM,
-                category=CAT_INTERFACE,
-                title=f"{name}: paket tashlanishi {drop_rate * 100:.2f}%",
-                detail=f"{drops} tashlangan / {packets} paket. Bufer to'lgan yoki "
-                       "CPU yetishmayapti.",
-                fix="Interfeys yukini, ring buffer hajmini va offload sozlamalarini "
+            out.append(
+                Finding(
+                    severity=SEV_MEDIUM,
+                    category=CAT_INTERFACE,
+                    title=f"{name}: paket tashlanishi {drop_rate * 100:.2f}%",
+                    detail=f"{drops} tashlangan / {packets} paket. Bufer to'lgan yoki "
+                    "CPU yetishmayapti.",
+                    fix="Interfeys yukini, ring buffer hajmini va offload sozlamalarini "
                     "ko'rib chiqing.",
-                host=name,
-                evidence={"drops": drops, "packets": packets, "rate": drop_rate},
-            ))
+                    host=name,
+                    evidence={"drops": drops, "packets": packets, "rate": drop_rate},
+                )
+            )
     return out
 
 
@@ -293,19 +315,20 @@ def evaluate_listeners(
             continue
         seen.add(port)
         name, sev, why = info
-        out.append(Finding(
-            severity=sev,
-            category=CAT_EXPOSURE,
-            title=f"{name} butun tarmoqqa ochiq (port {port})",
-            detail=f"{host}:{port} da tinglayapti"
-                   + (f" (jarayon: {proc})" if proc else "")
-                   + f". {why}.",
-            fix=f"Faqat localhost'ga bog'lang (127.0.0.1:{port}) yoki firewall "
+        out.append(
+            Finding(
+                severity=sev,
+                category=CAT_EXPOSURE,
+                title=f"{name} butun tarmoqqa ochiq (port {port})",
+                detail=f"{host}:{port} da tinglayapti"
+                + (f" (jarayon: {proc})" if proc else "")
+                + f". {why}.",
+                fix=f"Faqat localhost'ga bog'lang (127.0.0.1:{port}) yoki firewall "
                 "bilan cheklang; kerak bo'lsa autentifikatsiya va TLS yoqing.",
-            evidence={"bind": host, "port": port, "process": proc},
-        ))
+                evidence={"bind": host, "port": port, "process": proc},
+            )
+        )
     return out
-
 
 
 def evaluate_remote_exposure(
@@ -331,16 +354,18 @@ def evaluate_remote_exposure(
         # Masofaviy topilma bir daraja pastroq: bu sizning hostingiz emas,
         # lekin tarmoqdagi xavf sifatida baribir muhim.
         lowered = {SEV_CRITICAL: SEV_HIGH, SEV_HIGH: SEV_MEDIUM}.get(sev, sev)
-        out.append(Finding(
-            severity=lowered,
-            category=CAT_EXPOSURE,
-            title=f"Tarmoqda ochiq {name}: {len(ips)} ta host (port {port})",
-            detail=f"Manzillar: {', '.join(sorted(ips)[:6])}. {why}. Bu BOSHQA "
-                   "qurilmalar — o'z mashinangizni emas, o'sha qurilmalarni "
-                   "yoki segment firewall'ini sozlash kerak.",
-            fix=f"Qurilmalarni aniqlang va {port}-portni VLAN/ACL bilan cheklang.",
-            evidence={"port": port, "hosts": sorted(ips)},
-        ))
+        out.append(
+            Finding(
+                severity=lowered,
+                category=CAT_EXPOSURE,
+                title=f"Tarmoqda ochiq {name}: {len(ips)} ta host (port {port})",
+                detail=f"Manzillar: {', '.join(sorted(ips)[:6])}. {why}. Bu BOSHQA "
+                "qurilmalar — o'z mashinangizni emas, o'sha qurilmalarni "
+                "yoki segment firewall'ini sozlash kerak.",
+                fix=f"Qurilmalarni aniqlang va {port}-portni VLAN/ACL bilan cheklang.",
+                evidence={"port": port, "hosts": sorted(ips)},
+            )
+        )
     return out
 
 
@@ -358,40 +383,45 @@ def evaluate_ipv6(
     """
     out: list[Finding] = []
     if link_local_count == 0 and global_count == 0:
-        out.append(Finding(
-            severity=SEV_INFO,
-            category=CAT_IPV6,
-            title="IPv6 qo'shni topilmadi",
-            detail="Tarmoqda IPv6 ishlatilmayapti (yoki qo'shni jadval bo'sh).",
-            evidence={"link_local": 0, "global": 0},
-        ))
+        out.append(
+            Finding(
+                severity=SEV_INFO,
+                category=CAT_IPV6,
+                title="IPv6 qo'shni topilmadi",
+                detail="Tarmoqda IPv6 ishlatilmayapti (yoki qo'shni jadval bo'sh).",
+                evidence={"link_local": 0, "global": 0},
+            )
+        )
         return out
 
     if global_count == 0 and link_local_count > 0:
-        out.append(Finding(
-            severity=SEV_MEDIUM,
-            category=CAT_IPV6,
-            title=f"IPv6 faqat link-local ({link_local_count} host)",
-            detail="Qurilmalarda fe80::/10 manzil bor, lekin global/ULA manzil "
-                   "yo'q. Ilovalar IPv6'ni birinchi sinab timeout kutishi mumkin "
-                   "— bu 'internet sekin' shikoyatining ko'rinmas sababi.",
-            fix="Yo IPv6'ni to'liq sozlang (router advertisement + prefiks), yo "
+        out.append(
+            Finding(
+                severity=SEV_MEDIUM,
+                category=CAT_IPV6,
+                title=f"IPv6 faqat link-local ({link_local_count} host)",
+                detail="Qurilmalarda fe80::/10 manzil bor, lekin global/ULA manzil "
+                "yo'q. Ilovalar IPv6'ni birinchi sinab timeout kutishi mumkin "
+                "— bu 'internet sekin' shikoyatining ko'rinmas sababi.",
+                fix="Yo IPv6'ni to'liq sozlang (router advertisement + prefiks), yo "
                 "qurilmalarda butunlay o'chirib qo'ying — yarim holat eng yomoni.",
-            evidence={"link_local": link_local_count, "global": global_count},
-        ))
+                evidence={"link_local": link_local_count, "global": global_count},
+            )
+        )
     if has_ipv6_internet is False and global_count > 0:
-        out.append(Finding(
-            severity=SEV_HIGH,
-            category=CAT_IPV6,
-            title="IPv6 manzil bor, lekin internet yo'q",
-            detail=f"{global_count} global IPv6 manzil mavjud, ammo IPv6 orqali "
-                   "tashqi host'ga yetib bo'lmadi. Bu 'qora tuynuk' holati.",
-            fix="Router advertisement va IPv6 marshrutni tekshiring; tuzatilmasa "
+        out.append(
+            Finding(
+                severity=SEV_HIGH,
+                category=CAT_IPV6,
+                title="IPv6 manzil bor, lekin internet yo'q",
+                detail=f"{global_count} global IPv6 manzil mavjud, ammo IPv6 orqali "
+                "tashqi host'ga yetib bo'lmadi. Bu 'qora tuynuk' holati.",
+                fix="Router advertisement va IPv6 marshrutni tekshiring; tuzatilmasa "
                 "IPv6'ni o'chirib qo'ying (yarim ishlaydigan holatdan yaxshi).",
-            evidence={"global": global_count},
-        ))
+                evidence={"global": global_count},
+            )
+        )
     return out
-
 
 
 def is_real_device_mac(mac: str | None) -> bool:
@@ -440,20 +470,27 @@ def evaluate_lan(
         if len(ips) < 2:
             continue
         is_gw = mac == gw_mac
-        out.append(Finding(
-            severity=SEV_HIGH if is_gw else SEV_MEDIUM,
-            category=CAT_LAN,
-            title=f"Bir MAC {len(ips)} ta IP'da: {mac}",
-            detail=f"{mac} manzili {', '.join(sorted(ips)[:6])} da ko'rindi."
-                   + (" Bu gateway MAC'i — ARP spoofing ehtimoli bor."
-                      if is_gw else
-                      " Bu router/NAT bo'lishi mumkin, yoki IP dublikati."),
-            fix=("Gateway MAC'ini statik ARP bilan qulflang va tarmoqda "
-                 "kutilmagan qurilma yo'qligini tekshiring." if is_gw else
-                 "Qurilma router/proxy ekanini tasdiqlang; aks holda IP "
-                 "dublikatini bartaraf qiling."),
-            evidence={"mac": mac, "ips": sorted(ips)},
-        ))
+        out.append(
+            Finding(
+                severity=SEV_HIGH if is_gw else SEV_MEDIUM,
+                category=CAT_LAN,
+                title=f"Bir MAC {len(ips)} ta IP'da: {mac}",
+                detail=f"{mac} manzili {', '.join(sorted(ips)[:6])} da ko'rindi."
+                + (
+                    " Bu gateway MAC'i — ARP spoofing ehtimoli bor."
+                    if is_gw
+                    else " Bu router/NAT bo'lishi mumkin, yoki IP dublikati."
+                ),
+                fix=(
+                    "Gateway MAC'ini statik ARP bilan qulflang va tarmoqda "
+                    "kutilmagan qurilma yo'qligini tekshiring."
+                    if is_gw
+                    else "Qurilma router/proxy ekanini tasdiqlang; aks holda IP "
+                    "dublikatini bartaraf qiling."
+                ),
+                evidence={"mac": mac, "ips": sorted(ips)},
+            )
+        )
     return out
 
 
@@ -471,29 +508,33 @@ def evaluate_web(
             continue
         label = product or "boshqaruv paneli"
         if risk == "high":
-            out.append(Finding(
-                severity=SEV_HIGH,
-                category=CAT_EXPOSURE,
-                title=f"{label}: parol ochiq matnda ({ip}:{port})",
-                detail=f"http://{ip}:{port}/ — admin panel HTTP ustida va HTTP "
-                       "Basic/Digest autentifikatsiya ishlatadi. Login va parol "
-                       "tarmoqda shifrlanmagan holda uzatiladi.",
-                fix="HTTPS'ga o'tkazing yoki panelni faqat VPN/ishonchli tarmoqdan "
+            out.append(
+                Finding(
+                    severity=SEV_HIGH,
+                    category=CAT_EXPOSURE,
+                    title=f"{label}: parol ochiq matnda ({ip}:{port})",
+                    detail=f"http://{ip}:{port}/ — admin panel HTTP ustida va HTTP "
+                    "Basic/Digest autentifikatsiya ishlatadi. Login va parol "
+                    "tarmoqda shifrlanmagan holda uzatiladi.",
+                    fix="HTTPS'ga o'tkazing yoki panelni faqat VPN/ishonchli tarmoqdan "
                     "ochiq qoldiring.",
-                host=ip,
-                evidence={"port": port, "scheme": scheme, "product": product},
-            ))
+                    host=ip,
+                    evidence={"port": port, "scheme": scheme, "product": product},
+                )
+            )
         elif risk == "medium":
-            out.append(Finding(
-                severity=SEV_MEDIUM,
-                category=CAT_EXPOSURE,
-                title=f"{label}: HTTP ustidagi admin panel ({ip}:{port})",
-                detail=f"http://{ip}:{port}/ — boshqaruv interfeysi shifrlanmagan "
-                       "kanalda ishlayapti.",
-                fix="TLS sertifikat qo'yib HTTPS'ga o'tkazing.",
-                host=ip,
-                evidence={"port": port, "scheme": scheme, "product": product},
-            ))
+            out.append(
+                Finding(
+                    severity=SEV_MEDIUM,
+                    category=CAT_EXPOSURE,
+                    title=f"{label}: HTTP ustidagi admin panel ({ip}:{port})",
+                    detail=f"http://{ip}:{port}/ — boshqaruv interfeysi shifrlanmagan "
+                    "kanalda ishlayapti.",
+                    fix="TLS sertifikat qo'yib HTTPS'ga o'tkazing.",
+                    host=ip,
+                    evidence={"port": port, "scheme": scheme, "product": product},
+                )
+            )
     return out
 
 
@@ -527,16 +568,18 @@ def evaluate_dns(
     rows = [(r[0], r[1], r[2], r[3] if len(r) > 3 else False) for r in resolvers]
 
     if not system_ok:
-        out.append(Finding(
-            severity=SEV_CRITICAL,
-            category=CAT_DNS,
-            title="Tizim DNS ishlamayapti",
-            detail=f"Nomni IP'ga aylantirib bo'lmadi: {system_error or 'sabab noma`lum'}. "
-                   "Bu holatda hech qanday sayt/xizmat nomi bilan ochilmaydi.",
-            fix="/etc/resolv.conf (yoki DHCP'dan kelgan DNS) to'g'riligini va DNS "
+        out.append(
+            Finding(
+                severity=SEV_CRITICAL,
+                category=CAT_DNS,
+                title="Tizim DNS ishlamayapti",
+                detail=f"Nomni IP'ga aylantirib bo'lmadi: {system_error or 'sabab noma`lum'}. "
+                "Bu holatda hech qanday sayt/xizmat nomi bilan ochilmaydi.",
+                fix="/etc/resolv.conf (yoki DHCP'dan kelgan DNS) to'g'riligini va DNS "
                 "serverga yetib borishni tekshiring.",
-            evidence={"error": system_error},
-        ))
+                evidence={"error": system_error},
+            )
+        )
 
     system_rows = [r for r in rows if r[3]]
     public_rows = [r for r in rows if not r[3]]
@@ -546,51 +589,58 @@ def evaluate_dns(
 
     if system_rows and len(dead_system) == len(system_rows):
         # Mashina o'zi ishlatadigan resolver javob bermayapti — har doim muammo.
-        out.append(Finding(
-            severity=SEV_HIGH,
-            category=CAT_DNS,
-            title="Tizim DNS serveri javob bermayapti",
-            detail=f"Mashina sozlangan {len(system_rows)} resolverning hech biri "
-                   f"javob bermadi: {', '.join(dead_system[:5])}. Nom bo'yicha "
-                   "hech narsa ochilmaydi (kesh tugagach).",
-            fix="Resolver'gacha yo'lni tekshiring (ping) va UDP/53 ochiqligiga "
+        out.append(
+            Finding(
+                severity=SEV_HIGH,
+                category=CAT_DNS,
+                title="Tizim DNS serveri javob bermayapti",
+                detail=f"Mashina sozlangan {len(system_rows)} resolverning hech biri "
+                f"javob bermadi: {', '.join(dead_system[:5])}. Nom bo'yicha "
+                "hech narsa ochilmaydi (kesh tugagach).",
+                fix="Resolver'gacha yo'lni tekshiring (ping) va UDP/53 ochiqligiga "
                 "ishonch hosil qiling.",
-            evidence={"dead": dead_system, "scope": "system"},
-        ))
+                evidence={"dead": dead_system, "scope": "system"},
+            )
+        )
     elif system_rows and public_rows and len(dead_public) == len(public_rows):
         # Tizim ishlayapti, faqat tashqi serverlar yopiq — bu KO'P TARMOQDA
         # ataylab qo'yilgan siyosat, nosozlik emas. INFO => is_problem False,
         # ya'ni exit kodga ta'sir qilmaydi.
-        out.append(Finding(
-            severity=SEV_INFO,
-            category=CAT_DNS,
-            title="Tashqi DNS serverlarga chiqish yopiq",
-            detail=f"Tizim resolveri ishlayapti, lekin {len(public_rows)} ta ommaviy "
-                   f"server javob bermadi: {', '.join(dead_public[:5])}. Ko'p "
-                   "korxonada bu ataylab qilinadi (faqat ichki DNS'ga ruxsat).",
-            fix=None,
-            evidence={"dead": dead_public, "scope": "public"},
-        ))
+        out.append(
+            Finding(
+                severity=SEV_INFO,
+                category=CAT_DNS,
+                title="Tashqi DNS serverlarga chiqish yopiq",
+                detail=f"Tizim resolveri ishlayapti, lekin {len(public_rows)} ta ommaviy "
+                f"server javob bermadi: {', '.join(dead_public[:5])}. Ko'p "
+                "korxonada bu ataylab qilinadi (faqat ichki DNS'ga ruxsat).",
+                fix=None,
+                evidence={"dead": dead_public, "scope": "public"},
+            )
+        )
     elif dead and len(dead) == len(rows) and rows:
         # Tizim resolveri aniqlanmagan holat — eski, ehtiyotkor xulosa.
-        out.append(Finding(
-            severity=SEV_HIGH,
-            category=CAT_DNS,
-            title="Barcha DNS serverlar javob bermayapti",
-            detail=f"Tekshirilgan {len(rows)} server javob bermadi: "
-                   f"{', '.join(dead[:5])}.",
-            fix="Firewall UDP/53 va TCP/53 ni bloklamayotganini tekshiring.",
-            evidence={"dead": dead},
-        ))
+        out.append(
+            Finding(
+                severity=SEV_HIGH,
+                category=CAT_DNS,
+                title="Barcha DNS serverlar javob bermayapti",
+                detail=f"Tekshirilgan {len(rows)} server javob bermadi: {', '.join(dead[:5])}.",
+                fix="Firewall UDP/53 va TCP/53 ni bloklamayotganini tekshiring.",
+                evidence={"dead": dead},
+            )
+        )
     elif dead:
-        out.append(Finding(
-            severity=SEV_LOW,
-            category=CAT_DNS,
-            title=f"{len(dead)} DNS server javob bermadi",
-            detail=f"Javobsiz: {', '.join(dead[:5])}. Boshqalari ishlayapti.",
-            fix="Ishlamaydigan serverlarni ro'yxatdan olib tashlang.",
-            evidence={"dead": dead},
-        ))
+        out.append(
+            Finding(
+                severity=SEV_LOW,
+                category=CAT_DNS,
+                title=f"{len(dead)} DNS server javob bermadi",
+                detail=f"Javobsiz: {', '.join(dead[:5])}. Boshqalari ishlayapti.",
+                fix="Ishlamaydigan serverlarni ro'yxatdan olib tashlang.",
+                evidence={"dead": dead},
+            )
+        )
 
     # Sekinlikni faqat TIZIM resolverlari bo'yicha o'lchaymiz (ular aniqlangan
     # bo'lsa): ommaviy serverga 120 ms — normal masofa, tizim resolveriga
@@ -599,16 +649,18 @@ def evaluate_dns(
     slow = [(s, ms) for s, ok, ms, _ in measured if ok and ms > th.dns_slow_ms]
     if slow:
         worst = max(slow, key=lambda x: x[1])
-        out.append(Finding(
-            severity=SEV_MEDIUM,
-            category=CAT_DNS,
-            title=f"DNS sekin ({worst[1]:.0f} ms)",
-            detail=f"{len(slow)} server {th.dns_slow_ms:.0f} ms dan sekin javob "
-                   f"berdi; eng sekini {worst[0]} — {worst[1]:.0f} ms. Har sahifa "
-                   "ochilishi shu qadar kechikadi.",
-            fix="Yaqinroq yoki tezroq resolver tanlang (masalan lokal kesh serveri).",
-            evidence={"slow": slow},
-        ))
+        out.append(
+            Finding(
+                severity=SEV_MEDIUM,
+                category=CAT_DNS,
+                title=f"DNS sekin ({worst[1]:.0f} ms)",
+                detail=f"{len(slow)} server {th.dns_slow_ms:.0f} ms dan sekin javob "
+                f"berdi; eng sekini {worst[0]} — {worst[1]:.0f} ms. Har sahifa "
+                "ochilishi shu qadar kechikadi.",
+                fix="Yaqinroq yoki tezroq resolver tanlang (masalan lokal kesh serveri).",
+                evidence={"slow": slow},
+            )
+        )
     return out
 
 
@@ -621,37 +673,43 @@ def evaluate_tls(
     """TLS sertifikat muddatini baholaydi."""
     th = th or Thresholds()
     if error:
-        return [Finding(
-            severity=SEV_HIGH,
-            category=CAT_TLS,
-            title=f"{host}: TLS tekshirib bo'lmadi",
-            detail=error,
-            fix="Sertifikat va port to'g'riligini tekshiring.",
-            host=host,
-        )]
+        return [
+            Finding(
+                severity=SEV_HIGH,
+                category=CAT_TLS,
+                title=f"{host}: TLS tekshirib bo'lmadi",
+                detail=error,
+                fix="Sertifikat va port to'g'riligini tekshiring.",
+                host=host,
+            )
+        ]
     if days_left is None:
         return []
     if days_left < 0:
-        return [Finding(
-            severity=SEV_CRITICAL,
-            category=CAT_TLS,
-            title=f"{host}: sertifikat muddati TUGAGAN",
-            detail=f"{abs(days_left)} kun oldin tugagan. Brauzerlar ogohlantirish "
-                   "ko'rsatadi, API mijozlari ulanmaydi.",
-            fix="Sertifikatni darhol yangilang (certbot/ACME avtomatlashtiring).",
-            host=host,
-            evidence={"days_left": days_left},
-        )]
+        return [
+            Finding(
+                severity=SEV_CRITICAL,
+                category=CAT_TLS,
+                title=f"{host}: sertifikat muddati TUGAGAN",
+                detail=f"{abs(days_left)} kun oldin tugagan. Brauzerlar ogohlantirish "
+                "ko'rsatadi, API mijozlari ulanmaydi.",
+                fix="Sertifikatni darhol yangilang (certbot/ACME avtomatlashtiring).",
+                host=host,
+                evidence={"days_left": days_left},
+            )
+        ]
     if days_left <= th.tls_warn_days:
-        return [Finding(
-            severity=SEV_MEDIUM,
-            category=CAT_TLS,
-            title=f"{host}: sertifikat {days_left} kunda tugaydi",
-            detail=f"Muddat tugashiga {days_left} kun qoldi.",
-            fix="Avtomatik yangilashni (ACME) sozlang.",
-            host=host,
-            evidence={"days_left": days_left},
-        )]
+        return [
+            Finding(
+                severity=SEV_MEDIUM,
+                category=CAT_TLS,
+                title=f"{host}: sertifikat {days_left} kunda tugaydi",
+                detail=f"Muddat tugashiga {days_left} kun qoldi.",
+                fix="Avtomatik yangilashni (ACME) sozlang.",
+                host=host,
+                evidence={"days_left": days_left},
+            )
+        ]
     return []
 
 
@@ -742,8 +800,14 @@ async def run_diagnostics(
         results = await ping.ping_many(targets, count=3 if quick else 5, timeout=2.0)
         for r in results:
             findings += evaluate_ping(
-                r.label, r.address, r.alive, r.loss_pct, r.avg_rtt, r.jitter,
-                is_lan=(r.address == gateway), th=th,
+                r.label,
+                r.address,
+                r.alive,
+                r.loss_pct,
+                r.avg_rtt,
+                r.jitter,
+                is_lan=(r.address == gateway),
+                th=th,
             )
         report.checks_run += 1
     except Exception as exc:  # noqa: BLE001
@@ -769,8 +833,14 @@ async def run_diagnostics(
                 r6 = await ping.ping_many(targets6, count=3, timeout=2.0)
                 for x in r6:
                     findings += evaluate_ping(
-                        x.label, x.address, x.alive, x.loss_pct, x.avg_rtt, x.jitter,
-                        is_lan=(x.address == gw6), th=th,
+                        x.label,
+                        x.address,
+                        x.alive,
+                        x.loss_pct,
+                        x.avg_rtt,
+                        x.jitter,
+                        is_lan=(x.address == gw6),
+                        th=th,
                     )
                 # Manzil bor, lekin hech qayerga yetib bo'lmasa — "qora tuynuk".
                 if not any(x.alive for x in r6):
@@ -839,9 +909,7 @@ async def run_diagnostics(
     reported_dup_macs: set[str] = set()
     try:
         lan_hosts = await topology.discover_lan(max_hosts=max_hosts)
-        lan_findings = evaluate_lan(
-            [(h.ip, h.mac, h.is_gateway) for h in lan_hosts], gateway
-        )
+        lan_findings = evaluate_lan([(h.ip, h.mac, h.is_gateway) for h in lan_hosts], gateway)
         findings += lan_findings
         # 13-bosqich (arpwatch) xuddi shu dublikatni qayta topadi. Bir faktni
         # ikki marta ko'rsatish hisobotga ishonchni yo'qotadi, shuning uchun
@@ -870,12 +938,14 @@ async def run_diagnostics(
 
             ips = [h.ip for h in lan_hosts][:max_hosts]
             services = await webscan.discover_web(
-                ips, ports=list(webscan.QUICK_WEB_PORTS), timeout=3.0,
-                concurrency=16, delay=0.05,
+                ips,
+                ports=list(webscan.QUICK_WEB_PORTS),
+                timeout=3.0,
+                concurrency=16,
+                delay=0.05,
             )
             findings += evaluate_web(
-                [(s.ip, s.port, s.scheme, s.is_admin, s.risk, s.product)
-                 for s in services]
+                [(s.ip, s.port, s.scheme, s.is_admin, s.risk, s.product) for s in services]
             )
             report.checks_run += 1
         except Exception as exc:  # noqa: BLE001
@@ -892,13 +962,10 @@ async def run_diagnostics(
             # O'ZIMIZNI skanerlamaymiz: `ndp -an` da o'z `fe80::…%en0`
             # manzillarimiz ham turadi va ularni skan qilib "bular BOSHQA
             # qurilmalar, ularni sozlang" deb aytish mantiqsiz.
-            own_v6 = {
-                a.split("%")[0]
-                for i in netinfo.list_interfaces()
-                for a, _ in i.ipv6
-            }
+            own_v6 = {a.split("%")[0] for i in netinfo.list_interfaces() for a, _ in i.ipv6}
             v6_hosts = [
-                h.ip for h in await topology.discover_lan6(include_link_local=True)
+                h.ip
+                for h in await topology.discover_lan6(include_link_local=True)
                 if h.ip.split("%")[0] not in own_v6
             ][:max_hosts]
             if v6_hosts:
@@ -913,9 +980,7 @@ async def run_diagnostics(
                 # ishlatish "sizning xizmatingiz ochiq, localhost'ga bog'lang"
                 # degan NOTO'G'RI maslahatni berardi — bu qo'shni qurilma.
                 remote6 = [
-                    (h.resolved_ip or h.host, p.port)
-                    for h in sweep.hosts
-                    for p in h.open_ports
+                    (h.resolved_ip or h.host, p.port) for h in sweep.hosts for p in h.open_ports
                 ]
                 findings += evaluate_remote_exposure(remote6)
                 report.checks_run += 1
@@ -988,20 +1053,18 @@ async def run_diagnostics(
         # 2-bosqichdagi ping allaqachon o'lik gateway'ni CRITICAL qilib
         # ko'rsatgan bo'lishi mumkin — takrorlamaymiz.
         already_dead = {
-            f.host for f in findings
+            f.host
+            for f in findings
             if f.category == CAT_CONNECTIVITY and f.severity == SEV_CRITICAL and f.host
         }
-        dead_all = [
-            gw for gw, ok in alive.items() if not ok and gw not in already_dead
-        ]
+        dead_all = [gw for gw, ok in alive.items() if not ok and gw not in already_dead]
 
         def _gw_family(gw: str) -> str:
             return "ipv6" if ":" in gw.split("%")[0] else "ipv4"
 
         findings += evaluate_routes(
             default_count=len(table.routable_defaults_for("ipv4")),
-            gateways=[g for g in table.routable_default_gateways
-                      if _gw_family(g) == "ipv4"],
+            gateways=[g for g in table.routable_default_gateways if _gw_family(g) == "ipv4"],
             dead_gateways=[g for g in dead_all if _gw_family(g) == "ipv4"],
             has_vpn_split=table.has_vpn_split_hack,
             family="ipv4",
@@ -1013,8 +1076,7 @@ async def run_diagnostics(
         if any(i.ipv6_global for i in netinfo.list_interfaces()):
             findings += evaluate_routes(
                 default_count=len(table.routable_defaults_for("ipv6")),
-                gateways=[g for g in table.routable_default_gateways
-                          if _gw_family(g) == "ipv6"],
+                gateways=[g for g in table.routable_default_gateways if _gw_family(g) == "ipv6"],
                 dead_gateways=[g for g in dead_all if _gw_family(g) == "ipv6"],
                 family="ipv6",
             )
@@ -1059,9 +1121,7 @@ async def run_diagnostics(
         # faqat `systop arpwatch` buyrug'ida yangilanadi.
         diff = await arpwatch.check(update=False)
         findings += evaluate_arpwatch(
-            mac_changes=[
-                (c.ip, c.old_mac or "?", c.new_mac or "?") for c in diff.mac_changes
-            ],
+            mac_changes=[(c.ip, c.old_mac or "?", c.new_mac or "?") for c in diff.mac_changes],
             duplicates=[
                 (c.new_mac or "?", [c.ip, *c.extra_ips])
                 for c in diff.changes
@@ -1106,44 +1166,55 @@ def evaluate_ntp(
     """Soat siljishini baholaydi — SOF funksiya."""
     out: list[Finding] = []
     if total and responded == 0:
-        out.append(Finding(
-            severity=SEV_LOW,
-            category=CAT_TIME,
-            title="NTP serverlari javob bermadi",
-            detail=f"{total} ta NTP serveridan hech biri javob bermadi — soatni "
-                   "tekshirib bo'lmadi (UDP/123 bloklangan bo'lishi mumkin).",
-            fix="Firewall'da UDP/123 chiqishiga ruxsat bering yoki lokal NTP server ko'rsating.",
-            evidence={"servers": total},
-        ))
+        out.append(
+            Finding(
+                severity=SEV_LOW,
+                category=CAT_TIME,
+                title="NTP serverlari javob bermadi",
+                detail=f"{total} ta NTP serveridan hech biri javob bermadi — soatni "
+                "tekshirib bo'lmadi (UDP/123 bloklangan bo'lishi mumkin).",
+                fix="Firewall'da UDP/123 chiqishiga ruxsat bering yoki "
+                "lokal NTP server ko'rsating.",
+                evidence={"servers": total},
+            )
+        )
         return out
     if median_offset_s is None:
         return out
 
     a = abs(median_offset_s)
     if a >= 300:
-        sev, why = SEV_CRITICAL, (
-            "Kerberos/Active Directory 300 soniyadan katta siljishda "
-            "autentifikatsiyani RAD ETADI — domenga kirish ishlamaydi."
+        sev, why = (
+            SEV_CRITICAL,
+            (
+                "Kerberos/Active Directory 300 soniyadan katta siljishda "
+                "autentifikatsiyani RAD ETADI — domenga kirish ishlamaydi."
+            ),
         )
     elif a >= 30:
-        sev, why = SEV_HIGH, (
-            "TLS sertifikatlari noto'g'ri 'muddati tugagan' deb ko'rinishi va "
-            "TOTP/2FA kodlari rad etilishi mumkin."
+        sev, why = (
+            SEV_HIGH,
+            (
+                "TLS sertifikatlari noto'g'ri 'muddati tugagan' deb ko'rinishi va "
+                "TOTP/2FA kodlari rad etilishi mumkin."
+            ),
         )
     elif a >= 1:
         sev, why = SEV_MEDIUM, "Loglar boshqa serverlar bilan mos kelmaydi."
     else:
         return out
-    out.append(Finding(
-        severity=sev,
-        category=CAT_TIME,
-        title=f"Soat siljigan: {median_offset_s:+.1f} s",
-        detail=f"{responded}/{total} NTP serveri bo'yicha mediana siljish "
-               f"{median_offset_s:+.2f} soniya. {why}",
-        fix="Vaqtni NTP bilan sinxronlang (macOS: Sozlamalar > Sana va vaqt; "
+    out.append(
+        Finding(
+            severity=sev,
+            category=CAT_TIME,
+            title=f"Soat siljigan: {median_offset_s:+.1f} s",
+            detail=f"{responded}/{total} NTP serveri bo'yicha mediana siljish "
+            f"{median_offset_s:+.2f} soniya. {why}",
+            fix="Vaqtni NTP bilan sinxronlang (macOS: Sozlamalar > Sana va vaqt; "
             "Linux: `timedatectl set-ntp true`; Windows: `w32tm /resync`).",
-        evidence={"offset_s": median_offset_s, "responded": responded},
-    ))
+            evidence={"offset_s": median_offset_s, "responded": responded},
+        )
+    )
     return out
 
 
@@ -1174,88 +1245,100 @@ def evaluate_routes(
     tag = "IPv6 " if is_v6 else ""
     out: list[Finding] = []
     if default_count == 0:
-        out.append(Finding(
-            severity=SEV_HIGH if is_v6 else SEV_CRITICAL,
-            category=CAT_ROUTE,
-            title=f"{tag}default marshrut yo'q" if is_v6 else "Default marshrut yo'q",
-            detail=(
-                "Marshrut jadvalida IPv6 default (::/0) yo'q — IPv6 orqali "
-                "tashqariga chiqib bo'lmaydi (IPv4 ishlayveradi)."
-                if is_v6 else
-                "Marshrut jadvalida default (0.0.0.0/0) yo'q — lokal tarmoqdan "
-                "tashqariga hech narsa chiqmaydi."
-            ),
-            fix=(
-                "Routerdan RA (Router Advertisement) kelayotganini tekshiring."
-                if is_v6 else
-                "DHCP'dan gateway kelmaganini yoki qo'lda sozlamani tekshiring."
-            ),
-            evidence={"family": family},
-        ))
+        out.append(
+            Finding(
+                severity=SEV_HIGH if is_v6 else SEV_CRITICAL,
+                category=CAT_ROUTE,
+                title=f"{tag}default marshrut yo'q" if is_v6 else "Default marshrut yo'q",
+                detail=(
+                    "Marshrut jadvalida IPv6 default (::/0) yo'q — IPv6 orqali "
+                    "tashqariga chiqib bo'lmaydi (IPv4 ishlayveradi)."
+                    if is_v6
+                    else "Marshrut jadvalida default (0.0.0.0/0) yo'q — lokal tarmoqdan "
+                    "tashqariga hech narsa chiqmaydi."
+                ),
+                fix=(
+                    "Routerdan RA (Router Advertisement) kelayotganini tekshiring."
+                    if is_v6
+                    else "DHCP'dan gateway kelmaganini yoki qo'lda sozlamani tekshiring."
+                ),
+                evidence={"family": family},
+            )
+        )
         return out
 
     if default_count > 1:
-        out.append(Finding(
-            severity=SEV_MEDIUM,
-            category=CAT_ROUTE,
-            title=f"{default_count} ta {tag}default marshrut",
-            detail=f"Bir nechta default gateway: {', '.join(gateways[:4])}. Trafik "
-                   "gohida bir yo'ldan, gohida boshqasidan ketadi — alomat "
-                   "'ba'zan ishlaydi, ba'zan yo'q'.",
-            fix="Keraksiz interfeys default'ini olib tashlang yoki metric bilan "
+        out.append(
+            Finding(
+                severity=SEV_MEDIUM,
+                category=CAT_ROUTE,
+                title=f"{default_count} ta {tag}default marshrut",
+                detail=f"Bir nechta default gateway: {', '.join(gateways[:4])}. Trafik "
+                "gohida bir yo'ldan, gohida boshqasidan ketadi — alomat "
+                "'ba'zan ishlaydi, ba'zan yo'q'.",
+                fix="Keraksiz interfeys default'ini olib tashlang yoki metric bilan "
                 "ustuvorlikni aniq belgilang.",
-            evidence={"gateways": gateways, "family": family},
-        ))
+                evidence={"gateways": gateways, "family": family},
+            )
+        )
 
     for gw in dead_gateways:
-        out.append(Finding(
-            severity=SEV_CRITICAL,
-            category=CAT_ROUTE,
-            title=f"{tag}default gateway javob bermayapti: {gw}",
-            detail="Marshrut jadvali to'g'ri, lekin next-hop ping'ga javob bermayapti.",
-            fix="Gateway qurilmasi yoqilganini va kabel/VLAN to'g'riligini tekshiring.",
-            host=gw,
-            evidence={"family": family},
-        ))
+        out.append(
+            Finding(
+                severity=SEV_CRITICAL,
+                category=CAT_ROUTE,
+                title=f"{tag}default gateway javob bermayapti: {gw}",
+                detail="Marshrut jadvali to'g'ri, lekin next-hop ping'ga javob bermayapti.",
+                fix="Gateway qurilmasi yoqilganini va kabel/VLAN to'g'riligini tekshiring.",
+                host=gw,
+                evidence={"family": family},
+            )
+        )
 
     if has_vpn_split and not is_v6:
-        out.append(Finding(
-            severity=SEV_LOW,
-            category=CAT_ROUTE,
-            title="VPN barcha trafikni o'ziga olgan",
-            detail="`0.0.0.0/1` + `128.0.0.0/1` marshrutlari bor — VPN default'dan "
-                   "ustun turadi va butun trafik tunnel orqali ketadi.",
-            fix="Split-tunnel kerak bo'lsa VPN profilini sozlang.",
-        ))
+        out.append(
+            Finding(
+                severity=SEV_LOW,
+                category=CAT_ROUTE,
+                title="VPN barcha trafikni o'ziga olgan",
+                detail="`0.0.0.0/1` + `128.0.0.0/1` marshrutlari bor — VPN default'dan "
+                "ustun turadi va butun trafik tunnel orqali ketadi.",
+                fix="Split-tunnel kerak bo'lsa VPN profilini sozlang.",
+            )
+        )
     return out
 
 
 def evaluate_mtu(path_mtu: int | None, error: str | None = None) -> list[Finding]:
     """Path MTU natijasini baholaydi — SOF funksiya."""
     if error:
-        return [Finding(
-            severity=SEV_LOW,
-            category=CAT_MTU,
-            title="MTU o'lchab bo'lmadi",
-            detail=error,
-            fix="Nishon ICMP'ga javob berishini tekshiring yoki boshqa host tanlang.",
-        )]
+        return [
+            Finding(
+                severity=SEV_LOW,
+                category=CAT_MTU,
+                title="MTU o'lchab bo'lmadi",
+                detail=error,
+                fix="Nishon ICMP'ga javob berishini tekshiring yoki boshqa host tanlang.",
+            )
+        ]
     if path_mtu is None:
         return []
     if path_mtu >= 1500:
         return []
     sev = SEV_MEDIUM if path_mtu >= 1400 else SEV_HIGH
-    return [Finding(
-        severity=sev,
-        category=CAT_MTU,
-        title=f"Path MTU kamaytirilgan: {path_mtu}",
-        detail=f"Yo'ldagi eng kichik MTU {path_mtu} bayt (standart 1500). Katta "
-               "javob qaytaradigan saytlar yarim yuklanib qotishi mumkin — "
-               "PMTUD qora tuynugi.",
-        fix=f"Interfeys MTU'sini {path_mtu} ga tushiring yoki TCP MSS clamping "
+    return [
+        Finding(
+            severity=sev,
+            category=CAT_MTU,
+            title=f"Path MTU kamaytirilgan: {path_mtu}",
+            detail=f"Yo'ldagi eng kichik MTU {path_mtu} bayt (standart 1500). Katta "
+            "javob qaytaradigan saytlar yarim yuklanib qotishi mumkin — "
+            "PMTUD qora tuynugi.",
+            fix=f"Interfeys MTU'sini {path_mtu} ga tushiring yoki TCP MSS clamping "
             "yoqing (router/VPN konsentratorda).",
-        evidence={"path_mtu": path_mtu},
-    )]
+            evidence={"path_mtu": path_mtu},
+        )
+    ]
 
 
 def evaluate_dhcp(
@@ -1272,26 +1355,30 @@ def evaluate_dhcp(
     """
     out: list[Finding] = []
     if len(servers) > 1:
-        out.append(Finding(
-            severity=SEV_HIGH,
-            category=CAT_DHCP,
-            title=f"Tarmoqda {len(servers)} ta DHCP server",
-            detail=f"Javob berganlar: {', '.join(servers)}. Ikkinchi (rogue) DHCP "
-                   "server qurilmalarga noto'g'ri gateway/DNS berishi mumkin — "
-                   "alomat: 'ba'zi kompyuterlarda internet bor, ba'zilarida yo'q'.",
-            fix="Ruxsatsiz DHCP serverni toping va o'chiring; kommutatorda "
+        out.append(
+            Finding(
+                severity=SEV_HIGH,
+                category=CAT_DHCP,
+                title=f"Tarmoqda {len(servers)} ta DHCP server",
+                detail=f"Javob berganlar: {', '.join(servers)}. Ikkinchi (rogue) DHCP "
+                "server qurilmalarga noto'g'ri gateway/DNS berishi mumkin — "
+                "alomat: 'ba'zi kompyuterlarda internet bor, ba'zilarida yo'q'.",
+                fix="Ruxsatsiz DHCP serverni toping va o'chiring; kommutatorda "
                 "DHCP snooping yoqing.",
-            evidence={"servers": servers},
-        ))
+                evidence={"servers": servers},
+            )
+        )
     if expected_server and lease_server and lease_server != expected_server:
-        out.append(Finding(
-            severity=SEV_HIGH,
-            category=CAT_DHCP,
-            title="Manzil kutilmagan DHCP serverdan olingan",
-            detail=f"Joriy lease `{lease_server}` dan, kutilgani `{expected_server}`.",
-            fix="Rogue DHCP serverni qidiring.",
-            evidence={"actual": lease_server, "expected": expected_server},
-        ))
+        out.append(
+            Finding(
+                severity=SEV_HIGH,
+                category=CAT_DHCP,
+                title="Manzil kutilmagan DHCP serverdan olingan",
+                detail=f"Joriy lease `{lease_server}` dan, kutilgani `{expected_server}`.",
+                fix="Rogue DHCP serverni qidiring.",
+                evidence={"actual": lease_server, "expected": expected_server},
+            )
+        )
     return out
 
 
@@ -1310,27 +1397,31 @@ def evaluate_arpwatch(
         return []
     out: list[Finding] = []
     for ip, old, new in mac_changes:
-        out.append(Finding(
-            severity=SEV_HIGH,
-            category=CAT_LAN,
-            title=f"{ip}: MAC o'zgardi",
-            detail=f"{old} -> {new}. Bu ARP spoofing (MITM), IP dublikati yoki "
-                   "qurilma almashtirilgani bo'lishi mumkin.",
-            fix="Qurilma haqiqatan almashtirilganini tasdiqlang; aks holda "
+        out.append(
+            Finding(
+                severity=SEV_HIGH,
+                category=CAT_LAN,
+                title=f"{ip}: MAC o'zgardi",
+                detail=f"{old} -> {new}. Bu ARP spoofing (MITM), IP dublikati yoki "
+                "qurilma almashtirilgani bo'lishi mumkin.",
+                fix="Qurilma haqiqatan almashtirilganini tasdiqlang; aks holda "
                 "kommutator portini va ARP jadvalini tekshiring.",
-            host=ip,
-            evidence={"old_mac": old, "new_mac": new},
-        ))
+                host=ip,
+                evidence={"old_mac": old, "new_mac": new},
+            )
+        )
     for mac, ips in duplicates:
-        out.append(Finding(
-            severity=SEV_MEDIUM,
-            category=CAT_LAN,
-            title=f"Bir MAC {len(ips)} ta IP'da: {mac}",
-            detail=f"Manzillar: {', '.join(ips[:6])}. Router/NAT bo'lishi mumkin, "
-                   "yoki IP dublikati.",
-            fix="Qurilma router ekanini tasdiqlang; aks holda IP taqsimotini tekshiring.",
-            evidence={"mac": mac, "ips": ips},
-        ))
+        out.append(
+            Finding(
+                severity=SEV_MEDIUM,
+                category=CAT_LAN,
+                title=f"Bir MAC {len(ips)} ta IP'da: {mac}",
+                detail=f"Manzillar: {', '.join(ips[:6])}. Router/NAT bo'lishi mumkin, "
+                "yoki IP dublikati.",
+                fix="Qurilma router ekanini tasdiqlang; aks holda IP taqsimotini tekshiring.",
+                evidence={"mac": mac, "ips": ips},
+            )
+        )
     return out
 
 
@@ -1365,112 +1456,141 @@ def evaluate_wifi(
     # --- signal kuchi ---
     if rssi is not None:
         if rssi < -80:
-            out.append(Finding(
-                severity=SEV_CRITICAL, category=CAT_WIFI,
-                title=f"Wi-Fi signali juda zaif ({rssi} dBm)",
-                detail="Bu darajada paketlar qayta-qayta yuboriladi; tezlik "
-                       "yiqiladi va ulanish uzilib turadi.",
-                fix="Access point'ga yaqinlashing yoki oraliqqa AP/mesh qo'ying.",
-                evidence={"rssi_dbm": rssi},
-            ))
+            out.append(
+                Finding(
+                    severity=SEV_CRITICAL,
+                    category=CAT_WIFI,
+                    title=f"Wi-Fi signali juda zaif ({rssi} dBm)",
+                    detail="Bu darajada paketlar qayta-qayta yuboriladi; tezlik "
+                    "yiqiladi va ulanish uzilib turadi.",
+                    fix="Access point'ga yaqinlashing yoki oraliqqa AP/mesh qo'ying.",
+                    evidence={"rssi_dbm": rssi},
+                )
+            )
         elif rssi < -70:
-            out.append(Finding(
-                severity=SEV_MEDIUM, category=CAT_WIFI,
-                title=f"Wi-Fi signali zaif ({rssi} dBm)",
-                detail="Chegaraviy signal — yuk ostida tezlik tushadi.",
-                fix="AP joylashuvini yoki antenna yo'nalishini ko'rib chiqing.",
-                evidence={"rssi_dbm": rssi},
-            ))
+            out.append(
+                Finding(
+                    severity=SEV_MEDIUM,
+                    category=CAT_WIFI,
+                    title=f"Wi-Fi signali zaif ({rssi} dBm)",
+                    detail="Chegaraviy signal — yuk ostida tezlik tushadi.",
+                    fix="AP joylashuvini yoki antenna yo'nalishini ko'rib chiqing.",
+                    evidence={"rssi_dbm": rssi},
+                )
+            )
 
     # --- SNR: signalning o'zidan muhimroq ---
     if snr is not None and snr < 15:
-        out.append(Finding(
-            severity=SEV_HIGH, category=CAT_WIFI,
-            title=f"Wi-Fi shovqin darajasi yuqori (SNR {snr} dB)",
-            detail="Signal shovqindan yetarlicha ajralmayapti. Signal kuchli "
-                   "bo'lsa ham bu tezlikni yiqitadi — sabab boshqa radio manba.",
-            fix="Mikroto'lqinli pech, simsiz telefon, Bluetooth qurilmalarini "
+        out.append(
+            Finding(
+                severity=SEV_HIGH,
+                category=CAT_WIFI,
+                title=f"Wi-Fi shovqin darajasi yuqori (SNR {snr} dB)",
+                detail="Signal shovqindan yetarlicha ajralmayapti. Signal kuchli "
+                "bo'lsa ham bu tezlikni yiqitadi — sabab boshqa radio manba.",
+                fix="Mikroto'lqinli pech, simsiz telefon, Bluetooth qurilmalarini "
                 "yoki qo'shni AP'larni tekshiring; 5 GHz ga o'ting.",
-            evidence={"snr_db": snr},
-        ))
+                evidence={"snr_db": snr},
+            )
+        )
 
     # --- 2.4 GHz da o'tirish, 5 GHz mavjud bo'lsa ---
     if band == "2.4GHz" and five_ghz_available:
-        out.append(Finding(
-            severity=SEV_MEDIUM, category=CAT_WIFI,
-            title="2.4 GHz da ulangan, 5 GHz mavjud",
-            detail="2.4 GHz sekin (20 MHz da ~144 Mbps) va tiqilinch. Atrofda "
-                   "5 GHz AP ko'rinyapti — u ancha keng kanal beradi.",
-            fix="Qurilmani 5 GHz SSID'ga ulang yoki routerda band-steering yoqing.",
-            evidence={"band": band},
-        ))
+        out.append(
+            Finding(
+                severity=SEV_MEDIUM,
+                category=CAT_WIFI,
+                title="2.4 GHz da ulangan, 5 GHz mavjud",
+                detail="2.4 GHz sekin (20 MHz da ~144 Mbps) va tiqilinch. Atrofda "
+                "5 GHz AP ko'rinyapti — u ancha keng kanal beradi.",
+                fix="Qurilmani 5 GHz SSID'ga ulang yoki routerda band-steering yoqing.",
+                evidence={"band": band},
+            )
+        )
 
     # --- kanal ustma-ustligi (faqat 2.4 GHz) ---
     if band == "2.4GHz" and overlap_count >= 3:
-        out.append(Finding(
-            severity=SEV_MEDIUM if overlap_count < 6 else SEV_HIGH,
-            category=CAT_WIFI,
-            title=f"Kanal {channel} tiqilinch ({overlap_count} ta AP xalaqit beryapti)",
-            detail="2.4 GHz da faqat 3 ta ustma-ust tushmaydigan kanal bor "
-                   "(1/6/11). Qo'shni AP'lar shu kanalni bo'lishyapti — SNR "
-                   "yaxshi bo'lsa ham o'tkazuvchanlik tushadi.",
-            fix="5 GHz ga o'ting; iloji bo'lmasa eng bo'sh 1/6/11 kanalni tanlang.",
-            evidence={"channel": channel, "overlap": overlap_count},
-        ))
+        out.append(
+            Finding(
+                severity=SEV_MEDIUM if overlap_count < 6 else SEV_HIGH,
+                category=CAT_WIFI,
+                title=f"Kanal {channel} tiqilinch ({overlap_count} ta AP xalaqit beryapti)",
+                detail="2.4 GHz da faqat 3 ta ustma-ust tushmaydigan kanal bor "
+                "(1/6/11). Qo'shni AP'lar shu kanalni bo'lishyapti — SNR "
+                "yaxshi bo'lsa ham o'tkazuvchanlik tushadi.",
+                fix="5 GHz ga o'ting; iloji bo'lmasa eng bo'sh 1/6/11 kanalni tanlang.",
+                evidence={"channel": channel, "overlap": overlap_count},
+            )
+        )
 
     # --- 2.4 GHz da noto'g'ri kanal ---
     if band == "2.4GHz" and channel is not None and channel not in (1, 6, 11):
-        out.append(Finding(
-            severity=SEV_LOW, category=CAT_WIFI,
-            title=f"2.4 GHz da nostandart kanal ({channel})",
-            detail="1/6/11 dan boshqa kanal qo'shnilar bilan qisman ustma-ust "
-                   "tushadi va ikkala tomonga ham xalaqit beradi.",
-            fix="Routerda kanalni 1, 6 yoki 11 ga o'zgartiring.",
-            evidence={"channel": channel},
-        ))
+        out.append(
+            Finding(
+                severity=SEV_LOW,
+                category=CAT_WIFI,
+                title=f"2.4 GHz da nostandart kanal ({channel})",
+                detail="1/6/11 dan boshqa kanal qo'shnilar bilan qisman ustma-ust "
+                "tushadi va ikkala tomonga ham xalaqit beradi.",
+                fix="Routerda kanalni 1, 6 yoki 11 ga o'zgartiring.",
+                evidence={"channel": channel},
+            )
+        )
 
     # --- PHY karta imkoniyatidan past ---
     rank = {"legacy": 0, "n": 1, "ac": 2, "ax": 3, "be": 4}
     if phy_gen and card_gen and rank.get(phy_gen, 0) < rank.get(card_gen, 0):
-        out.append(Finding(
-            severity=SEV_MEDIUM, category=CAT_WIFI,
-            title=f"Wi-Fi {phy_gen} da ishlayapti, karta {card_gen} qo'llab-quvvatlaydi",
-            detail=f"Adapter 802.11{card_gen} ga qodir, lekin ulanish "
-                   f"802.11{phy_gen} da — tezlikning katta qismi ishlatilmayapti.",
-            fix="Router/AP proshivkasini va simsiz rejim sozlamasini tekshiring "
+        out.append(
+            Finding(
+                severity=SEV_MEDIUM,
+                category=CAT_WIFI,
+                title=f"Wi-Fi {phy_gen} da ishlayapti, karta {card_gen} qo'llab-quvvatlaydi",
+                detail=f"Adapter 802.11{card_gen} ga qodir, lekin ulanish "
+                f"802.11{phy_gen} da — tezlikning katta qismi ishlatilmayapti.",
+                fix="Router/AP proshivkasini va simsiz rejim sozlamasini tekshiring "
                 "(eski rejim majburan yoqilgan bo'lishi mumkin).",
-            evidence={"phy": phy_gen, "card": card_gen},
-        ))
+                evidence={"phy": phy_gen, "card": card_gen},
+            )
+        )
 
     # --- xavfsizlik ---
     if security:
         low = security.lower()
         if "wep" in low:
-            out.append(Finding(
-                severity=SEV_CRITICAL, category=CAT_WIFI,
-                title="Wi-Fi WEP shifrlashda",
-                detail="WEP daqiqalar ichida buziladi — amalda himoya yo'q.",
-                fix="Darhol WPA2 yoki WPA3 ga o'ting.",
-                evidence={"security": security},
-            ))
+            out.append(
+                Finding(
+                    severity=SEV_CRITICAL,
+                    category=CAT_WIFI,
+                    title="Wi-Fi WEP shifrlashda",
+                    detail="WEP daqiqalar ichida buziladi — amalda himoya yo'q.",
+                    fix="Darhol WPA2 yoki WPA3 ga o'ting.",
+                    evidence={"security": security},
+                )
+            )
         elif "none" in low or "open" in low:
-            out.append(Finding(
-                severity=SEV_HIGH, category=CAT_WIFI,
-                title="Wi-Fi ochiq (shifrlashsiz)",
-                detail="Trafik ochiq efirda uzatilyapti — istalgan kishi o'qiy oladi.",
-                fix="WPA2/WPA3 parol qo'ying.",
-                evidence={"security": security},
-            ))
+            out.append(
+                Finding(
+                    severity=SEV_HIGH,
+                    category=CAT_WIFI,
+                    title="Wi-Fi ochiq (shifrlashsiz)",
+                    detail="Trafik ochiq efirda uzatilyapti — istalgan kishi o'qiy oladi.",
+                    fix="WPA2/WPA3 parol qo'ying.",
+                    evidence={"security": security},
+                )
+            )
 
     # --- tor kanal kengligi ---
     if band == "5GHz" and width_mhz is not None and width_mhz <= 20:
-        out.append(Finding(
-            severity=SEV_LOW, category=CAT_WIFI,
-            title=f"5 GHz da tor kanal ({width_mhz} MHz)",
-            detail="5 GHz 80 MHz gacha imkon beradi; 20 MHz tezlikni 4 barobar cheklaydi.",
-            fix="Routerda kanal kengligini 80 MHz ga oshiring.",
-            evidence={"width_mhz": width_mhz},
-        ))
+        out.append(
+            Finding(
+                severity=SEV_LOW,
+                category=CAT_WIFI,
+                title=f"5 GHz da tor kanal ({width_mhz} MHz)",
+                detail="5 GHz 80 MHz gacha imkon beradi; 20 MHz tezlikni 4 barobar cheklaydi.",
+                fix="Routerda kanal kengligini 80 MHz ga oshiring.",
+                evidence={"width_mhz": width_mhz},
+            )
+        )
 
     _ = tx_rate  # hozircha faqat ma'lumot uchun; PHY bahosi ustunroq
     return out
@@ -1498,19 +1618,25 @@ def evaluate_link_speed(
     if speed_mbps <= 10:
         sev, note = SEV_HIGH, "10 Mbps — deyarli aniq kabel yoki port nosozligi."
     else:
-        sev, note = SEV_MEDIUM, (
-            "100 Mbps — gigabit port kutilgan joyda bu kabel (4 o'rniga 2 juft), "
-            "konnektor yoki duplex nomuvofiqligi belgisidir."
+        sev, note = (
+            SEV_MEDIUM,
+            (
+                "100 Mbps — gigabit port kutilgan joyda bu kabel (4 o'rniga 2 juft), "
+                "konnektor yoki duplex nomuvofiqligi belgisidir."
+            ),
         )
-    return [Finding(
-        severity=sev, category=CAT_INTERFACE,
-        title=f"{name}: link {speed_mbps} Mbps da kelishilgan",
-        detail=note,
-        fix="Kabelni almashtiring (Cat5e+), konnektorni va kommutator portini "
+    return [
+        Finding(
+            severity=sev,
+            category=CAT_INTERFACE,
+            title=f"{name}: link {speed_mbps} Mbps da kelishilgan",
+            detail=note,
+            fix="Kabelni almashtiring (Cat5e+), konnektorni va kommutator portini "
             "tekshiring; port sozlamasi auto-negotiation ekaniga ishonch hosil qiling.",
-        host=name,
-        evidence={"speed_mbps": speed_mbps},
-    )]
+            host=name,
+            evidence={"speed_mbps": speed_mbps},
+        )
+    ]
 
 
 # ===========================================================================
@@ -1534,24 +1660,44 @@ LINK_UNKNOWN = "unknown"
 # chunki noma'lum tarmoqda qattiq chegara soxta ogohlantirish beradi.
 _PROFILES: dict[str, dict[str, float]] = {
     LINK_WIRED: {
-        "gateway_rtt_ms": 5.0, "internet_rtt_ms": 120.0, "jitter_ms": 5.0,
-        "loss_medium_pct": 0.5, "loss_high_pct": 2.0, "dns_slow_ms": 200.0,
+        "gateway_rtt_ms": 5.0,
+        "internet_rtt_ms": 120.0,
+        "jitter_ms": 5.0,
+        "loss_medium_pct": 0.5,
+        "loss_high_pct": 2.0,
+        "dns_slow_ms": 200.0,
     },
     LINK_WIFI: {
-        "gateway_rtt_ms": 50.0, "internet_rtt_ms": 200.0, "jitter_ms": 30.0,
-        "loss_medium_pct": 5.0, "loss_high_pct": 20.0, "dns_slow_ms": 500.0,
+        "gateway_rtt_ms": 50.0,
+        "internet_rtt_ms": 200.0,
+        "jitter_ms": 30.0,
+        "loss_medium_pct": 5.0,
+        "loss_high_pct": 20.0,
+        "dns_slow_ms": 500.0,
     },
     LINK_CELLULAR: {
-        "gateway_rtt_ms": 120.0, "internet_rtt_ms": 400.0, "jitter_ms": 80.0,
-        "loss_medium_pct": 8.0, "loss_high_pct": 25.0, "dns_slow_ms": 900.0,
+        "gateway_rtt_ms": 120.0,
+        "internet_rtt_ms": 400.0,
+        "jitter_ms": 80.0,
+        "loss_medium_pct": 8.0,
+        "loss_high_pct": 25.0,
+        "dns_slow_ms": 900.0,
     },
     LINK_VPN: {
-        "gateway_rtt_ms": 80.0, "internet_rtt_ms": 350.0, "jitter_ms": 50.0,
-        "loss_medium_pct": 5.0, "loss_high_pct": 20.0, "dns_slow_ms": 700.0,
+        "gateway_rtt_ms": 80.0,
+        "internet_rtt_ms": 350.0,
+        "jitter_ms": 50.0,
+        "loss_medium_pct": 5.0,
+        "loss_high_pct": 20.0,
+        "dns_slow_ms": 700.0,
     },
     LINK_UNKNOWN: {
-        "gateway_rtt_ms": 40.0, "internet_rtt_ms": 250.0, "jitter_ms": 30.0,
-        "loss_medium_pct": 5.0, "loss_high_pct": 20.0, "dns_slow_ms": 600.0,
+        "gateway_rtt_ms": 40.0,
+        "internet_rtt_ms": 250.0,
+        "jitter_ms": 30.0,
+        "loss_medium_pct": 5.0,
+        "loss_high_pct": 20.0,
+        "dns_slow_ms": 600.0,
     },
 }
 
@@ -1601,9 +1747,16 @@ def thresholds_for_link(link: str, base: Thresholds | None = None) -> Thresholds
     if base is None:
         return result
     # Foydalanuvchi default'dan farqli qilib qo'ygan maydonlarni saqlab qolamiz.
-    for f in ("gateway_rtt_ms", "internet_rtt_ms", "jitter_ms",
-              "loss_medium_pct", "loss_high_pct", "dns_slow_ms",
-              "iface_error_rate", "tls_warn_days"):
+    for f in (
+        "gateway_rtt_ms",
+        "internet_rtt_ms",
+        "jitter_ms",
+        "loss_medium_pct",
+        "loss_high_pct",
+        "dns_slow_ms",
+        "iface_error_rate",
+        "tls_warn_days",
+    ):
         user_val = getattr(base, f)
         if user_val != getattr(default, f):
             setattr(result, f, user_val)

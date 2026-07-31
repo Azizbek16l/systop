@@ -76,19 +76,25 @@ def test_ozgarishsiz_holat_bosh():
 
 def test_broadcast_mac_dublikat_emas():
     """`ff:ff:ff:ff:ff:ff` tabiiy ravishda ko'p IP bilan bog'lanadi."""
-    ch = diff_snapshots({}, {
-        "192.168.1.255": "ff:ff:ff:ff:ff:ff",
-        "10.0.0.255": "ff:ff:ff:ff:ff:ff",
-    })
+    ch = diff_snapshots(
+        {},
+        {
+            "192.168.1.255": "ff:ff:ff:ff:ff:ff",
+            "10.0.0.255": "ff:ff:ff:ff:ff:ff",
+        },
+    )
     assert [c for c in ch if c.kind == "duplicate_mac"] == []
 
 
 def test_multicast_mac_dublikat_emas():
     """I/G biti o'rnatilgan MAC (`01:00:5e:...`) — multicast, qurilma emas."""
-    ch = diff_snapshots({}, {
-        "224.0.0.251": "01:00:5e:00:00:fb",
-        "224.0.0.252": "01:00:5e:00:00:fc",
-    })
+    ch = diff_snapshots(
+        {},
+        {
+            "224.0.0.251": "01:00:5e:00:00:fb",
+            "224.0.0.252": "01:00:5e:00:00:fc",
+        },
+    )
     assert [c for c in ch if c.kind == "duplicate_mac"] == []
 
 
@@ -99,28 +105,37 @@ def test_ipv4_va_ipv6_bir_qurilmada_dublikat_emas():
     MAC'i bir xil bo'lishi BUTUNLAY NORMAL. Taqqoslash faqat bir oila ichida
     bo'lishi kerak.
     """
-    ch = diff_snapshots({}, {
-        "192.168.1.5": MAC_A,
-        "2001:db8::5": MAC_A,
-    })
+    ch = diff_snapshots(
+        {},
+        {
+            "192.168.1.5": MAC_A,
+            "2001:db8::5": MAC_A,
+        },
+    )
     assert [c for c in ch if c.kind == "duplicate_mac"] == []
 
 
 def test_link_local_va_global_v6_dublikat_emas():
     """Bir NIC'da `fe80::` va global IPv6 birga bo'ladi — doira bo'yicha ajratiladi."""
-    ch = diff_snapshots({}, {
-        "fe80::5": MAC_A,
-        "2001:db8::5": MAC_A,
-    })
+    ch = diff_snapshots(
+        {},
+        {
+            "fe80::5": MAC_A,
+            "2001:db8::5": MAC_A,
+        },
+    )
     assert [c for c in ch if c.kind == "duplicate_mac"] == []
 
 
 def test_apipa_va_dhcp_manzili_dublikat_emas():
     """169.254.x (APIPA) va DHCP manzili bir NIC'da bir vaqtda bo'lishi mumkin."""
-    ch = diff_snapshots({}, {
-        "169.254.10.5": MAC_A,
-        "192.168.1.5": MAC_A,
-    })
+    ch = diff_snapshots(
+        {},
+        {
+            "169.254.10.5": MAC_A,
+            "192.168.1.5": MAC_A,
+        },
+    )
     assert [c for c in ch if c.kind == "duplicate_mac"] == []
 
 
@@ -131,19 +146,25 @@ def test_bir_manzil_turli_zonada_dublikat_emas():
     DOIMIY "bir MAC ikki IP'da" ogohlantirishi chiqardi — spoofing detektori
     o'zini ayblab turardi.
     """
-    ch = diff_snapshots({}, {
-        "fe80::1c9d:5eff:fe00:1%awdl0": MAC_A,
-        "fe80::1c9d:5eff:fe00:1%llw0": MAC_A,
-    })
+    ch = diff_snapshots(
+        {},
+        {
+            "fe80::1c9d:5eff:fe00:1%awdl0": MAC_A,
+            "fe80::1c9d:5eff:fe00:1%llw0": MAC_A,
+        },
+    )
     assert [c for c in ch if c.kind == "duplicate_mac"] == []
 
 
 def test_turli_link_local_manzil_dublikat_boladi():
     """Zona farqi emas, MANZIL farqi bo'lsa — bu haqiqiy dublikat."""
-    ch = diff_snapshots({}, {
-        "fe80::1%en0": MAC_A,
-        "fe80::2%en0": MAC_A,
-    })
+    ch = diff_snapshots(
+        {},
+        {
+            "fe80::1%en0": MAC_A,
+            "fe80::2%en0": MAC_A,
+        },
+    )
     assert len([c for c in ch if c.kind == "duplicate_mac"]) == 1
 
 

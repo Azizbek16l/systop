@@ -220,16 +220,18 @@ def error(message: str) -> None:
 
 # `_to_dict` avtomatik qo'shmaydigan property'lar: ular asosiy maydonning
 # filtrlangan takrori bo'lib, payload'ni behuda ikki barobar qiladi.
-_TO_DICT_SKIP: frozenset[str] = frozenset({
-    "problems",            # Report.findings ning bir qismi
-    "open_ports",          # ScanResult.ports ning bir qismi
-    "responsive",          # SweepResult.hosts ning bir qismi
-    "defaults",            # RouteTable.routes ning bir qismi
-    "routable_defaults",
-    "responded",           # NtpReport.results ning bir qismi
-    "mac_changes",         # ArpDiff.changes ning bir qismi
-    "neighbours",          # WifiStatus.neighbours — maydon sifatida bor
-})
+_TO_DICT_SKIP: frozenset[str] = frozenset(
+    {
+        "problems",  # Report.findings ning bir qismi
+        "open_ports",  # ScanResult.ports ning bir qismi
+        "responsive",  # SweepResult.hosts ning bir qismi
+        "defaults",  # RouteTable.routes ning bir qismi
+        "routable_defaults",
+        "responded",  # NtpReport.results ning bir qismi
+        "mac_changes",  # ArpDiff.changes ning bir qismi
+        "neighbours",  # WifiStatus.neighbours — maydon sifatida bor
+    }
+)
 
 
 def _to_dict(obj: Any) -> Any:
@@ -385,11 +387,15 @@ def _build_parser() -> argparse.ArgumentParser:
     _with_globals(sub.add_parser("dashboard", help="Interaktiv TUI dashboard (default)"))
     p_speed = _with_globals(sub.add_parser("speed", help="Internet tezligini o'lchash"))
     p_speed.add_argument(
-        "--local", action="store_true",
+        "--local",
+        action="store_true",
         help="lokal (IX) endpointlarni ham o'lchab, xalqaro bilan solishtirish",
     )
     p_speed.add_argument(
-        "--local-url", action="append", default=None, metavar="URL",
+        "--local-url",
+        action="append",
+        default=None,
+        metavar="URL",
         help="lokal endpoint URL (bir necha marta berish mumkin; config'ni bekor qiladi)",
     )
 
@@ -437,30 +443,39 @@ def _build_parser() -> argparse.ArgumentParser:
         help="portlar: '22,80,443' yoki '1-1024' (default: keng tarqalganlar)",
     )
     p_scan.add_argument(
-        "--top", type=int, default=None, metavar="N",
+        "--top",
+        type=int,
+        default=None,
+        metavar="N",
         help="eng ko'p uchraydigan N portni skan qilish (nmap --top-ports uslubi)",
     )
     p_scan.add_argument(
-        "--banner", action="store_true",
+        "--banner",
+        action="store_true",
         help="ochiq portlardan xizmat versiyasini o'qish (nmap -sV yengil varianti)",
     )
     p_scan.add_argument(
         "--open-only", action="store_true", help="faqat ochiq porti bor hostlarni ko'rsatish"
     )
     p_scan.add_argument(
-        "--polite", action="store_true",
+        "--polite",
+        action="store_true",
         help="sekin rejim (IPS/anti-scan himoyasi bor tarmoq uchun)",
     )
     p_scan.add_argument(
-        "--lan", action="store_true",
+        "--lan",
+        action="store_true",
         help="nishonlarni LAN'dan avtomatik olish (barcha faol interfeys tarmoqlari)",
     )
     p_scan.add_argument(
-        "--lan6", action="store_true",
+        "--lan6",
+        action="store_true",
         help="nishonlar: NDP orqali topilgan IPv6 hostlar (IPv6 /64 ni sweep qilib bo'lmaydi)",
     )
     p_scan.add_argument(
-        "--max-hosts", type=int, default=1024,
+        "--max-hosts",
+        type=int,
+        default=1024,
         help="CIDR/diapazondan olinadigan maksimal host soni (himoya chegarasi)",
     )
     p_scan.add_argument(
@@ -469,25 +484,29 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_family_flags(p_scan)
 
     # --- nc: ncat uslubidagi xom TCP/TLS mijoz ------------------------------
-    p_nc = _with_globals(sub.add_parser(
-        "nc", help="Xom TCP/TLS ulanish (ncat uslubi) — banner, qo'lda so'rov"
-    ))
+    p_nc = _with_globals(
+        sub.add_parser("nc", help="Xom TCP/TLS ulanish (ncat uslubi) — banner, qo'lda so'rov")
+    )
     p_nc.add_argument("host", help="host (IP yoki nom; IPv6 ham)")
     p_nc.add_argument("port", type=int, help="port")
     p_nc.add_argument(
-        "--send", default=None, metavar="TEXT",
+        "--send",
+        default=None,
+        metavar="TEXT",
         help=r"yuboriladigan matn; \r\n \t \xNN ketma-ketliklari qo'llanadi",
     )
     p_nc.add_argument(
-        "--tls", action="store_true",
+        "--tls",
+        action="store_true",
         help="TLS bilan ulanish (sertifikat tekshirilmaydi)",
     )
     p_nc.add_argument("--hex", action="store_true", help="javobni hexdump ko'rinishida")
+    p_nc.add_argument("--timeout", type=float, default=5.0, help="ulanish timeout (soniya)")
     p_nc.add_argument(
-        "--timeout", type=float, default=5.0, help="ulanish timeout (soniya)"
-    )
-    p_nc.add_argument(
-        "--wait", type=float, default=None, metavar="SEC",
+        "--wait",
+        type=float,
+        default=None,
+        metavar="SEC",
         help="javobni qancha kutish (default: timeout bilan bir xil)",
     )
     _add_family_flags(p_nc)
@@ -535,67 +554,67 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_lan = _with_globals(sub.add_parser("lan", help="Lokal tarmoq hostlarini topish"))
     p_lan.add_argument(
-        "-6", "--ipv6", action="store_true",
+        "-6",
+        "--ipv6",
+        action="store_true",
         help="IPv6 hostlarni ham topish (ff02::1 multicast + NDP jadval)",
     )
     p_lan.add_argument(
         "--only-ipv6", action="store_true", help="faqat IPv6 (IPv4 sweep qilinmaydi)"
     )
     p_lan.add_argument(
-        "--global-only", action="store_true",
+        "--global-only",
+        action="store_true",
         help="IPv6'da link-local (fe80::) manzillarni chiqarib tashlash",
     )
 
     # --- web: boshqaruv panellari va web xizmatlarni topish ------------------
-    p_web = _with_globals(sub.add_parser(
-        "web", help="Web xizmatlar + boshqaruv panellarini topish (LAN inventari)"
-    ))
+    p_web = _with_globals(
+        sub.add_parser("web", help="Web xizmatlar + boshqaruv panellarini topish (LAN inventari)")
+    )
     p_web.add_argument(
-        "hosts", nargs="*",
+        "hosts",
+        nargs="*",
         help="tekshiriladigan hostlar; bo'sh bo'lsa LAN avtomatik topiladi",
     )
     p_web.add_argument(
-        "--ports", default=None,
+        "--ports",
+        default=None,
         help="portlar: '80' yoki '80,443,8080' (default: keng tarqalgan web portlar)",
     )
     p_web.add_argument(
         "--admin-only", action="store_true", help="faqat boshqaruv panellarini ko'rsatish"
     )
     p_web.add_argument(
-        "--mgmt", action="store_true",
+        "--mgmt",
+        action="store_true",
         help="faqat tarmoqni boshqaruvchi qurilmalar (router/firewall/switch/NVR)",
     )
     p_web.add_argument(
-        "--http80", action="store_true",
+        "--http80",
+        action="store_true",
         help="qisqa yo'l: faqat 80-portni tekshirish (lokal HTTP ochiqligini topish)",
     )
     p_web.add_argument(
-        "--polite", action="store_true",
+        "--polite",
+        action="store_true",
         help="sekin rejim (IPS/anti-scan himoyasi bor tarmoq uchun)",
     )
-    p_web.add_argument(
-        "--timeout", type=float, default=4.0, help="har bir so'rov uchun timeout"
-    )
-    p_web.add_argument(
-        "-6", "--ipv6", action="store_true", help="IPv6 hostlarni ham tekshirish"
-    )
+    p_web.add_argument("--timeout", type=float, default=4.0, help="har bir so'rov uchun timeout")
+    p_web.add_argument("-6", "--ipv6", action="store_true", help="IPv6 hostlarni ham tekshirish")
 
     # --- doctor: tarmoq muammolarini avtomatik topish ------------------------
-    p_doc = _with_globals(sub.add_parser(
-        "doctor", help="Tarmoq muammolarini avtomatik topish (jiddiylik bo'yicha)"
-    ))
+    p_doc = _with_globals(
+        sub.add_parser("doctor", help="Tarmoq muammolarini avtomatik topish (jiddiylik bo'yicha)")
+    )
     p_doc.add_argument(
         "--quick", action="store_true", help="tez rejim (web skan va IPv6 tashlanadi)"
     )
     p_doc.add_argument(
         "--no-web", action="store_true", help="web/admin panel tekshiruvini o'tkazib yuborish"
     )
-    p_doc.add_argument(
-        "--tls", default=None, help="TLS tekshiriladigan hostlar (vergul bilan)"
-    )
-    p_doc.add_argument(
-        "--max-hosts", type=int, default=64, help="LAN'da maksimal host soni"
-    )
+    p_doc.add_argument("--tls", default=None, help="TLS tekshiriladigan hostlar (vergul bilan)")
+    p_doc.add_argument("--max-hosts", type=int, default=64, help="LAN'da maksimal host soni")
 
     p_ntp = _with_globals(sub.add_parser("ntp", help="Soat siljishi (NTP) tekshiruvi"))
     p_ntp.add_argument("--servers", default=None, help="NTP serverlar (vergul bilan)")
@@ -611,15 +630,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p_dhcp = _with_globals(sub.add_parser("dhcp", help="DHCP server(lar)ni aniqlash"))
     p_dhcp.add_argument("--listen", type=float, default=4.0, help="broadcast javobini kutish (s)")
 
-    p_arp = _with_globals(sub.add_parser(
-        "arpwatch", help="ARP/NDP o'zgarishlari (MAC almashishi, dublikat)"
-    ))
+    p_arp = _with_globals(
+        sub.add_parser("arpwatch", help="ARP/NDP o'zgarishlari (MAC almashishi, dublikat)")
+    )
     p_arp.add_argument("--no-update", action="store_true", help="baseline'ni yangilamaslik")
     p_arp.add_argument("--reset", action="store_true", help="baseline'ni qaytadan yozish")
 
-    p_wifi = _with_globals(sub.add_parser(
-        "wifi", help="Wi-Fi holati: signal, SNR, kanal, qo'shnilar"
-    ))
+    p_wifi = _with_globals(
+        sub.add_parser("wifi", help="Wi-Fi holati: signal, SNR, kanal, qo'shnilar")
+    )
     p_wifi.add_argument(
         "--neighbours", action="store_true", help="atrofdagi tarmoqlarni ham ko'rsatish"
     )
@@ -632,12 +651,8 @@ def _build_parser() -> argparse.ArgumentParser:
 def _add_family_flags(p: argparse.ArgumentParser) -> None:
     """`-4`/`-6` manzil oilasi bayroqlarini qo'shadi (o'zaro istisno)."""
     g = p.add_mutually_exclusive_group()
-    g.add_argument(
-        "-4", "--ipv4", action="store_true", help="faqat IPv4 (A yozuvi)"
-    )
-    g.add_argument(
-        "-6", "--ipv6", action="store_true", help="faqat IPv6 (AAAA yozuvi)"
-    )
+    g.add_argument("-4", "--ipv4", action="store_true", help="faqat IPv4 (A yozuvi)")
+    g.add_argument("-6", "--ipv6", action="store_true", help="faqat IPv6 (AAAA yozuvi)")
 
 
 def _resolve_format(args: argparse.Namespace) -> str:
@@ -854,7 +869,7 @@ async def _cmd_speed(local: bool = False, local_urls: list[str] | None = None) -
             error(
                 "Lokal endpoint berilmagan. `--local-url URL` bilan bering yoki "
                 "config'ga qo'shing:\n"
-                "  speed_local_urls = [\"https://mirror.example.uz/10MB.bin\"]\n"
+                '  speed_local_urls = ["https://mirror.example.uz/10MB.bin"]\n'
                 "Endpoint ataylab kodga yozilmagan — u har mamlakatda boshqacha "
                 "(TAS-IX, KazIX, MSK-IX va h.k.)."
             )
@@ -875,14 +890,18 @@ async def _cmd_speed(local: bool = False, local_urls: list[str] | None = None) -
     for r in locals_:
         if r.ok:
             lt.add_row(
-                data_cell(r.url), f"[{SUCCESS}]{r.mbps:.1f}[/] Mbps",
-                f"{r.latency_ms:.0f} ms", f"[{SUCCESS}]ok[/]",
+                data_cell(r.url),
+                f"[{SUCCESS}]{r.mbps:.1f}[/] Mbps",
+                f"{r.latency_ms:.0f} ms",
+                f"[{SUCCESS}]ok[/]",
             )
         else:
             lt.add_row(data_cell(r.url), dash(), dash(), f"[{ERROR}]{r.error}[/]")
     lt.add_row(
         "[dim]xalqaro (Cloudflare)[/]",
-        f"[{SECONDARY}]{cmp.international_mbps:.1f}[/] Mbps", dash(), "",
+        f"[{SECONDARY}]{cmp.international_mbps:.1f}[/] Mbps",
+        dash(),
+        "",
     )
     emit_table(lt)
 
@@ -1060,9 +1079,7 @@ async def _cmd_scan(
 
     # Ko'p host => sweep rejimi.
     if len(hosts) > 1:
-        return await _scan_sweep(
-            hosts, ports, timeout, family, banner, open_only, polite
-        )
+        return await _scan_sweep(hosts, ports, timeout, family, banner, open_only, polite)
 
     host = hosts[0]
     count = len(ports) if ports else "keng tarqalgan"
@@ -1147,8 +1164,13 @@ async def _scan_sweep(
         + "..."
     ):
         sweep = await scan_targets(
-            hosts, ports=port_list, timeout=timeout, concurrency=conc,
-            family=family, banner=banner, delay=delay,
+            hosts,
+            ports=port_list,
+            timeout=timeout,
+            concurrency=conc,
+            family=family,
+            banner=banner,
+            delay=delay,
         )
 
     shown = sweep.responsive if open_only else [h for h in sweep.hosts if not h.error]
@@ -1227,8 +1249,13 @@ async def _cmd_nc(
     label = f"{host}:{port}" + (" (TLS)" if tls else "")
     with status(f"[bold]{label} ga ulanmoqda..."):
         res = await connect(
-            host, port, send=payload, tls=tls, timeout=timeout,
-            family=family, wait_read=wait,
+            host,
+            port,
+            send=payload,
+            tls=tls,
+            timeout=timeout,
+            family=family,
+            wait_read=wait,
         )
 
     if _FORMAT == "json":
@@ -1295,9 +1322,7 @@ async def _cmd_dns(name: str, resolvers_arg: str | None = None) -> int:
         addrs = ", ".join(result.system_addresses) or dash()
         note(f"[dim]Tizim resolveri (A):[/] [bold]{addrs}[/]")
         if result.aaaa_addresses:
-            note(
-                f"[dim]AAAA (IPv6):[/] [bold]{', '.join(result.aaaa_addresses)}[/]"
-            )
+            note(f"[dim]AAAA (IPv6):[/] [bold]{', '.join(result.aaaa_addresses)}[/]")
         elif result.tool:
             note("[dim]AAAA (IPv6): yozuv yo'q[/]")
 
@@ -1693,9 +1718,7 @@ async def _cmd_lan(
             hosts += await discover_lan(resolve=True)
     if ipv6 or only_ipv6:
         with status("[bold]IPv6 qo'shnilari izlanmoqda (ff02::1 + NDP)..."):
-            hosts += await discover_lan6(
-                resolve=True, include_link_local=not global_only
-            )
+            hosts += await discover_lan6(resolve=True, include_link_local=not global_only)
 
     if _FORMAT == "json":
         emit_json(hosts)
@@ -1777,8 +1800,12 @@ async def _cmd_web(
         + "..."
     ):
         services = await discover_web(
-            targets, ports=ports, timeout=timeout,
-            concurrency=conc, delay=delay, admin_only=admin_only,
+            targets,
+            ports=ports,
+            timeout=timeout,
+            concurrency=conc,
+            delay=delay,
+            admin_only=admin_only,
         )
 
     if mgmt_only:
@@ -1796,9 +1823,7 @@ async def _cmd_web(
         return EXIT_UNREACHABLE
 
     st = summarize(services)
-    table = styled_table(
-        f"Web xizmatlar ({st['total']} ta · boshqaruv paneli: {st['admin']})"
-    )
+    table = styled_table(f"Web xizmatlar ({st['total']} ta · boshqaruv paneli: {st['admin']})")
     # Manzil qisqarmasligi kerak — u natijaning kaliti (qaysi host, qaysi port).
     table.add_column("Manzil", no_wrap=True)
     table.add_column("Mahsulot", no_wrap=True)
@@ -1846,14 +1871,14 @@ def _doctor_exit_code(report: Any) -> int:
     Skript uchun bu jim yolg'on: har normal LAN (SMB ochiq + bitta sekin
     resolver = medium) "yiqildi" deb hisoblanardi.
     """
-    return EXIT_UNREACHABLE if report.worst_severity in (
-        DOCTOR_FAIL_CRITICAL, DOCTOR_FAIL_HIGH
-    ) else EXIT_OK
+    return (
+        EXIT_UNREACHABLE
+        if report.worst_severity in (DOCTOR_FAIL_CRITICAL, DOCTOR_FAIL_HIGH)
+        else EXIT_OK
+    )
 
 
-async def _cmd_doctor(
-    quick: bool, no_web: bool, tls_arg: str | None, max_hosts: int
-) -> int:
+async def _cmd_doctor(quick: bool, no_web: bool, tls_arg: str | None, max_hosts: int) -> int:
     """Tarmoq muammolarini avtomatik topadi va jiddiylik bo'yicha ko'rsatadi."""
     from systop.core.diagnose import (
         SEV_CRITICAL,
@@ -1907,8 +1932,8 @@ async def _cmd_doctor(
     emit_table(table)
 
     summary = " · ".join(
-        f"{lvl}: {counts[lvl]}" for lvl in
-        (SEV_CRITICAL, SEV_HIGH, SEV_MEDIUM, SEV_LOW, SEV_INFO)
+        f"{lvl}: {counts[lvl]}"
+        for lvl in (SEV_CRITICAL, SEV_HIGH, SEV_MEDIUM, SEV_LOW, SEV_INFO)
         if counts.get(lvl)
     )
     note(
@@ -1955,8 +1980,9 @@ async def _cmd_ntp(servers_arg: str | None, timeout: float) -> int:
     sev_color = {"ok": SUCCESS, "warn": WARNING, "high": ERROR, "critical": ERROR}
     for r in rep.results:
         if not r.ok:
-            table.add_row(data_cell(r.label), f"[{ERROR}]{r.error or 'xato'}[/]",
-                          dash(), dash(), dash())
+            table.add_row(
+                data_cell(r.label), f"[{ERROR}]{r.error or 'xato'}[/]", dash(), dash(), dash()
+            )
             continue
         col = sev_color.get(r.severity, WARNING)
         table.add_row(
@@ -2170,8 +2196,12 @@ async def _cmd_arpwatch(update: bool, reset: bool) -> int:
             detail = f"{c.new_mac} ayni paytda: {', '.join([c.ip, *c.extra_ips][:6])}"
         else:
             detail = f"{c.new_mac or c.old_mac or ''} {c.new_vendor or c.old_vendor or ''}"
-        t.add_row(f"[{col}]{c.severity}[/]", kind_uz.get(c.kind, c.kind),
-                  data_cell(c.ip), data_cell(detail, dash()))
+        t.add_row(
+            f"[{col}]{c.severity}[/]",
+            kind_uz.get(c.kind, c.kind),
+            data_cell(c.ip),
+            data_cell(detail, dash()),
+        )
     emit_table(t)
     if diff.has_suspicious:
         note(
@@ -2206,8 +2236,11 @@ async def _cmd_wifi(show_neighbours: bool = False) -> int:
         return EXIT_UNREACHABLE
 
     qual_color = {
-        "excellent": SUCCESS, "good": SUCCESS, "fair": WARNING,
-        "poor": ERROR, "unusable": ERROR,
+        "excellent": SUCCESS,
+        "good": SUCCESS,
+        "fair": WARNING,
+        "poor": ERROR,
+        "unusable": ERROR,
     }
     t = styled_table(f"Wi-Fi{' - ' + w.ssid if w.ssid else ''}")
     t.add_column("Maydon")
@@ -2262,9 +2295,11 @@ async def _cmd_wifi(show_neighbours: bool = False) -> int:
         nt.add_column("Xavfsizlik")
         for n in sorted(w.neighbours, key=lambda x: (x.band or "", x.channel or 0)):
             nt.add_row(
-                str(n.channel or dash()), n.band or dash(),
+                str(n.channel or dash()),
+                n.band or dash(),
                 f"{n.width_mhz} MHz" if n.width_mhz else dash(),
-                data_cell(n.phy_mode, dash()), data_cell(n.security, dash()),
+                data_cell(n.phy_mode, dash()),
+                data_cell(n.security, dash()),
             )
         emit_table(nt)
     return EXIT_OK

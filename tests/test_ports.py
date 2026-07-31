@@ -207,7 +207,10 @@ def test_parse_targets_last_octet_range():
 
 def test_parse_targets_full_address_range():
     assert parse_targets("10.0.0.254-10.0.1.1") == [
-        "10.0.0.254", "10.0.0.255", "10.0.1.0", "10.0.1.1"
+        "10.0.0.254",
+        "10.0.0.255",
+        "10.0.1.0",
+        "10.0.1.1",
     ]
 
 
@@ -336,8 +339,10 @@ def test_sweep_result_counts_open_across_hosts():
     from systop.core.ports import STATE_OPEN, PortResult
 
     h1 = ScanResult(host="a", ports=[PortResult(port=80, state=STATE_OPEN)])
-    h2 = ScanResult(host="b", ports=[PortResult(port=22, state=STATE_OPEN),
-                                     PortResult(port=443, state=STATE_OPEN)])
+    h2 = ScanResult(
+        host="b",
+        ports=[PortResult(port=22, state=STATE_OPEN), PortResult(port=443, state=STATE_OPEN)],
+    )
     h3 = ScanResult(host="c", ports=[PortResult(port=80)])  # yopiq
     s = SweepResult(hosts=[h1, h2, h3], scanned_hosts=3, scanned_ports=3)
     assert len(s.responsive) == 2
@@ -379,6 +384,7 @@ def test_resolve_rejects_ipv4_mapped_when_ipv6_requested():
     IPv4-mapped manzil IPv6 emas — trafik IPv4 ustidan ketadi. Uni qabul
     qilish `scan -6` ni jimgina IPv4'da ishlatardi.
     """
+
     async def fake_getaddrinfo(*_a, **_kw):
         return [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::ffff:1.2.3.4", 0, 0, 0))]
 
@@ -394,6 +400,7 @@ def test_resolve_rejects_ipv4_mapped_when_ipv6_requested():
 
 def test_resolve_accepts_ipv4_mapped_in_auto_mode():
     """`auto` rejimida OS tanlovi hurmat qilinadi — faqat `-6` qat'iy."""
+
     async def fake_getaddrinfo(*_a, **_kw):
         return [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::ffff:1.2.3.4", 0, 0, 0))]
 

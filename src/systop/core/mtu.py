@@ -107,8 +107,7 @@ def _build_cmd(host: str, payload: int, is_v6: bool, timeout: float) -> list[str
     """Platformaga mos DF-bayrog'li ping buyrug'i."""
     if _platform.IS_WINDOWS:
         # -f = DF, -l = payload, -w = ms
-        return ["ping", "-n", "1", "-f", "-l", str(payload),
-                "-w", str(int(timeout * 1000)), host]
+        return ["ping", "-n", "1", "-f", "-l", str(payload), "-w", str(int(timeout * 1000)), host]
     wait = str(max(1, int(timeout)))
     if is_v6:
         # macOS ping6/Linux ping -6: DF IPv6'da doimiy (fragmentatsiya yo'q).

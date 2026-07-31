@@ -211,8 +211,8 @@ def test_haqiqiy_katta_siljish_rad_ETILMAYDI():
     O'lgan RTC batareyali server 56 yil oldingi vaqtni beradi — bu HAQIQIY
     topilma, uni tashlab yubormaslik kerak. Delay esa normal bo'lib qolaveradi.
     """
-    hozir = 1_767_000_000.0          # ~2026
-    server_1970 = 0.04               # RTC batareyasi o'lgan => Unix epoch
+    hozir = 1_767_000_000.0  # ~2026
+    server_1970 = 0.04  # RTC batareyasi o'lgan => Unix epoch
     offset, delay, _ = parse_response(
         make_packet(t2=server_1970, t3=server_1970 + 0.01),
         hozir,
@@ -257,19 +257,23 @@ def test_era_chegarasi():
 
 def test_mediana_bitta_yolgonchi_serverga_bardosh_beradi():
     """Bitta server yolg'on vaqt bersa o'rtacha buziladi, mediana yo'q."""
-    rep = NtpReport(results=[
-        NtpResult(server="a", ok=True, offset_s=0.01),
-        NtpResult(server="b", ok=True, offset_s=0.02),
-        NtpResult(server="c", ok=True, offset_s=5000.0),  # yolg'onchi
-    ])
+    rep = NtpReport(
+        results=[
+            NtpResult(server="a", ok=True, offset_s=0.01),
+            NtpResult(server="b", ok=True, offset_s=0.02),
+            NtpResult(server="c", ok=True, offset_s=5000.0),  # yolg'onchi
+        ]
+    )
     assert rep.median_offset_s == pytest.approx(0.02)
 
 
 def test_javob_bermaganlar_medianaga_kirmaydi():
-    rep = NtpReport(results=[
-        NtpResult(server="a", ok=True, offset_s=0.5),
-        NtpResult(server="b", ok=False),  # offset_s standart 0.0
-    ])
+    rep = NtpReport(
+        results=[
+            NtpResult(server="a", ok=True, offset_s=0.5),
+            NtpResult(server="b", ok=False),  # offset_s standart 0.0
+        ]
+    )
     assert rep.median_offset_s == pytest.approx(0.5)
 
 

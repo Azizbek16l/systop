@@ -203,8 +203,7 @@ def test_classify_bogus_hit_does_not_shadow_real_product():
     ("Unified" ichidan) Proxmox'ni bosib ketardi.
     """
     v = classify(
-        "<title>Unified Communications</title>"
-        "<script src='/pve2/js/pvemanagerlib.js'></script>",
+        "<title>Unified Communications</title><script src='/pve2/js/pvemanagerlib.js'></script>",
         {},
         200,
     )
@@ -323,20 +322,28 @@ def test_risk_none_when_not_admin():
 
 
 def test_risk_high_basic_auth_over_http():
-    svc = WebService(ip="10.0.0.1", port=80, scheme="http", is_admin=True,
-                     auth_type="basic", insecure_admin=True)
+    svc = WebService(
+        ip="10.0.0.1", port=80, scheme="http", is_admin=True, auth_type="basic", insecure_admin=True
+    )
     assert svc.risk == "high"
 
 
 def test_risk_medium_admin_over_http_form_auth():
-    svc = WebService(ip="10.0.0.1", port=80, scheme="http", is_admin=True,
-                     auth_type="form", insecure_admin=True)
+    svc = WebService(
+        ip="10.0.0.1", port=80, scheme="http", is_admin=True, auth_type="form", insecure_admin=True
+    )
     assert svc.risk == "medium"
 
 
 def test_risk_low_admin_over_https():
-    svc = WebService(ip="10.0.0.1", port=443, scheme="https", is_admin=True,
-                     auth_type="form", insecure_admin=False)
+    svc = WebService(
+        ip="10.0.0.1",
+        port=443,
+        scheme="https",
+        is_admin=True,
+        auth_type="form",
+        insecure_admin=False,
+    )
     assert svc.risk == "low"
 
 
@@ -347,8 +354,14 @@ def test_risk_low_admin_over_https():
 
 def test_summarize_counts():
     services = [
-        WebService(ip="1.1.1.1", port=80, is_admin=True, insecure_admin=True,
-                   auth_type="basic", scheme="http"),
+        WebService(
+            ip="1.1.1.1",
+            port=80,
+            is_admin=True,
+            insecure_admin=True,
+            auth_type="basic",
+            scheme="http",
+        ),
         WebService(ip="1.1.1.2", port=443, is_admin=True, scheme="https"),
         WebService(ip="1.1.1.3", port=80, scheme="http"),
     ]

@@ -66,11 +66,7 @@ class FakeNet:
     def immediate_repeats(self) -> list[tuple[int, str]]:
         """Ketma-ket bir xil payload = QAYTA URINISH (retry) belgisi."""
         pairs = list(zip(self.payloads, self.results, strict=True))
-        return [
-            (p1, v1)
-            for (p1, v1), (p2, _) in zip(pairs, pairs[1:], strict=False)
-            if p1 == p2
-        ]
+        return [(p1, v1) for (p1, v1), (p2, _) in zip(pairs, pairs[1:], strict=False) if p1 == p2]
 
 
 def _install(monkeypatch, net: FakeNet, address: str = "1.1.1.1", family: str = "ipv4"):

@@ -340,8 +340,11 @@ async def current_lease(interface: str | None = None) -> DhcpOffer | None:
         if not out:
             return None
         m = re.search(r"DHCP Server[^\d]*(\d+\.\d+\.\d+\.\d+)", out)
-        return DhcpOffer(server_ip=m.group(1), server_id=m.group(1),
-                         msg_type="ACK (faol lease)") if m else None
+        return (
+            DhcpOffer(server_ip=m.group(1), server_id=m.group(1), msg_type="ACK (faol lease)")
+            if m
+            else None
+        )
 
     # Linux — keng tarqalgan lease yo'llari.
     for path in (

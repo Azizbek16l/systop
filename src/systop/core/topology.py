@@ -706,8 +706,10 @@ async def _ping_all_nodes(timeout: float = 2.0) -> None:
         cmds = [["ping", "-6", "-n", "2", "-w", "1000", target]]
     else:
         # macOS: ping6; Linux (iputils yangi): ping -6. Ikkalasini ham sinaymiz.
-        cmds = [["ping6", "-c", "2", "-i", "0.3", target],
-                ["ping", "-6", "-c", "2", "-i", "0.3", target]]
+        cmds = [
+            ["ping6", "-c", "2", "-i", "0.3", target],
+            ["ping", "-6", "-c", "2", "-i", "0.3", target],
+        ]
 
     for cmd in cmds:
         try:

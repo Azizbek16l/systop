@@ -83,7 +83,6 @@ class ArpDiff:
         return any(c.kind in ("mac_changed", "duplicate_mac") for c in self.changes)
 
 
-
 def _address_scope(ip: str) -> str:
     """Manzil doirasi: `ipv4` | `ipv6` | `link-local` | `apipa` — SOF funksiya.
 
@@ -246,10 +245,7 @@ async def current_snapshot(include_ipv6: bool = True) -> dict[str, str]:
     except Exception:  # noqa: BLE001 — psutil yiqilsa filtrsiz davom etamiz
         own = set()
 
-    snap = {
-        ip: mac for ip, mac in topology._parse_arp_table().items()
-        if mac.lower() not in own
-    }
+    snap = {ip: mac for ip, mac in topology._parse_arp_table().items() if mac.lower() not in own}
     if include_ipv6:
         for ip, mac in topology._read_ndp_table().items():
             if mac.lower() not in own:

@@ -182,23 +182,29 @@ def test_ipv6_blackhole_is_high():
 
 
 def test_duplicate_mac_on_gateway_is_high():
-    hosts = [("192.168.1.1", "aa:bb:cc:dd:ee:ff", True),
-             ("192.168.1.50", "aa:bb:cc:dd:ee:ff", False)]
+    hosts = [
+        ("192.168.1.1", "aa:bb:cc:dd:ee:ff", True),
+        ("192.168.1.50", "aa:bb:cc:dd:ee:ff", False),
+    ]
     f = evaluate_lan(hosts, "192.168.1.1")
     assert f[0].severity == SEV_HIGH
     assert "spoofing" in f[0].detail
 
 
 def test_duplicate_mac_non_gateway_is_medium():
-    hosts = [("192.168.1.20", "aa:bb:cc:dd:ee:ff", False),
-             ("192.168.1.50", "aa:bb:cc:dd:ee:ff", False)]
+    hosts = [
+        ("192.168.1.20", "aa:bb:cc:dd:ee:ff", False),
+        ("192.168.1.50", "aa:bb:cc:dd:ee:ff", False),
+    ]
     f = evaluate_lan(hosts, "192.168.1.1")
     assert f[0].severity == SEV_MEDIUM
 
 
 def test_unique_macs_no_finding():
-    hosts = [("192.168.1.1", "aa:bb:cc:dd:ee:01", True),
-             ("192.168.1.2", "aa:bb:cc:dd:ee:02", False)]
+    hosts = [
+        ("192.168.1.1", "aa:bb:cc:dd:ee:01", True),
+        ("192.168.1.2", "aa:bb:cc:dd:ee:02", False),
+    ]
     assert evaluate_lan(hosts, "192.168.1.1") == []
 
 
@@ -264,10 +270,14 @@ def test_healthy_dns_no_findings():
 
 def test_tizim_resolveri_olik_high():
     """Mashina sozlangan resolver javob bermasa — har doim haqiqiy nosozlik."""
-    f = evaluate_dns(True, None, [
-        ("192.168.1.1", False, 0, True),
-        ("8.8.8.8", True, 30, False),
-    ])
+    f = evaluate_dns(
+        True,
+        None,
+        [
+            ("192.168.1.1", False, 0, True),
+            ("8.8.8.8", True, 30, False),
+        ],
+    )
     hi = [x for x in f if x.severity == SEV_HIGH]
     assert len(hi) == 1
     assert "Tizim DNS" in hi[0].title
@@ -282,11 +292,15 @@ def test_tashqi_dns_yopiq_muammo_emas():
     butunlay sog'lom tarmoqda. Endi INFO: is_problem False, exit kodga
     ta'sir qilmaydi.
     """
-    f = evaluate_dns(True, None, [
-        ("192.168.1.1", True, 12, True),
-        ("8.8.8.8", False, 0, False),
-        ("1.1.1.1", False, 0, False),
-    ])
+    f = evaluate_dns(
+        True,
+        None,
+        [
+            ("192.168.1.1", True, 12, True),
+            ("8.8.8.8", False, 0, False),
+            ("1.1.1.1", False, 0, False),
+        ],
+    )
     assert not any(x.is_problem for x in f)
     info = [x for x in f if x.severity == SEV_INFO]
     assert len(info) == 1
@@ -314,16 +328,24 @@ def test_sekinlik_tizim_resolveri_boyicha_olchanadi():
 
     Aralashtirsak, uzoqdagi OpenDNS har doim "DNS sekin" deb belgilanardi.
     """
-    faqat_ommaviy_sekin = evaluate_dns(True, None, [
-        ("192.168.1.1", True, 12, True),
-        ("208.67.222.222", True, 900, False),
-    ])
+    faqat_ommaviy_sekin = evaluate_dns(
+        True,
+        None,
+        [
+            ("192.168.1.1", True, 12, True),
+            ("208.67.222.222", True, 900, False),
+        ],
+    )
     assert not any("sekin" in x.title for x in faqat_ommaviy_sekin)
 
-    tizim_sekin = evaluate_dns(True, None, [
-        ("192.168.1.1", True, 900, True),
-        ("8.8.8.8", True, 30, False),
-    ])
+    tizim_sekin = evaluate_dns(
+        True,
+        None,
+        [
+            ("192.168.1.1", True, 900, True),
+            ("8.8.8.8", True, 30, False),
+        ],
+    )
     assert any("sekin" in x.title for x in tizim_sekin)
 
 
@@ -406,9 +428,19 @@ from systop.core.diagnose import (  # noqa: E402
 
 def _wifi(**kw):
     base = dict(
-        available=True, connected=True, rssi=-45, snr=40, band="5GHz", channel=36,
-        width_mhz=80, phy_gen="ax", card_gen="ax", tx_rate=800.0,
-        security="WPA2 Personal", five_ghz_available=True, overlap_count=0,
+        available=True,
+        connected=True,
+        rssi=-45,
+        snr=40,
+        band="5GHz",
+        channel=36,
+        width_mhz=80,
+        phy_gen="ax",
+        card_gen="ax",
+        tx_rate=800.0,
+        security="WPA2 Personal",
+        five_ghz_available=True,
+        overlap_count=0,
     )
     base.update(kw)
     return evaluate_wifi(**base)
@@ -555,8 +587,10 @@ def test_malformed_mac_is_not_a_device():
 
 def test_duplicate_detection_ignores_broadcast():
     """Broadcast MAC ko'p IP'da bo'lishi normal — dublikat deb belgilanmasin."""
-    hosts = [("192.168.1.1", "ff:ff:ff:ff:ff:ff", False),
-             ("192.168.1.2", "ff:ff:ff:ff:ff:ff", False)]
+    hosts = [
+        ("192.168.1.1", "ff:ff:ff:ff:ff:ff", False),
+        ("192.168.1.2", "ff:ff:ff:ff:ff:ff", False),
+    ]
     assert evaluate_lan(hosts, "192.168.1.254") == []
 
 
@@ -609,10 +643,12 @@ def test_wired_thresholds_are_strictest():
 
 def test_same_rtt_judged_differently_per_link():
     """Xuddi shu 30 ms kabelda muammo, Wi-Fi'da emas."""
-    wired = evaluate_ping("GW", "10.0.0.1", True, 0, 30.0, 0, is_lan=True,
-                          th=thresholds_for_link(LINK_WIRED))
-    wifi = evaluate_ping("GW", "10.0.0.1", True, 0, 30.0, 0, is_lan=True,
-                         th=thresholds_for_link(LINK_WIFI))
+    wired = evaluate_ping(
+        "GW", "10.0.0.1", True, 0, 30.0, 0, is_lan=True, th=thresholds_for_link(LINK_WIRED)
+    )
+    wifi = evaluate_ping(
+        "GW", "10.0.0.1", True, 0, 30.0, 0, is_lan=True, th=thresholds_for_link(LINK_WIFI)
+    )
     assert any("kechikish" in f.title for f in wired)
     assert wifi == []
 
@@ -658,9 +694,13 @@ def test_remote_exposure_severity_is_lowered():
 
 
 def test_remote_exposure_groups_hosts_by_port():
-    f = evaluate_remote_exposure([
-        ("10.0.0.1", 23), ("10.0.0.2", 23), ("10.0.0.3", 6379),
-    ])
+    f = evaluate_remote_exposure(
+        [
+            ("10.0.0.1", 23),
+            ("10.0.0.2", 23),
+            ("10.0.0.3", 6379),
+        ]
+    )
     assert len(f) == 2
     telnet = next(x for x in f if "23" in x.title)
     assert "2 ta host" in telnet.title

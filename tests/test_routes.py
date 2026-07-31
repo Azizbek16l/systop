@@ -138,10 +138,12 @@ def test_yalangoch_fe80_next_hop_emas():
     bermaydi. Uni default deb hisoblash "4 ta default marshrut" va "gateway
     o'lik" degan doimiy soxta ogohlantirish berardi.
     """
-    t = RouteTable(routes=[
-        Route("default", "fe80::%utun0", "utun0", family="ipv6"),
-        Route("default", "fe80::%utun1", "utun1", family="ipv6"),
-    ])
+    t = RouteTable(
+        routes=[
+            Route("default", "fe80::%utun0", "utun0", family="ipv6"),
+            Route("default", "fe80::%utun1", "utun1", family="ipv6"),
+        ]
+    )
     assert t.routable_defaults == []
     assert t.routable_default_gateways == []
 
@@ -154,10 +156,12 @@ def test_haqiqiy_ra_gateway_saqlanadi():
     IPv6-only hostda "Default marshrut yo'q" degan CRITICAL soxta xulosani
     berardi.
     """
-    t = RouteTable(routes=[
-        Route("default", "fe80::1", "en0", family="ipv6"),
-        Route("default", "fe80::%utun0", "utun0", family="ipv6"),
-    ])
+    t = RouteTable(
+        routes=[
+            Route("default", "fe80::1", "en0", family="ipv6"),
+            Route("default", "fe80::%utun0", "utun0", family="ipv6"),
+        ]
+    )
     assert [r.gateway for r in t.routable_defaults] == ["fe80::1"]
 
 
@@ -189,21 +193,25 @@ def test_oila_boyicha_ajratish():
     Aralashtirsak, IPv4-only tarmoqda IPv6 default'ining yo'qligi "default
     marshrut bor" deb yashirinardi va aksincha.
     """
-    t = RouteTable(routes=[
-        Route("default", "192.168.1.1", "en0", family="ipv4"),
-        Route("default", "fe80::1", "en0", family="ipv6"),
-        Route("default", "fe80::%utun0", "utun0", family="ipv6"),
-    ])
+    t = RouteTable(
+        routes=[
+            Route("default", "192.168.1.1", "en0", family="ipv4"),
+            Route("default", "fe80::1", "en0", family="ipv6"),
+            Route("default", "fe80::%utun0", "utun0", family="ipv6"),
+        ]
+    )
     assert len(t.routable_defaults_for("ipv4")) == 1
     assert len(t.routable_defaults_for("ipv6")) == 1
 
 
 def test_unspecified_gateway_tashlanadi():
     """`::` va `0.0.0.0` next-hop sifatida ma'nosiz."""
-    t = RouteTable(routes=[
-        Route("default", "::", "en0", family="ipv6"),
-        Route("default", "0.0.0.0", "en0", family="ipv4"),
-    ])
+    t = RouteTable(
+        routes=[
+            Route("default", "::", "en0", family="ipv6"),
+            Route("default", "0.0.0.0", "en0", family="ipv4"),
+        ]
+    )
     assert t.routable_defaults == []
 
 
@@ -220,11 +228,13 @@ def test_yalangoch_fe80_ni_ipaddress_tasdiqlaydi():
 
 def test_vpn_split_hack_aniqlanadi():
     """`0.0.0.0/1` + `128.0.0.0/1` birgalikda default'dan ustun turadi."""
-    t = RouteTable(routes=[
-        Route("default", "192.168.1.1", "en0"),
-        Route("0.0.0.0/1", "10.8.0.1", "utun3"),
-        Route("128.0.0.0/1", "10.8.0.1", "utun3"),
-    ])
+    t = RouteTable(
+        routes=[
+            Route("default", "192.168.1.1", "en0"),
+            Route("0.0.0.0/1", "10.8.0.1", "utun3"),
+            Route("128.0.0.0/1", "10.8.0.1", "utun3"),
+        ]
+    )
     assert t.has_vpn_split_hack is True
 
 

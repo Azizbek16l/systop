@@ -57,6 +57,7 @@ WEB_PORTS: dict[int, str] = {
 # Eng ko'p uchraydigan qisqa ro'yxat (tez rejim uchun).
 QUICK_WEB_PORTS: tuple[int, ...] = (80, 443, 8080, 8443, 8000, 8006, 4081, 9000)
 
+
 @dataclass(frozen=True, slots=True)
 class Fingerprint:
     """Bitta mahsulot izi: body va header naqshlari ALOHIDA.
@@ -99,60 +100,98 @@ class Fingerprint:
 # haqiqatan ham alohida so'z. Yechim — kontekstni naqshning O'ZIGA kiritish
 # ("asterisk management portal", "unifi network", "minio console", "x-jenkins").
 _FINGERPRINTS: tuple[Fingerprint, ...] = (
-    Fingerprint("Kerio Control", "firewall", "admin",
-                ("kerio control", "kerio-control", "keriocontrol")),
-    Fingerprint("Hikvision", "kamera/NVR", "admin",
-                ("hikvision", "/doc/page/login.asp", "webcomponents.exe")),
+    Fingerprint(
+        "Kerio Control", "firewall", "admin", ("kerio control", "kerio-control", "keriocontrol")
+    ),
+    Fingerprint(
+        "Hikvision",
+        "kamera/NVR",
+        "admin",
+        ("hikvision", "/doc/page/login.asp", "webcomponents.exe"),
+    ),
     Fingerprint("Dahua", "kamera/NVR", "admin", ("dahua", "dh_web", "webplugin")),
-    Fingerprint("UniFi", "tarmoq", "admin",
-                ("unifi network", "unifi os", "ubiquiti"), ("ubnt",)),
+    Fingerprint("UniFi", "tarmoq", "admin", ("unifi network", "unifi os", "ubiquiti"), ("ubnt",)),
     Fingerprint("MikroTik", "router", "admin", ("mikrotik", "routeros", "webfig")),
     Fingerprint("TP-Link", "router", "admin", ("tp-link", "tplink")),
-    Fingerprint("Proxmox VE", "hypervisor", "admin",
-                ("proxmox virtual environment", "pve-manager", "pvemanagerlib.js")),
+    Fingerprint(
+        "Proxmox VE",
+        "hypervisor",
+        "admin",
+        ("proxmox virtual environment", "pve-manager", "pvemanagerlib.js"),
+    ),
     Fingerprint("Grafana", "monitoring", "admin", ("grafana",)),
     Fingerprint("Portainer", "docker", "admin", ("portainer",)),
-    Fingerprint("Prometheus", "monitoring", "admin",
-                ("prometheus time series", "/graph?g0.expr")),
+    Fingerprint("Prometheus", "monitoring", "admin", ("prometheus time series", "/graph?g0.expr")),
     Fingerprint("Zabbix", "monitoring", "admin", ("zabbix",)),
     Fingerprint("phpMyAdmin", "database", "admin", ("phpmyadmin", "pma_username")),
     Fingerprint("pgAdmin", "database", "admin", ("pgadmin",)),
     Fingerprint("GitLab", "devops", "admin", ("gitlab",)),
-    Fingerprint("Jenkins", "devops", "admin",
-                ("[jenkins]", "jenkins ver.", "/static/jenkins"), ("x-jenkins",)),
+    Fingerprint(
+        "Jenkins",
+        "devops",
+        "admin",
+        ("[jenkins]", "jenkins ver.", "/static/jenkins"),
+        ("x-jenkins",),
+    ),
     Fingerprint("Synology DSM", "NAS", "admin", ("synology",)),
     Fingerprint("QNAP", "NAS", "admin", ("qnap",)),
     Fingerprint("pfSense", "firewall", "admin", ("pfsense",)),
     Fingerprint("OPNsense", "firewall", "admin", ("opnsense",)),
     Fingerprint("Webmin", "server panel", "admin", ("webmin",)),
     Fingerprint("cPanel", "server panel", "admin", ("cpanel",)),
-    Fingerprint("Home Assistant", "smart home", "admin",
-                ("home assistant", "home-assistant", "homeassistant")),
+    Fingerprint(
+        "Home Assistant",
+        "smart home",
+        "admin",
+        ("home assistant", "home-assistant", "homeassistant"),
+    ),
     Fingerprint("Docker API (ochiq!)", "docker", "admin", (), ("server:docker/",)),
-    Fingerprint("HP printer", "printer", "admin",
-                ("hp laserjet", "hp officejet", "hp color")),
-    Fingerprint("Canon printer", "printer", "admin",
-                ("remote ui", "canon inkjet", "canon laser")),
-    Fingerprint("Epson printer", "printer", "admin",
-                ("epson stylus", "epson workforce", "epson et-")),
-    Fingerprint("Asterisk/FreePBX", "telefoniya", "admin",
-                ("freepbx", "asterisk management portal", "digium")),
+    Fingerprint("HP printer", "printer", "admin", ("hp laserjet", "hp officejet", "hp color")),
+    Fingerprint("Canon printer", "printer", "admin", ("remote ui", "canon inkjet", "canon laser")),
+    Fingerprint(
+        "Epson printer", "printer", "admin", ("epson stylus", "epson workforce", "epson et-")
+    ),
+    Fingerprint(
+        "Asterisk/FreePBX",
+        "telefoniya",
+        "admin",
+        ("freepbx", "asterisk management portal", "digium"),
+    ),
     Fingerprint("MinIO", "storage", "admin", ("minio console",), ("x-minio", "server:minio")),
     Fingerprint("Keycloak", "identity", "admin", ("keycloak",)),
     # --- faqat identifikatsiya, admin-ball bermaydi ---
     Fingerprint("Nginx", "web server", "infra", ("welcome to nginx",), ("server:nginx",)),
-    Fingerprint("Apache", "web server", "infra",
-                ("apache2 ubuntu default", "it works!"), ("server:apache",)),
+    Fingerprint(
+        "Apache", "web server", "infra", ("apache2 ubuntu default", "it works!"), ("server:apache",)
+    ),
     Fingerprint("Traefik", "proxy", "infra", ("traefik",), ("server:traefik",)),
     Fingerprint("Caddy", "proxy", "infra", (), ("server:caddy",)),
 )
 
 # Admin panelga ishora qiluvchi sarlavha/matn kalitlari.
 _ADMIN_WORDS: tuple[str, ...] = (
-    "login", "log in", "sign in", "signin", "admin", "administrator",
-    "kirish", "tizimga kirish", "вход", "войти", "авторизация",
-    "dashboard", "control panel", "management", "boshqaruv",
-    "router", "gateway", "firewall", "nvr", "dvr", "camera", "web client",
+    "login",
+    "log in",
+    "sign in",
+    "signin",
+    "admin",
+    "administrator",
+    "kirish",
+    "tizimga kirish",
+    "вход",
+    "войти",
+    "авторизация",
+    "dashboard",
+    "control panel",
+    "management",
+    "boshqaruv",
+    "router",
+    "gateway",
+    "firewall",
+    "nvr",
+    "dvr",
+    "camera",
+    "web client",
 )
 
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
@@ -224,9 +263,7 @@ def _is_strong(pattern: str) -> bool:
     return not pattern.isalnum()
 
 
-def _match_fingerprint(
-    fp: Fingerprint, body: str, headers_blob: str
-) -> tuple[str, bool] | None:
+def _match_fingerprint(fp: Fingerprint, body: str, headers_blob: str) -> tuple[str, bool] | None:
     """Iz mos keldimi — `(mos kelgan naqsh, kuchlimi)` yoki `None`.
 
     Body naqshi FAQAT tanada, header naqshi FAQAT header matnida izlanadi.
@@ -325,8 +362,10 @@ def classify(
     www_auth = headers.get("www-authenticate", "")
     if www_auth:
         scheme_name = www_auth.split()[0].lower() if www_auth.split() else "unknown"
-        verdict.auth_type = "basic" if "basic" in scheme_name else (
-            "digest" if "digest" in scheme_name else scheme_name
+        verdict.auth_type = (
+            "basic"
+            if "basic" in scheme_name
+            else ("digest" if "digest" in scheme_name else scheme_name)
         )
         verdict.score += 3
         verdict.reasons.append(f"HTTP autentifikatsiya: {verdict.auth_type}")

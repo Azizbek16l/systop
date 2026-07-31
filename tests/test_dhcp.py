@@ -189,20 +189,24 @@ def test_server_identifiersiz_lease_none():
 
 
 def test_bitta_server_rogue_emas():
-    r = DhcpReport(offers=[
-        DhcpOffer(server_ip="192.168.1.1", server_id="192.168.1.1"),
-        DhcpOffer(server_ip="192.168.1.1", server_id="192.168.1.1"),  # takror javob
-    ])
+    r = DhcpReport(
+        offers=[
+            DhcpOffer(server_ip="192.168.1.1", server_id="192.168.1.1"),
+            DhcpOffer(server_ip="192.168.1.1", server_id="192.168.1.1"),  # takror javob
+        ]
+    )
     assert r.servers == ["192.168.1.1"]
     assert r.is_rogue_suspected is False
 
 
 def test_ikki_xil_server_rogue_shubhasi():
     """Ikki DHCP server — klassik "internet uzilib-uzilib ketadi" sababi."""
-    r = DhcpReport(offers=[
-        DhcpOffer(server_ip="192.168.1.1", server_id="192.168.1.1"),
-        DhcpOffer(server_ip="192.168.1.77", server_id="192.168.1.77"),
-    ])
+    r = DhcpReport(
+        offers=[
+            DhcpOffer(server_ip="192.168.1.1", server_id="192.168.1.1"),
+            DhcpOffer(server_ip="192.168.1.77", server_id="192.168.1.77"),
+        ]
+    )
     assert len(r.servers) == 2
     assert r.is_rogue_suspected is True
 
@@ -215,10 +219,12 @@ def test_identity_server_id_ni_afzal_koradi():
     """
     o = DhcpOffer(server_ip="10.0.0.254", server_id="192.168.1.1")
     assert o.identity == "192.168.1.1"
-    r = DhcpReport(offers=[
-        DhcpOffer(server_ip="10.0.0.254", server_id="192.168.1.1"),
-        DhcpOffer(server_ip="10.0.9.254", server_id="192.168.1.1"),
-    ])
+    r = DhcpReport(
+        offers=[
+            DhcpOffer(server_ip="10.0.0.254", server_id="192.168.1.1"),
+            DhcpOffer(server_ip="10.0.9.254", server_id="192.168.1.1"),
+        ]
+    )
     assert r.is_rogue_suspected is False
 
 

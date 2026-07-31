@@ -182,13 +182,21 @@ def overlapping_24ghz(channel: int, neighbours: list[WifiNetwork]) -> list[WifiN
 # Kalit har qanday belgi bo'lishi mumkin: macOS SSID'ni "<redacted>" qilib
 # yozadi va u harf bilan boshlanmaydi.
 _MAC_KV = re.compile(r"^\s*([^:]+?):\s*(.*?)\s*$")
-_MAC_FIELDS = frozenset({
-    "PHY Mode", "Channel", "Network Type", "Security", "Signal / Noise",
-    "Transmit Rate", "MCS Index", "Country Code", "Status",
-})
+_MAC_FIELDS = frozenset(
+    {
+        "PHY Mode",
+        "Channel",
+        "Network Type",
+        "Security",
+        "Signal / Noise",
+        "Transmit Rate",
+        "MCS Index",
+        "Country Code",
+        "Status",
+    }
+)
 _MAC_CHANNEL = re.compile(r"^(\d+)\s*\(([\d.]+)GHz(?:,\s*(\d+)MHz)?\)")
 _MAC_SIGNAL = re.compile(r"(-?\d+)\s*dBm\s*/\s*(-?\d+)\s*dBm")
-
 
 
 def _neighbour_has(n: WifiNetwork, key: str) -> bool:
@@ -439,9 +447,7 @@ async def status() -> WifiStatus:
     har Ethernet hostda soxta "Wi-Fi muammosi" chiqardi.
     """
     if _platform.IS_MACOS:
-        out = await _platform.run_command(
-            ["system_profiler", "SPAirPortDataType"], timeout=20.0
-        )
+        out = await _platform.run_command(["system_profiler", "SPAirPortDataType"], timeout=20.0)
         if not out:
             return WifiStatus(error="system_profiler natija bermadi")
         return parse_macos_airport(out)

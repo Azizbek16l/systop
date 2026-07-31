@@ -146,9 +146,8 @@ async def connect(
     result = NcResult(host=host, port=port, tls=tls)
     resolved, fam = await _resolve(host, family)
     if resolved is None:
-        result.error = (
-            f"'{host}' resolve bo'lmadi"
-            + (" (IPv6 manzil yo'q?)" if family == "ipv6" else "")
+        result.error = f"'{host}' resolve bo'lmadi" + (
+            " (IPv6 manzil yo'q?)" if family == "ipv6" else ""
         )
         return result
     result.resolved_ip = resolved

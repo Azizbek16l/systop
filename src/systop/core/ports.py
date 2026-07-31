@@ -149,9 +149,11 @@ def family_of(address: str) -> str | None:
     Sof funksiya — tarmoqqa chiqmaydi, offline sinaladi.
     """
     try:
-        return FAMILY_V6 if isinstance(
-            ipaddress.ip_address(address), ipaddress.IPv6Address
-        ) else FAMILY_V4
+        return (
+            FAMILY_V6
+            if isinstance(ipaddress.ip_address(address), ipaddress.IPv6Address)
+            else FAMILY_V4
+        )
     except ValueError:
         return None
 
@@ -183,8 +185,7 @@ async def _resolve(host: str, family: str = FAMILY_AUTO) -> tuple[str | None, st
     candidates = infos
     if family == FAMILY_V6:
         candidates = [
-            i for i in infos
-            if i[0] == socket.AF_INET6 and not str(i[4][0]).startswith("::ffff:")
+            i for i in infos if i[0] == socket.AF_INET6 and not str(i[4][0]).startswith("::ffff:")
         ]
         if not candidates:
             return None, None
@@ -285,10 +286,52 @@ async def scan_host(
 # nmap'ning "top ports" g'oyasi: eng ko'p uchraydigan portlar oldinda.
 # Tartib muhim — `--top N` shu ro'yxatning boshidan N tasini oladi.
 TOP_PORTS: tuple[int, ...] = (
-    80, 443, 22, 3389, 445, 139, 135, 8080, 21, 23, 25, 110, 143, 53,
-    3306, 5432, 8443, 8000, 5900, 6379, 111, 993, 995, 587, 161, 389,
-    1433, 27017, 9200, 11211, 2375, 9090, 5601, 631, 8081, 8090, 4081,
-    8006, 9000, 10000, 1521, 2049, 465, 591, 8555, 8110,
+    80,
+    443,
+    22,
+    3389,
+    445,
+    139,
+    135,
+    8080,
+    21,
+    23,
+    25,
+    110,
+    143,
+    53,
+    3306,
+    5432,
+    8443,
+    8000,
+    5900,
+    6379,
+    111,
+    993,
+    995,
+    587,
+    161,
+    389,
+    1433,
+    27017,
+    9200,
+    11211,
+    2375,
+    9090,
+    5601,
+    631,
+    8081,
+    8090,
+    4081,
+    8006,
+    9000,
+    10000,
+    1521,
+    2049,
+    465,
+    591,
+    8555,
+    8110,
 )
 
 # Ulanishda birinchi javobni O'ZI yuboradigan xizmatlar (banner grab uchun
@@ -300,9 +343,7 @@ _GREETING_PORTS: frozenset[int] = frozenset(
 # TLS ustida ishlaydigan portlar. Bularga ochiq matnli HTTP yuborish ma'nosiz —
 # server "400 Bad Request" qaytaradi va banner foydasiz bo'ladi. Shuning uchun
 # avval TLS handshake qilinadi, keyin so'rov shifrlangan kanalda ketadi.
-_TLS_PORTS: frozenset[int] = frozenset(
-    {443, 465, 993, 995, 4081, 8006, 8443, 8834, 9443, 2376}
-)
+_TLS_PORTS: frozenset[int] = frozenset({443, 465, 993, 995, 4081, 8006, 8443, 8834, 9443, 2376})
 
 # Banner'dan mahsulot/versiyani ajratish naqshlari (sof matn ustida ishlaydi).
 _BANNER_PATTERNS: tuple[tuple[str, str], ...] = (

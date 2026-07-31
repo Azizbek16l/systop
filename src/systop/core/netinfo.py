@@ -112,7 +112,6 @@ class Interface:
         return bool(self.ipv4) and bool(self.ipv6_global)
 
 
-
 def _v6_prefixlen(netmask: str | None) -> int:
     """IPv6 maskani prefiks uzunligiga aylantiradi — SOF funksiya.
 
@@ -282,7 +281,6 @@ def _is_apipa(ipv4: str | None) -> bool:
     return bool(addr.is_link_local)
 
 
-
 def default_gateway_v6() -> str | None:
     """IPv6 default gateway (link-local bo'lsa zonasi bilan). Topilmasa None.
 
@@ -292,9 +290,11 @@ def default_gateway_v6() -> str | None:
     """
     try:
         out = subprocess.run(
-            ["netstat", "-rn", "-f", "inet6"] if not _IS_WINDOWS_NETINFO
+            ["netstat", "-rn", "-f", "inet6"]
+            if not _IS_WINDOWS_NETINFO
             else ["route", "print", "-6"],
-            capture_output=True, timeout=6,
+            capture_output=True,
+            timeout=6,
         ).stdout
     except (subprocess.SubprocessError, OSError):
         return None

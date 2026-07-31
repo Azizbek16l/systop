@@ -380,9 +380,7 @@ class TopologyPanel(Vertical):
         port_list = ports or top_ports(20)
         self._set_scan_columns(table, sweep=True)
         btn.label = f"Skanerlanmoqda ({len(targets)} host){ellipsis()}"
-        sweep = await scan_targets(
-            targets, ports=port_list, timeout=1.5, concurrency=64
-        )
+        sweep = await scan_targets(targets, ports=port_list, timeout=1.5, concurrency=64)
         if not sweep.responsive:
             empty.update(
                 f"[dim]{sweep.scanned_hosts} host x {sweep.scanned_ports} port "
@@ -434,9 +432,7 @@ class TopologyPanel(Vertical):
             # ham almashadi (DataTable ustunlari dinamik qayta yaratiladi).
             targets = parse_targets(host, max_hosts=512)
             if len(targets) > 1:
-                await self._scan_sweep_rows(
-                    targets, ports, table, empty, btn
-                )
+                await self._scan_sweep_rows(targets, ports, table, empty, btn)
                 return
 
             self._set_scan_columns(table, sweep=False)

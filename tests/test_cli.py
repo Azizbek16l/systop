@@ -565,7 +565,8 @@ def test_main_dispatches_scan_with_multiple_targets(monkeypatch):
 
     monkeypatch.setattr(cli, "_cmd_scan", fake_cmd_scan)
     monkeypatch.setattr(
-        sys, "argv",
+        sys,
+        "argv",
         ["systop", "scan", "10.0.0.1", "10.0.0.0/24", "--top", "10", "--banner", "--polite"],
     )
     _main_expect_exit(cli)
@@ -604,7 +605,8 @@ def test_main_dispatches_nc(monkeypatch):
 
     monkeypatch.setattr(cli, "_cmd_nc", fake_cmd_nc)
     monkeypatch.setattr(
-        sys, "argv",
+        sys,
+        "argv",
         ["systop", "nc", "10.0.0.1", "443", "--tls", "--hex", "--send", r"PING\r\n"],
     )
     _main_expect_exit(cli)

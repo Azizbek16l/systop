@@ -614,10 +614,7 @@ async def run_command(
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=(
-                asyncio.subprocess.STDOUT if include_stderr
-                else asyncio.subprocess.DEVNULL
-            ),
+            stderr=(asyncio.subprocess.STDOUT if include_stderr else asyncio.subprocess.DEVNULL),
             creationflags=subprocess_flags(),
         )
     except (OSError, ValueError):
